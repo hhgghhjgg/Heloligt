@@ -6,6 +6,9 @@ on:
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,33 +26,43 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build UMD file
-        run: npm run build:umd
+      - name: Try build commands
+        run: |
+          if npm run | grep -q "build:umd"; then
+            npm run build:umd
+          elif npm run | grep -q "build:dev"; then
+            npm run build:dev
+          elif npm run | grep -q "build"; then
+            npm run build
+          else
+            echo "checking available scripts..."
+            npm run
+            exit 1
+          fi
 
-      - name: Find and prepare output
+      - name: Find babylon.js
         id: findfile
         run: |
-          FILE=$(find . -name "babylon.js" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/src/*" -not -path "*/source/*" | head -n 1)
-          echo "Found file: $FILE"
+          FILE=$(find . -name "babylon.js" -not -path "*/node_modules/*" -not -path "*/.git/*" -type f -size +100k | head -n 1)
+          if [ -z "$FILE" ]; then
+            echo "No file found, searching harder..."
+            FILE=$(find . -name "babylon.js" -not -path "*/node_modules/*" -not -path "*/.git/*" -type f | head -n 1)
+          fi
+          echo "Found: $FILE"
           echo "filepath=$FILE" >> $GITHUB_OUTPUT
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - name: Clone target repo
+        uses: actions/checkout@v4
         with:
-          tag_name: babylon-latest
-          name: Babylon.js UMD Build
-          body: |
-            فایل babylon.js کامپایل شده
-            حجم: حدود ۲۵۰ کیلوبایت
-            تاریخ ساخت: ${{ github.event.repository.updated_at }}
-          files: ${{ steps.findfile.outputs.filepath }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path: target-repo
 
-      - name: Upload as Artifact (backup)
-        uses: actions/upload-artifact@v4
-        with:
-          name: babylon-js-umd
-          path: ${{ steps.findfile.outputs.filepath }}
+      - name: Copy file and commit
+        run: |
+          mkdir -p target-repo/dist
+          cp ${{ steps.findfile.outputs.filepath }} target-repo/dist/babylon.js
+          cd target-repo
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add dist/babylon.js
+          git commit -m "Update babylon.js build" || echo "No changes to commit"
+          git push
