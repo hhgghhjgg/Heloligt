@@ -1,0 +1,37 @@
+name: Download 3D Model
+
+on:
+  workflow_dispatch:  # دستی اجرا میشی
+    inputs:
+      url:
+        description: 'آدرس مستقیم فایل مدل (glb/gltf/zip...)'
+        required: true
+        default: ''
+      filename:
+        description: 'اسم فایل خروجی (مثلاً model.glb)'
+        required: true
+        default: 'model.glb'
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download file
+        run: |
+          echo "Downloading ${{ github.event.inputs.url }}"
+          curl -L -o "${{ github.event.inputs.filename }}" "${{ github.event.inputs.url }}"
+          ls -lh "${{ github.event.inputs.filename }}"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add "${{ github.event.inputs.filename }}"
+          git commit -m "Add model ${{ github.event.inputs.filename }}" || echo "No changes"
+          git push
