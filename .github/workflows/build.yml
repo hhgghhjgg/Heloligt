@@ -1,5 +1,11 @@
-name: Get Babylon.js
-on: workflow_dispatch
+name: Auto Build Babylon.js
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -9,18 +15,41 @@ jobs:
         with:
           repository: BabylonJS/Babylon.js
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Build
-        run: |
-          npm install
-          npm run build:umd
+      - name: Install dependencies
+        run: npm install
 
-      - name: Upload
+      - name: Build UMD file
+        run: npm run build:umd
+
+      - name: Find and prepare output
+        id: findfile
+        run: |
+          FILE=$(find . -name "babylon.js" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/src/*" -not -path "*/source/*" | head -n 1)
+          echo "Found file: $FILE"
+          echo "filepath=$FILE" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: babylon-latest
+          name: Babylon.js UMD Build
+          body: |
+            فایل babylon.js کامپایل شده
+            حجم: حدود ۲۵۰ کیلوبایت
+            تاریخ ساخت: ${{ github.event.repository.updated_at }}
+          files: ${{ steps.findfile.outputs.filepath }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload as Artifact (backup)
         uses: actions/upload-artifact@v4
         with:
-          name: babylon-file
-          path: packages/tools/babylonServer/public/babylon.js
+          name: babylon-js-umd
+          path: ${{ steps.findfile.outputs.filepath }}
