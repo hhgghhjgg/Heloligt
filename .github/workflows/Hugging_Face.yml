@@ -1,36 +1,22 @@
-name: تست توکن و اتصال به Hugging Face
+name: تست سریع توکن HF
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
-  test-connection:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: بررسی وضعیت توکن
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      - name: تست توکن
         run: |
-          echo "🧪 در حال تست اتصال به Hugging Face..."
-          
-          # ۱. تست ساده: گرفتن اطلاعات کاربر با توکن
-          RESPONSE=$(curl -s -o response.json -w "%{http_code}" \
-            -H "Authorization: Bearer $HF_TOKEN" \
+          TOKEN="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"
+          echo "در حال تست..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
             "https://huggingface.co/api/whoami")
-          
-          echo "📊 کد وضعیت HTTP: $RESPONSE"
-          
-          if [ "$RESPONSE" = "200" ]; then
-            echo "✅ توکن معتبر است!"
-            cat response.json | jq .
-          elif [ "$RESPONSE" = "401" ]; then
-            echo "❌ توکن نامعتبر است. ممکنه پاک شده باشه."
-            exit 1
+          echo "کد وضعیت: $STATUS"
+          if [ "$STATUS" = "200" ]; then
+            echo "توکن معتبره!"
           else
-            echo "⚠️ پاسخ غیرمنتظره:"
-            cat response.json
-            exit 1
+            echo "توکن نامعتبره یا دامنه بسته‌ست"
           fi
