@@ -1,131 +1,96 @@
-Skip to content
-Heloligt
-Repository navigation
-Code
-Issues
-Pull requests
-Agents
-Actions
-Projects
-Wiki
-Security and quality
-Insights
-Settings
-Important update
-On April 24 we'll start using GitHub Copilot interaction data for AI model training unless you opt out. Review this update and manage your preferences in your GitHub account settings.
-📸 دانلود چپتر مانهاوا با مرورگر واقعی
-📸 دانلود چپتر مانهاوا با مرورگر واقعی #1
-All jobs
-Run details
-download-chapter
-Started 2m 53s ago
-Search logs
-0s
-2s
-0s
-14s
-2m 36s
-Run node -e "
-  node -e "
-  const { chromium } = require('playwright');
-  const fs = require('fs');
-  const path = require('path');
-  const https = require('https');
-  const http = require('http');
-  
-  (async () => {
-    const browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    });
-    const page = await context.newPage();
-  
-    console.log('⏳ در حال بارگذاری صفحه...');
-    await page.goto('https://manhuaus.com/manga/apex-future-martial-arts/chapter-130/', { waitUntil: 'networkidle', timeout: 60000 }).catch(e => console.log('⚠️ صبر برای networkidle طول کشید، ادامه میدیم...'));
-    
-    // صبر اضافی برای لود تنبل تصاویر
-    await page.waitForTimeout(5000);
-    
-    // اسکرول به پایین صفحه برای فعال شدن lazy loading
-    await page.evaluate(async () => {
-      await new Promise((resolve) => {
-        let totalHeight = 0;
-        const distance = 300;
-        const timer = setInterval(() => {
-          window.scrollBy(0, distance);
-          totalHeight += distance;
-          if(totalHeight >= document.body.scrollHeight){
-            clearInterval(timer);
-            resolve();
-          }
-        }, 100);
-      });
-    });
-  
-    await page.waitForTimeout(2000);
-  
-    // استخراج تمام تگ‌های img و background-image
-    const images = await page.evaluate(() => {
-      const imgs = [];
-      // تگ‌های img
-      document.querySelectorAll('img').forEach(img => {
-        if(img.src && (img.src.startsWith('http') || img.src.startsWith('//'))) {
-          imgs.push(img.src);
-        }
-      });
-      // background-image در استایل‌ها (اختیاری)
-      document.querySelectorAll('[style*=\"background-image\"]').forEach(el => {
-        const match = el.style.backgroundImage.match(/url\([\"']?([^\"')]+)[\"']?\)/);
-        if(match && match[1]) imgs.push(match[1]);
-      });
-      return [...new Set(imgs)]; // حذف تکراری‌ها
-    });
-  
-    console.log('🔍 تعداد تصاویر پیدا شده:', images.length);
-    
-    const folder = 'Uhu';
-    if (!fs.existsSync(folder)) fs.mkdirSync(folder);
-  
-    // دانلود تصاویر
-    for (let i = 0; i < images.length; i++) {
-      let imageUrl = images[i];
-      if (imageUrl.startsWith('//')) imageUrl = 'https:' + imageUrl;
-      
-      const ext = imageUrl.split('.').pop().split('?')[0] || 'jpg';
-      const filename = path.join(folder, \`image_\${String(i+1).padStart(3,'0')}.\${ext}\`);
-      
-      console.log(\`⬇️ دانلود تصویر \${i+1}/\${images.length}: \${imageUrl.substring(0,80)}...\`);
-      
-      await new Promise((resolve) => {
-        const client = imageUrl.startsWith('https') ? https : http;
-        client.get(imageUrl, { headers: { 'Referer': 'https://manhuaus.com/manga/apex-future-martial-arts/chapter-130/' } }, (response) => {
-          if (response.statusCode === 302 || response.statusCode === 301) {
-            // دنبال کردن تغییر مسیر
-            client.get(response.headers.location, (res) => {
-              const file = fs.createWriteStream(filename);
-              res.pipe(file);
-              file.on('finish', () => file.close(resolve));
-            });
-          } else {
-            const file = fs.createWriteStream(filename);
-            response.pipe(file);
-            file.on('finish', () => file.close(resolve));
-          }
-        }).on('error', (e) => {
-          console.error(\`❌ خطا در دانلود: \${e.message}\`);
-          resolve();
-        });
-      });
-    }
-  
-    await browser.close();
-    console.log('✅ دانلود تصاویر کامل شد.');
-  })();
-  "
-  shell: /usr/bin/bash -e {0}
-⏳ در حال بارگذاری صفحه...
-⚠️ صبر برای networkidle طول کشید، ادامه میدیم...
-🔍 تعداد تصاویر پیدا شده: 1
-⬇️ دانلود تصویر 1/1: https://manhuaus.com/favicon.ico...
-✅ دانلود تصاویر کامل شد.
+name: 📸 اسکرین‌شات تمام صفحه مانهاوا
 
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'لینک صفحه چپتر'
+        required: true
+      filename:
+        description: 'اسم فایل خروجی (مثلاً chapter-130)'
+        required: true
+        default: 'chapter'
+
+permissions:
+  contents: write
+
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⚙️ آماده‌سازی مخزن
+        uses: actions/checkout@v4
+
+      - name: 📦 نصب Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 🎭 نصب Playwright و مرورگر
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install chromium
+
+      - name: 🖼️ بارگذاری صفحه و اسکرین‌شات کامل
+        run: |
+          node -e "
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext({
+              viewport: { width: 800, height: 600 },
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            });
+            const page = await context.newPage();
+
+            const url = '${{ github.event.inputs.url }}';
+            console.log('⏳ بارگذاری:', url);
+
+            // رفتن به صفحه
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(e => {
+              console.log('⚠️ بارگذاری اولیه طول کشید، ادامه میدیم...');
+            });
+
+            // صبر برای لود اولیه جاوااسکریپت
+            await page.waitForTimeout(5000);
+
+            // اسکرول هوشمندانه برای فعال‌سازی همه عکس‌های تنبل
+            console.log('📜 اسکرول به پایین...');
+            await page.evaluate(async () => {
+              await new Promise((resolve) => {
+                let totalHeight = 0;
+                const distance = 400;
+                const timer = setInterval(() => {
+                  window.scrollBy(0, distance);
+                  totalHeight += distance;
+                  if (totalHeight >= document.body.scrollHeight) {
+                    clearInterval(timer);
+                    resolve();
+                  }
+                }, 150);
+              });
+            });
+
+            // صبر نهایی بعد از اسکرول
+            await page.waitForTimeout(3000);
+
+            // گرفتن اسکرین‌شات تمام صفحه (fullPage)
+            const filename = '${{ github.event.inputs.filename }}.png';
+            console.log('📸 گرفتن اسکرین‌شات...');
+            await page.screenshot({ path: filename, fullPage: true });
+            console.log('✅ اسکرین‌شات ذخیره شد:', filename);
+
+            await browser.close();
+          })();
+          "
+
+      - name: 💾 ذخیره در ریپازیتوری
+        run: |
+          git config user.name "actions"
+          git config user.email "actions@github.com"
+          git add "*.png"
+          git commit -m "📸 افزودن اسکرین‌شات ${{ github.event.inputs.filename }}" || echo "بدون تغییر"
+          git push
