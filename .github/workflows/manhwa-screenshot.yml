@@ -1,4 +1,4 @@
-name: 📸 اسکرین‌شات تمام صفحه مانهاوا
+name: 📸 اسکرین‌شات ضد کلودفلر
 
 on:
   workflow_dispatch:
@@ -26,43 +26,73 @@ jobs:
         with:
           node-version: '20'
 
-      - name: 🎭 نصب Playwright و مرورگر
+      - name: 🎭 نصب Playwright و مرورگر Chrome واقعی
         run: |
           npm init -y
           npm install playwright
-          npx playwright install chromium
+          npx playwright install chrome
 
-      - name: 🖼️ بارگذاری صفحه و اسکرین‌شات کامل
+      - name: 🖼️ اسکرین‌شات با Google Chrome واقعی
         run: |
           node -e "
           const { chromium } = require('playwright');
           const fs = require('fs');
 
           (async () => {
-            const browser = await chromium.launch({ headless: true });
-            const context = await browser.newContext({
-              viewport: { width: 800, height: 600 },
-              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            const browser = await chromium.launch({
+              channel: 'chrome',
+              headless: true,
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu'
+              ]
             });
+
+            const context = await browser.newContext({
+              viewport: { width: 412, height: 915 },
+              userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Mobile Safari/537.36',
+              locale: 'en-US',
+              timezoneId: 'America/New_York',
+              permissions: ['geolocation']
+            });
+
             const page = await context.newPage();
+
+            // رد کردن خودکار درخواست‌های غیرضروری برای سرعت
+            await page.route('**/*.{png,jpg,jpeg,gif,svg,css,font,woff,woff2}', route => {});
 
             const url = '${{ github.event.inputs.url }}';
             console.log('⏳ بارگذاری:', url);
 
-            // رفتن به صفحه
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(e => {
-              console.log('⚠️ بارگذاری اولیه طول کشید، ادامه میدیم...');
+            try {
+              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
+              console.log('✅ صفحه اولیه باز شد.');
+            } catch (e) {
+              console.log('⚠️ خطا در لود اولیه اما ادامه میدیم:', e.message);
+            }
+
+            // صبر طولانی برای محو شدن چالش Cloudflare
+            console.log('⏰ صبر برای بررسی Cloudflare...');
+            await page.waitForTimeout(12000);
+
+            // بررسی دستی وجود Cloudflare
+            const hasCloudflare = await page.evaluate(() => {
+              return document.body.innerText.includes('Just a moment') ||
+                     document.title.includes('Cloudflare');
             });
+            if (hasCloudflare) {
+              console.log('⚠️ هنوز صفحه Cloudflare هست، صبر بیشتر...');
+              await page.waitForTimeout(15000);
+            }
 
-            // صبر برای لود اولیه جاوااسکریپت
-            await page.waitForTimeout(5000);
-
-            // اسکرول هوشمندانه برای فعال‌سازی همه عکس‌های تنبل
-            console.log('📜 اسکرول به پایین...');
+            // اسکرول هوشمندانه
+            console.log('📜 اسکرول برای لود عکس‌ها...');
             await page.evaluate(async () => {
               await new Promise((resolve) => {
                 let totalHeight = 0;
-                const distance = 400;
+                const distance = 500;
                 const timer = setInterval(() => {
                   window.scrollBy(0, distance);
                   totalHeight += distance;
@@ -70,27 +100,25 @@ jobs:
                     clearInterval(timer);
                     resolve();
                   }
-                }, 150);
+                }, 250);
               });
             });
 
-            // صبر نهایی بعد از اسکرول
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(4000);
 
-            // گرفتن اسکرین‌شات تمام صفحه (fullPage)
             const filename = '${{ github.event.inputs.filename }}.png';
-            console.log('📸 گرفتن اسکرین‌شات...');
+            console.log('📸 اسکرین‌شات...');
             await page.screenshot({ path: filename, fullPage: true });
-            console.log('✅ اسکرین‌شات ذخیره شد:', filename);
+            console.log('✅ ذخیره شد:', filename);
 
             await browser.close();
           })();
           "
 
-      - name: 💾 ذخیره در ریپازیتوری
+      - name: 💾 آپلود در ریپازیتوری
         run: |
           git config user.name "actions"
           git config user.email "actions@github.com"
-          git add "*.png"
-          git commit -m "📸 افزودن اسکرین‌شات ${{ github.event.inputs.filename }}" || echo "بدون تغییر"
+          git add *.png
+          git commit -m "📸 اسکرین‌شات ${{ github.event.inputs.filename }}" || echo "تغییری نبود"
           git push
