@@ -1,123 +1,173 @@
-name: Check HF Token Scopes - Save to Repo
+name: Check HF Token Scopes
 
 on:
   workflow_dispatch:
     inputs:
       token:
-        description: 'Hugging Face Token برای بررسی'
+        description: 'Hugging Face Token'
         required: true
 
 permissions:
   contents: write
 
 jobs:
-  check-and-save:
+  check:
     runs-on: ubuntu-latest
     steps:
-      - name: دریافت کد ریپازیتوری
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: بررسی کامل توکن و ذخیره نتیجه
+      - name: Check Token and Save Result
         env:
           HF_TOKEN: ${{ inputs.token }}
         run: |
-          echo "# نتیجه بررسی توکن Hugging Face" > token-check-result.md
-          echo "" >> token-check-result.md
-          echo "**تاریخ:** $(date '+%Y-%m-%d %H:%M:%S')" >> token-check-result.md
-          echo "" >> token-check-result.md
-          echo "---" >> token-check-result.md
-          echo "" >> token-check-result.md
+          echo "========================================="
+          echo "🔍 شروع بررسی توکن Hugging Face"
+          echo "========================================="
+          
+          # ساخت فایل نتیجه
+          RESULT_FILE="token-check-result.md"
+          
+          echo "# نتیجه بررسی توکن Hugging Face" > $RESULT_FILE
+          echo "" >> $RESULT_FILE
+          echo "**تاریخ:** $(date '+%Y-%m-%d %H:%M:%S')" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
+          echo "---" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
 
           # 1. اطلاعات کاربر
-          echo "## 1. اطلاعات صاحب توکن" >> token-check-result.md
-          echo "" >> token-check-result.md
+          echo "## 1. اطلاعات صاحب توکن" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
           USER_INFO=$(curl -s -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/whoami)
-          USERNAME=$(echo "$USER_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('name','نامشخص'))")
-          EMAIL=$(echo "$USER_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('email','ایمیل یافت نشد'))")
-          ORGS=$(echo "$USER_INFO" | python3 -c "import sys,json; orgs=json.load(sys.stdin).get('orgs',[]); print(', '.join([o['name'] for o in orgs]) if orgs else 'بدون سازمان')")
-          echo "- **نام کاربری:** \`$USERNAME\`" >> token-check-result.md
-          echo "- **ایمیل:** $EMAIL" >> token-check-result.md
-          echo "- **سازمان‌ها:** $ORGS" >> token-check-result.md
-          echo "" >> token-check-result.md
+          echo "DEBUG: User Info = $USER_INFO"
+          USERNAME=$(echo "$USER_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('name','نامشخص'))" 2>/dev/null || echo "خطا در دریافت نام کاربری")
+          EMAIL=$(echo "$USER_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('email','ایمیل یافت نشد'))" 2>/dev/null || echo "خطا در دریافت ایمیل")
+          ORGS=$(echo "$USER_INFO" | python3 -c "import sys,json; orgs=json.load(sys.stdin).get('orgs',[]); print(', '.join([o['name'] for o in orgs]) if orgs else 'بدون سازمان')" 2>/dev/null || echo "خطا در دریافت سازمان‌ها")
+          
+          echo "- **نام کاربری:** \`$USERNAME\`" >> $RESULT_FILE
+          echo "- **ایمیل:** $EMAIL" >> $RESULT_FILE
+          echo "- **سازمان‌ها:** $ORGS" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
+          echo "✅ بخش ۱ کامل شد"
 
           # 2. دسترسی خواندن
-          echo "## 2. دسترسی خواندن (Read)" >> token-check-result.md
-          echo "" >> token-check-result.md
+          echo "## 2. دسترسی خواندن (Read)" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
           READ_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/models/gpt2)
+          echo "DEBUG: Read Code = $READ_CODE"
           if [ "$READ_CODE" = "200" ]; then
-            echo "- ✅ **فعال** — امکان خواندن مدل‌ها و دیتاست‌های عمومی و خصوصی" >> token-check-result.md
+            echo "- ✅ **فعال** — امکان خواندن مدل‌ها و دیتاست‌های عمومی و خصوصی" >> $RESULT_FILE
           else
-            echo "- ❌ **غیرفعال** — کد وضعیت: $READ_CODE" >> token-check-result.md
+            echo "- ❌ **غیرفعال** — کد وضعیت: $READ_CODE" >> $RESULT_FILE
           fi
-          echo "" >> token-check-result.md
+          echo "" >> $RESULT_FILE
+          echo "✅ بخش ۲ کامل شد"
 
           # 3. دسترسی نوشتن
-          echo "## 3. دسترسی نوشتن (Write)" >> token-check-result.md
-          echo "" >> token-check-result.md
+          echo "## 3. دسترسی نوشتن (Write)" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
           TIMESTAMP=$(date +%s)
-          WRITE_CODE=$(curl -s -X POST -o /dev/null -w "%{http_code}" \
+          WRITE_RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer $HF_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{"key":"test"}' \
-            "https://huggingface.co/api/repos/create?name=token-test-${TIMESTAMP}&type=model&private=true")
+            "https://huggingface.co/api/repos/create?name=token-test-${TIMESTAMP}&type=model&private=true" \
+            -w "\n%{http_code}")
+          WRITE_CODE=$(echo "$WRITE_RESPONSE" | tail -1)
+          echo "DEBUG: Write Code = $WRITE_CODE"
           if [ "$WRITE_CODE" = "200" ]; then
-            echo "- ✅ **فعال** — امکان ساخت و حذف مدل، دیتاست و Space" >> token-check-result.md
+            echo "- ✅ **فعال** — امکان ساخت و حذف مدل، دیتاست و Space" >> $RESULT_FILE
           elif [ "$WRITE_CODE" = "400" ]; then
-            echo "- ⚠️ **احتمالاً فعال** — خطای جزئی اما پاسخ سرور نشان‌دهنده وجود دسترسی است" >> token-check-result.md
+            echo "- ⚠️ **احتمالاً فعال** — خطای جزئی اما پاسخ سرور نشان‌دهنده وجود دسترسی است" >> $RESULT_FILE
           else
-            echo "- ❌ **غیرفعال** — کد وضعیت: $WRITE_CODE" >> token-check-result.md
+            echo "- ❌ **غیرفعال** — کد وضعیت: $WRITE_CODE" >> $RESULT_FILE
           fi
-          echo "" >> token-check-result.md
+          echo "" >> $RESULT_FILE
+          echo "✅ بخش ۳ کامل شد"
 
           # 4. دسترسی به Inference API
-          echo "## 4. دسترسی به Inference API" >> token-check-result.md
-          echo "" >> token-check-result.md
+          echo "## 4. دسترسی به Inference API" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
           INFERENCE_CODE=$(curl -s -X POST -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $HF_TOKEN" \
             -H "Content-Type: application/json" \
             -d '{"inputs":"Hello"}' \
             "https://api-inference.huggingface.co/models/gpt2")
+          echo "DEBUG: Inference Code = $INFERENCE_CODE"
           if [ "$INFERENCE_CODE" = "200" ]; then
-            echo "- ✅ **فعال** — امکان استفاده از مدل‌های Inference API" >> token-check-result.md
+            echo "- ✅ **فعال** — امکان استفاده از مدل‌های Inference API" >> $RESULT_FILE
           elif [ "$INFERENCE_CODE" = "503" ]; then
-            echo "- ✅ **فعال** — سرور پاسخ داد، مدل در حال بارگذاری است" >> token-check-result.md
+            echo "- ✅ **فعال** — سرور پاسخ داد، مدل در حال بارگذاری است" >> $RESULT_FILE
           else
-            echo "- ❌ **غیرفعال یا محدود** — کد وضعیت: $INFERENCE_CODE" >> token-check-result.md
+            echo "- ❌ **غیرفعال یا محدود** — کد وضعیت: $INFERENCE_CODE" >> $RESULT_FILE
           fi
-          echo "" >> token-check-result.md
+          echo "" >> $RESULT_FILE
+          echo "✅ بخش ۴ کامل شد"
 
           # 5. دسترسی به Spaces
-          echo "## 5. دسترسی به Spaces" >> token-check-result.md
-          echo "" >> token-check-result.md
+          echo "## 5. دسترسی به Spaces" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
           SPACES_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/spaces)
+          echo "DEBUG: Spaces Code = $SPACES_CODE"
           if [ "$SPACES_CODE" = "200" ]; then
-            echo "- ✅ **فعال** — امکان دیدن و ساختن Space" >> token-check-result.md
+            echo "- ✅ **فعال** — امکان دیدن و ساختن Space" >> $RESULT_FILE
           else
-            echo "- ❌ **غیرفعال** — کد وضعیت: $SPACES_CODE" >> token-check-result.md
+            echo "- ❌ **غیرفعال** — کد وضعیت: $SPACES_CODE" >> $RESULT_FILE
           fi
-          echo "" >> token-check-result.md
+          echo "" >> $RESULT_FILE
+          echo "✅ بخش ۵ کامل شد"
 
           # 6. خلاصه نهایی
-          echo "## 6. خلاصه نهایی" >> token-check-result.md
-          echo "" >> token-check-result.md
-          echo "| قابلیت | وضعیت |" >> token-check-result.md
-          echo "|--------|-------|" >> token-check-result.md
-          if [ "$READ_CODE" = "200" ]; then echo "| خواندن | ✅ |" >> token-check-result.md; else echo "| خواندن | ❌ |" >> token-check-result.md; fi
-          if [ "$WRITE_CODE" = "200" ] || [ "$WRITE_CODE" = "400" ]; then echo "| نوشتن | ✅ |" >> token-check-result.md; else echo "| نوشتن | ❌ |" >> token-check-result.md; fi
-          if [ "$INFERENCE_CODE" = "200" ] || [ "$INFERENCE_CODE" = "503" ]; then echo "| Inference API | ✅ |" >> token-check-result.md; else echo "| Inference API | ❌ |" >> token-check-result.md; fi
-          if [ "$SPACES_CODE" = "200" ]; then echo "| Spaces | ✅ |" >> token-check-result.md; else echo "| Spaces | ❌ |" >> token-check-result.md; fi
-          echo "" >> token-check-result.md
+          echo "## 6. خلاصه نهایی" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
+          echo "| قابلیت | وضعیت |" >> $RESULT_FILE
+          echo "|--------|-------|" >> $RESULT_FILE
+          
+          if [ "$READ_CODE" = "200" ]; then echo "| خواندن | ✅ |" >> $RESULT_FILE; else echo "| خواندن | ❌ |" >> $RESULT_FILE; fi
+          if [ "$WRITE_CODE" = "200" ] || [ "$WRITE_CODE" = "400" ]; then echo "| نوشتن | ✅ |" >> $RESULT_FILE; else echo "| نوشتن | ❌ |" >> $RESULT_FILE; fi
+          if [ "$INFERENCE_CODE" = "200" ] || [ "$INFERENCE_CODE" = "503" ]; then echo "| Inference API | ✅ |" >> $RESULT_FILE; else echo "| Inference API | ❌ |" >> $RESULT_FILE; fi
+          if [ "$SPACES_CODE" = "200" ]; then echo "| Spaces | ✅ |" >> $RESULT_FILE; else echo "| Spaces | ❌ |" >> $RESULT_FILE; fi
+          
+          echo "" >> $RESULT_FILE
+          echo "✅ بخش ۶ کامل شد"
 
           # 7. امنیت
-          echo "## 7. هشدار امنیتی 🔒" >> token-check-result.md
-          echo "" >> token-check-result.md
-          echo "> ⚠️ این فایل حاوی نتایج بررسی توکن است، نه خود توکن. با این حال بهتر است بعد از بررسی، این فایل را پاک کنید یا ریپازیتوری را پرایویت نگه دارید." >> token-check-result.md
-          echo "> برای امنیت بیشتر، توکن استفاده شده را باطل و یک توکن جدید بسازید." >> token-check-result.md
+          echo "## 7. هشدار امنیتی 🔒" >> $RESULT_FILE
+          echo "" >> $RESULT_FILE
+          echo "> ⚠️ این فایل حاوی نتایج بررسی توکن است، نه خود توکن. با این حال بهتر است بعد از بررسی، این فایل را پاک کنید یا ریپازیتوری را پرایویت نگه دارید." >> $RESULT_FILE
+          echo "> برای امنیت بیشتر، توکن استفاده شده را باطل و یک توکن جدید بسازید." >> $RESULT_FILE
+          
+          echo "========================================="
+          echo "✅ بررسی کامل شد"
+          echo "📄 فایل $RESULT_FILE آماده است"
+          echo "========================================="
+          
+          # نمایش محتوای فایل در لاگ
+          echo ""
+          echo "===== محتوای فایل نهایی ====="
+          cat $RESULT_FILE
+          echo "===== پایان فایل ====="
 
-      - name: ذخیره فایل در ریپازیتوری
+      - name: Commit and Push Result
         run: |
+          echo "📦 در حال commit و push فایل..."
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # چک کردن وضعیت گیت
+          echo "وضعیت گیت قبل از add:"
+          git status
+          
           git add token-check-result.md
-          git commit -m "📊 افزودن نتیجه بررسی توکن - $(date '+%Y-%m-%d %H:%M')" || echo "تغییری برای commit وجود ندارد"
-          git push
+          
+          echo "وضعیت گیت بعد از add:"
+          git status
+          
+          # تلاش برای commit
+          if git diff --staged --quiet; then
+            echo "⚠️ هیچ تغییری برای commit وجود ندارد"
+          else
+            git commit -m "📊 افزودن نتیجه بررسی توکن - $(date '+%Y-%m-%d %H:%M')"
+            git push
+            echo "✅ فایل با موفقیت ذخیره و push شد"
+          fi
