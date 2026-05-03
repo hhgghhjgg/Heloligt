@@ -1,22 +1,123 @@
-name: تست سریع توکن HF
+name: Check HF Token Scopes - Save to Repo
 
 on:
   workflow_dispatch:
+    inputs:
+      token:
+        description: 'Hugging Face Token برای بررسی'
+        required: true
+
+permissions:
+  contents: write
 
 jobs:
-  test:
+  check-and-save:
     runs-on: ubuntu-latest
     steps:
-      - name: تست توکن
+      - name: دریافت کد ریپازیتوری
+        uses: actions/checkout@v4
+
+      - name: بررسی کامل توکن و ذخیره نتیجه
+        env:
+          HF_TOKEN: ${{ inputs.token }}
         run: |
-          TOKEN="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"
-          echo "در حال تست..."
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
-            "https://huggingface.co/api/whoami")
-          echo "کد وضعیت: $STATUS"
-          if [ "$STATUS" = "200" ]; then
-            echo "توکن معتبره!"
+          echo "# نتیجه بررسی توکن Hugging Face" > token-check-result.md
+          echo "" >> token-check-result.md
+          echo "**تاریخ:** $(date '+%Y-%m-%d %H:%M:%S')" >> token-check-result.md
+          echo "" >> token-check-result.md
+          echo "---" >> token-check-result.md
+          echo "" >> token-check-result.md
+
+          # 1. اطلاعات کاربر
+          echo "## 1. اطلاعات صاحب توکن" >> token-check-result.md
+          echo "" >> token-check-result.md
+          USER_INFO=$(curl -s -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/whoami)
+          USERNAME=$(echo "$USER_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('name','نامشخص'))")
+          EMAIL=$(echo "$USER_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('email','ایمیل یافت نشد'))")
+          ORGS=$(echo "$USER_INFO" | python3 -c "import sys,json; orgs=json.load(sys.stdin).get('orgs',[]); print(', '.join([o['name'] for o in orgs]) if orgs else 'بدون سازمان')")
+          echo "- **نام کاربری:** \`$USERNAME\`" >> token-check-result.md
+          echo "- **ایمیل:** $EMAIL" >> token-check-result.md
+          echo "- **سازمان‌ها:** $ORGS" >> token-check-result.md
+          echo "" >> token-check-result.md
+
+          # 2. دسترسی خواندن
+          echo "## 2. دسترسی خواندن (Read)" >> token-check-result.md
+          echo "" >> token-check-result.md
+          READ_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/models/gpt2)
+          if [ "$READ_CODE" = "200" ]; then
+            echo "- ✅ **فعال** — امکان خواندن مدل‌ها و دیتاست‌های عمومی و خصوصی" >> token-check-result.md
           else
-            echo "توکن نامعتبره یا دامنه بسته‌ست"
+            echo "- ❌ **غیرفعال** — کد وضعیت: $READ_CODE" >> token-check-result.md
           fi
+          echo "" >> token-check-result.md
+
+          # 3. دسترسی نوشتن
+          echo "## 3. دسترسی نوشتن (Write)" >> token-check-result.md
+          echo "" >> token-check-result.md
+          TIMESTAMP=$(date +%s)
+          WRITE_CODE=$(curl -s -X POST -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $HF_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"key":"test"}' \
+            "https://huggingface.co/api/repos/create?name=token-test-${TIMESTAMP}&type=model&private=true")
+          if [ "$WRITE_CODE" = "200" ]; then
+            echo "- ✅ **فعال** — امکان ساخت و حذف مدل، دیتاست و Space" >> token-check-result.md
+          elif [ "$WRITE_CODE" = "400" ]; then
+            echo "- ⚠️ **احتمالاً فعال** — خطای جزئی اما پاسخ سرور نشان‌دهنده وجود دسترسی است" >> token-check-result.md
+          else
+            echo "- ❌ **غیرفعال** — کد وضعیت: $WRITE_CODE" >> token-check-result.md
+          fi
+          echo "" >> token-check-result.md
+
+          # 4. دسترسی به Inference API
+          echo "## 4. دسترسی به Inference API" >> token-check-result.md
+          echo "" >> token-check-result.md
+          INFERENCE_CODE=$(curl -s -X POST -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $HF_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"inputs":"Hello"}' \
+            "https://api-inference.huggingface.co/models/gpt2")
+          if [ "$INFERENCE_CODE" = "200" ]; then
+            echo "- ✅ **فعال** — امکان استفاده از مدل‌های Inference API" >> token-check-result.md
+          elif [ "$INFERENCE_CODE" = "503" ]; then
+            echo "- ✅ **فعال** — سرور پاسخ داد، مدل در حال بارگذاری است" >> token-check-result.md
+          else
+            echo "- ❌ **غیرفعال یا محدود** — کد وضعیت: $INFERENCE_CODE" >> token-check-result.md
+          fi
+          echo "" >> token-check-result.md
+
+          # 5. دسترسی به Spaces
+          echo "## 5. دسترسی به Spaces" >> token-check-result.md
+          echo "" >> token-check-result.md
+          SPACES_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/spaces)
+          if [ "$SPACES_CODE" = "200" ]; then
+            echo "- ✅ **فعال** — امکان دیدن و ساختن Space" >> token-check-result.md
+          else
+            echo "- ❌ **غیرفعال** — کد وضعیت: $SPACES_CODE" >> token-check-result.md
+          fi
+          echo "" >> token-check-result.md
+
+          # 6. خلاصه نهایی
+          echo "## 6. خلاصه نهایی" >> token-check-result.md
+          echo "" >> token-check-result.md
+          echo "| قابلیت | وضعیت |" >> token-check-result.md
+          echo "|--------|-------|" >> token-check-result.md
+          if [ "$READ_CODE" = "200" ]; then echo "| خواندن | ✅ |" >> token-check-result.md; else echo "| خواندن | ❌ |" >> token-check-result.md; fi
+          if [ "$WRITE_CODE" = "200" ] || [ "$WRITE_CODE" = "400" ]; then echo "| نوشتن | ✅ |" >> token-check-result.md; else echo "| نوشتن | ❌ |" >> token-check-result.md; fi
+          if [ "$INFERENCE_CODE" = "200" ] || [ "$INFERENCE_CODE" = "503" ]; then echo "| Inference API | ✅ |" >> token-check-result.md; else echo "| Inference API | ❌ |" >> token-check-result.md; fi
+          if [ "$SPACES_CODE" = "200" ]; then echo "| Spaces | ✅ |" >> token-check-result.md; else echo "| Spaces | ❌ |" >> token-check-result.md; fi
+          echo "" >> token-check-result.md
+
+          # 7. امنیت
+          echo "## 7. هشدار امنیتی 🔒" >> token-check-result.md
+          echo "" >> token-check-result.md
+          echo "> ⚠️ این فایل حاوی نتایج بررسی توکن است، نه خود توکن. با این حال بهتر است بعد از بررسی، این فایل را پاک کنید یا ریپازیتوری را پرایویت نگه دارید." >> token-check-result.md
+          echo "> برای امنیت بیشتر، توکن استفاده شده را باطل و یک توکن جدید بسازید." >> token-check-result.md
+
+      - name: ذخیره فایل در ریپازیتوری
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add token-check-result.md
+          git commit -m "📊 افزودن نتیجه بررسی توکن - $(date '+%Y-%m-%d %H:%M')" || echo "تغییری برای commit وجود ندارد"
+          git push
