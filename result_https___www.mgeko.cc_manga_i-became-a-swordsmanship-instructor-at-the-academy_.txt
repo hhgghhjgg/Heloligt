@@ -1,0 +1,55 @@
+URL: https://www.mgeko.cc/manga/i-became-a-swordsmanship-instructor-at-the-academy/
+Date: 2026-05-03 16:54:35.093624
+Time: 2.3s
+FlareSolverr status: ok
+Message: Challenge not detected!
+HTTP status: 200
+Cookies: [{'domain': '.mgeko.cc', 'expiry': 1812387274, 'httpOnly': False, 'name': '_ga', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'GA1.1.1745842159.1777827275'}, {'domain': '.mgeko.cc', 'expiry': 1812387274, 'httpOnly': False, 'name': '_ga_P1MBHKW2D4', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'GS2.1.s1777827274$o1$g0$t1777827274$j60$l0$h0'}, {'domain': 'www.mgeko.cc', 'expiry': 1778432074, 'httpOnly': False, 'name': 'vliadbox', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': '1777827274478'}, {'domain': 'www.mgeko.cc', 'expiry': 1778432074, 'httpOnly': False, 'name': 'lnwfontname', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'default'}, {'domain': 'www.mgeko.cc', 'expiry': 1778432074, 'httpOnly': False, 'name': 'nightmode', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': '0'}, {'domain': 'www.mgeko.cc', 'expiry': 1809276874, 'httpOnly': False, 'name': 'csrftoken', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'wuRjVB0Nyw4EA04k5gc1NoTraO0ofUiA'}]
+
+=== HTML (first 3000 chars) ===
+<html lang="en" xml:lang="en" xmlns="http://www.w3.org/1999/xhtml"><head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=5.0">
+
+
+
+
+
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta charset="utf-8">
+<meta name="title" content="I Became a Swordsmanship Instructor at the Academy [ALL CHAPTERS]">
+<meta name="description" content="I Became a Swordsmanship Instructor at the Academy is a manga/manhwa/manhua written by Updating and is updated fast and free on www.mgeko.cc. Enjoy reading online on Mgeko.">
+<meta name="keywords" content="I Became a Swordsmanship Instructor at the Academy, I Became a Swordsmanship Instructor at the Academy raw manga, webtoons, I Became a Swordsmanship Instructor at the Academy chapters, I Became a Swordsmanship Instructor at the Academy read online, I Became a Swordsmanship Instructor at the Academy manhwa, read I Became a Swordsmanship Instructor at the Academy manga chapters,">
+<meta name="mobile-web-app-capable" content="yes">
+<meta property="og:image" content="https://www.mgeko.cc/media/manga_covers/kRXdXv.png">
+<meta name="image" content="https://www.mgeko.cc/media/manga_covers/kRXdXv.png">
+<meta itemprop="image" content="https://www.mgeko.cc/media/manga_covers/kRXdXv.png">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://www.mgeko.cc/manga/i-became-a-swordsmanship-instructor-at-the-academy/">
+<meta property="og:site_name" content="Mgeko">
+<meta property="og:title" content="[Manga]: Manga I Became a Swordsmanship Instructor at the Academy Read">
+<meta property="og:description" content="I Became a Swordsmanship Instructor at the Academy is a manga/manhwa/manhua written by Updating and is updated fast and free on www.mgeko.cc.Enjoy reading Online on Mgeko.">
+<meta property="og:image:secure_url" content="https://www.mgeko.cc/media/manga_covers/kRXdXv.png">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:site" content="Mgeko">
+<meta name="twitter:creator" content="Mgeko">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="[Manga] Manga: I Became a Swordsmanship Instructor at the Academy Read">
+<meta name="twitter:description" content="I Became a Swordsmanship Instructor at the Academy is a manga/manhwa/manhua written by Updating and is updated fast and free on www.mgeko.cc,Enjoy reading online">
+<meta name="twitter:url" content="https://www.mgeko.cc/manga/i-became-a-swordsmanship-instructor-at-the-academy/">
+<meta name="twitter:image">
+<link rel="alternate" hreflang="en" href="https://www.mgeko.cc/manga/i-became-a-swordsmanship-instructor-at-the-academy/">
+<link rel="canonical" href="https://www.mgeko.cc/manga/i-became-a-swordsmanship-instructor-at-the-academy/">
+<meta name="referrer" content="origin">
+
+
+
+
+
+
+
+
+<title>Read I Became a Swordsmanship Instructor at the Academy Manga Online for Free</title>
+
+
+
+<link rel="apple-touch-icon" href="/static/img/
