@@ -1,0 +1,134 @@
+name: FlareSolverr Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'آدرس سایت مانهوا (یا هر سایت دیگه)'
+        required: true
+        default: 'https://asuracomic.net'
+
+jobs:
+  bypass-cloudflare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -q requests
+
+      - name: Test connection to FlareSolverr
+        run: |
+          python3 << 'PYEOF'
+          import requests, time
+
+          url = "http://localhost:8191/v1"
+          headers = {"Content-Type": "application/json"}
+          payload = {
+              "cmd": "sessions.list",
+          }
+
+          print("منتظر راه‌اندازی FlareSolverr...")
+          time.sleep(5)
+
+          try:
+              response = requests.post(url, headers=headers, json=payload, timeout=10)
+              print("پاسخ FlareSolverr:", response.status_code)
+              print(response.text)
+          except Exception as e:
+              print("خطا در اتصال به FlareSolverr:", e)
+              exit(1)
+          PYEOF
+
+      - name: Bypass Cloudflare and fetch page
+        env:
+          TARGET_URL: ${{ inputs.url }}
+        run: |
+          python3 << 'PYEOF'
+          import requests, time, os
+          from datetime import datetime
+
+          target_url = os.environ["TARGET_URL"]
+
+          url = "http://localhost:8191/v1"
+          headers = {"Content-Type": "application/json"}
+          payload = {
+              "cmd": "request.get",
+              "url": target_url,
+              "maxTimeout": 120000,
+              "returnOnlyCookies": False,
+              "returnRawHtml": True,
+          }
+
+          print(f"در حال ارسال درخواست به {target_url}")
+          start_time = time.time()
+
+          try:
+              response = requests.post(url, headers=headers, json=payload, timeout=180)
+              elapsed = round(time.time() - start_time, 1)
+              result = response.json()
+
+              print(f"زمان سپری‌شده: {elapsed} ثانیه")
+              print(f"وضعیت کلی: {result.get('status')}")
+              print(f"پیام: {result.get('message')}")
+
+              solution = result.get("solution", {})
+              http_status = solution.get("status")
+              html_content = solution.get("response", "")
+              cookies = solution.get("cookies", [])
+
+              print(f"کد وضعیت HTTP: {http_status}")
+
+              # ذخیره نتیجه
+              with open("result.txt", "w", encoding="utf-8") as f:
+                  f.write(f"URL: {target_url}\n")
+                  f.write(f"Date: {datetime.now()}\n")
+                  f.write(f"Time: {elapsed}s\n")
+                  f.write(f"Status: {result.get('status')}\n")
+                  f.write(f"Message: {result.get('message')}\n")
+                  f.write(f"HTTP Status: {http_status}\n\n")
+                  f.write(f"=== Cookies ===\n{cookies}\n\n")
+                  f.write(f"=== HTML (first 5000 chars) ===\n{html_content[:5000]}\n")
+
+              # ذخیره HTML کامل
+              with open("page.html", "w", encoding="utf-8") as f:
+                  f.write(html_content)
+
+              if http_status == 200 and "cf_clearance" in str(cookies):
+                  print("✅ کلادفلر با موفقیت دور زده شد!")
+              elif http_status == 403:
+                  print("❌ دسترسی ممنوع (403) - کلادفلر شکست خورد")
+              elif http_status == 200:
+                  print("⚠️ صفحه برگشت اما کوکی cf_clearance پیدا نشد - شاید کلادفلر نبود")
+              else:
+                  print(f"⚠️ نتیجه نامشخص - HTTP {http_status}")
+
+          except Exception as e:
+              print("خطا:", e)
+              exit(1)
+          PYEOF
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaresolverr-results
+          path: |
+            result.txt
+            page.html
+
+      - name: Commit results to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add result.txt page.html 2>/dev/null || true
+          git commit -m "نتایج FlareSolverr برای ${{ inputs.url }} | $(date '+%H:%M:%S')" || echo "چیزی برای commit نیست"
+          git pull --rebase && git push || true
