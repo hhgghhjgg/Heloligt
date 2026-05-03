@@ -1,45 +1,47 @@
-name: Anime Image → 3D Model (Really Fixed)
+name: Anime to 3D Final
 
 on:
   workflow_dispatch:
     inputs:
       prompt:
-        description: 'پرامپت (انگلیسی)'
+        description: 'توضیحات کاراکتر انیمه‌ای (انگلیسی)'
         required: true
         default: '1girl, solo, long hair, blue eyes, detailed kimono, cherry blossoms, masterpiece, best quality'
       negative_prompt:
-        description: 'پرامپت منفی'
+        description: 'چیزهایی که نمی‌خواهی'
         required: false
-        default: 'lowres, bad anatomy, bad hands, text, error, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry'
+        default: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry'
 
 permissions:
   contents: write
 
 jobs:
-  image-to-3d:
+  anime-to-3d:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
-        run: pip install -q gradio_client pillow
+      - name: Install dependencies
+        run: |
+          pip install -q gradio_client pillow
 
-      - name: Generate Anime Image
+      - name: Generate anime image with Animagine XL
         env:
           PROMPT: ${{ inputs.prompt }}
           NEGATIVE_PROMPT: ${{ inputs.negative_prompt }}
         run: |
-          echo "🎨 مرحله ۱: ساخت تصویر انیمه‌ای..."
           python3 << 'PYEOF'
-          import os, shutil
+          import os, shutil, json
           from gradio_client import Client
-
+          
           prompt = os.environ["PROMPT"]
           neg_prompt = os.environ["NEGATIVE_PROMPT"]
-
+          
+          print("🎨 Connecting to Animagine XL...")
           client = Client("cagliostrolab/animagine-xl-3.1")
           
+          # فراخوانی با endpoint صحیح /run و پارامترهای نام‌دار
           result = client.predict(
               prompt=prompt,
               negative_prompt=neg_prompt,
@@ -56,20 +58,34 @@ jobs:
               strength=0.5,
               upscale_by=1.0,
               add_quality_tags=True,
-              api_name="/predict"
+              api_name="/run"
           )
           
-          shutil.copy(result, "anime_original.png")
-          print("✅ تصویر انیمه ذخیره شد: anime_original.png")
+          # خروجی یک Gallery است: لیستی از دیکشنری‌ها با کلید image
+          if isinstance(result, list) and len(result) > 0:
+              first_item = result[0]
+              if isinstance(first_item, dict) and 'image' in first_item:
+                  image_path = first_item['image']
+                  shutil.copy(image_path, "anime_original.png")
+                  print("✅ Anime image saved: anime_original.png")
+              else:
+                  # اگر ساختار غیرمنتظره بود، برای بررسی ذخیره کن
+                  with open("gallery_output.json", "w") as f:
+                      json.dump(result, f)
+                  raise RuntimeError("Unexpected gallery format. Check gallery_output.json")
+          else:
+              with open("gallery_output.json", "w") as f:
+                  json.dump(result, f)
+              raise RuntimeError("No images returned. Check gallery_output.json")
           PYEOF
 
-      - name: Convert to 3D Model
+      - name: Convert image to 3D with Hunyuan3D-2
         run: |
-          echo "🧊 مرحله ۲: تبدیل به مدل سه‌بعدی..."
           python3 << 'PYEOF'
           import shutil
           from gradio_client import Client, handle_file
-
+          
+          print("🧊 Converting to 3D with Hunyuan3D-2...")
           client = Client("tencent/Hunyuan3D-2")
           
           result = client.predict(
@@ -82,35 +98,44 @@ jobs:
               check_box_rembg=True,
               api_name="/shape_generation"
           )
-
-          print(f"خروجی مدل سه‌بعدی: {result}")
           
-          if isinstance(result, tuple) and len(result) >= 1:
-              glb_file = result[0]
-              if glb_file and isinstance(glb_file, str) and glb_file.endswith('.glb'):
-                  shutil.copy(glb_file, "anime_model.glb")
-                  print("✅ مدل سه‌بعدی ذخیره شد: anime_model.glb")
-              else:
-                  print(f"⚠️ خروجی اول glb نیست: {glb_file}")
-                  # شاید ساختار خروجی متفاوت باشه
-                  if isinstance(result, str) and result.endswith('.glb'):
-                      shutil.copy(result, "anime_model.glb")
-                      print("✅ مدل سه‌بعدی (از خروجی مستقیم) ذخیره شد")
+          print("📦 Hunyuan3D-2 output type:", type(result))
+          print("Output preview:", str(result)[:200])
+          
+          # مدیریت خروجی‌های مختلف
+          glb_saved = False
+          if isinstance(result, tuple):
+              for idx, item in enumerate(result):
+                  if isinstance(item, str) and item.endswith('.glb'):
+                      shutil.copy(item, "anime_model.glb")
+                      glb_saved = True
+                      print(f"✅ Saved GLB from tuple index {idx}")
+                      break
+          elif isinstance(result, list):
+              for idx, item in enumerate(result):
+                  if isinstance(item, str) and item.endswith('.glb'):
+                      shutil.copy(item, "anime_model.glb")
+                      glb_saved = True
+                      print(f"✅ Saved GLB from list index {idx}")
+                      break
           elif isinstance(result, str) and result.endswith('.glb'):
               shutil.copy(result, "anime_model.glb")
-              print("✅ مدل سه‌بعدی ذخیره شد: anime_model.glb")
-          else:
-              print(f"⚠️ خروجی غیرمنتظره - نوع: {type(result)}")
-              with open("output_info.txt", "w") as f:
+              glb_saved = True
+              print("✅ Saved GLB from direct string")
+          
+          if not glb_saved:
+              # ذخیره کل خروجی برای بررسی دستی
+              with open("hunyuan_output.txt", "w") as f:
                   f.write(str(result))
+              print("⚠️ No GLB found. Output saved to hunyuan_output.txt")
           PYEOF
 
-      - name: Commit and Push Results
+      - name: Commit and push results
         run: |
-          echo "📤 ذخیره نتایج در ریپازیتوری..."
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add anime_original.png anime_model.glb output_info.txt 2>/dev/null || true
-          git commit -m "🎨 تصویر انیمه و مدل سه‌بعدی | $(date '+%H:%M:%S')" || echo "چیزی برای کامیت نبود"
-          git pull --rebase && git push || echo "Push ناموفق"
-          echo "✅ فرآیند تکمیل شد!"
+          
+          git add anime_original.png anime_model.glb hunyuan_output.txt gallery_output.json 2>/dev/null || true
+          git commit -m "🎨 Anime image + 3D model | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git pull --rebase && git push || echo "Push failed"
+          echo "✅ Workflow completed"
