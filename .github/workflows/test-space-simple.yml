@@ -8,21 +8,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install and Test
-        env:
-          HF_TOKEN: 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
         run: |
           pip install -q gradio_client
           
           python3 << 'PYEOF'
           from gradio_client import Client
-          import os
-          
-          hf_token = os.environ["HF_TOKEN"]
           
           print("🔌 اتصال به Space تستی...")
           try:
               client = Client("gradio/hello_world")
-              result = client.predict(api_name="/predict")
+              result = client.predict(name="دیپ سیک و هادی", api_name="/predict")
               print(f"✅ جواب گرفتیم: {result}")
           except Exception as e:
               print(f"❌ خطا: {e}")
