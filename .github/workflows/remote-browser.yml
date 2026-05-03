@@ -1,0 +1,34 @@
+name: Remote Browser Access
+
+on:
+  workflow_dispatch:
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Desktop & Browser
+        run: |
+          sudo apt-get update
+          # نصب یک دسکتاپ خیلی سبک و فایرفاکس
+          sudo apt-get install -y xfce4 xfce4-goodies firefox x11vnc
+
+      - name: Start VNC Server
+        run: |
+          # راه‌اندازی دسکتاپ مجازی
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x720x16 &
+          startxfce4 &
+          x11vnc -display :99 -N -forever -shared &
+
+      - name: Create SSH Tunnel (Bypass Censorship)
+        run: |
+          # نصب ابزار SSH
+          sudo apt-get install -y openssh-client
+          
+          # ایجاد تونل امن روی پورت 80 با استفاده از localhost.run (دامنه کمتر شناخته شده)
+          # این کار ترافیک VNC رو روی پورت 5900 به یک لینک عمومی HTTP مپ می‌کنه
+          ssh -o StrictHostKeyChecking=no -R 80:localhost:5900 nokey@localhost.run
+          
+          # نکته: این دستور در foreground اجرا میشه و لینک رو چاپ می‌کنه.
+          # جاب (Job) ما 6 ساعت مهلت داره.
