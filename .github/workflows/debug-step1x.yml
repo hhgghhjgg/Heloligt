@@ -1,0 +1,41 @@
+name: Debug Step1X-3D API
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install
+        run: pip install -q gradio_client
+
+      - name: Show API info
+        run: |
+          python3 << 'PYEOF'
+          from gradio_client import Client
+          import json
+
+          client = Client("stepfun-ai/Step1X-3D")
+          info = client.view_api(return_format="dict")
+
+          print("===== FULL API INFO =====")
+          print(json.dumps(info, indent=2, ensure_ascii=False))
+
+          with open("step1x_api_info.json", "w", encoding="utf-8") as f:
+              json.dump(info, f, indent=2, ensure_ascii=False)
+          PYEOF
+
+      - name: Commit
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@github.com"
+          git add step1x_api_info.json
+          git commit -m "Step1X-3D API info" || true
+          git pull --rebase && git push || true
