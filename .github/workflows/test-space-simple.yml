@@ -19,10 +19,9 @@ jobs:
           
           hf_token = os.environ["HF_TOKEN"]
           
-          # یه Space ساده که فقط echo میکنه
           print("🔌 اتصال به Space تستی...")
           try:
-              client = Client("gradio/hello_world", hf_token=hf_token)
+              client = Client("gradio/hello_world")
               result = client.predict(api_name="/predict")
               print(f"✅ جواب گرفتیم: {result}")
           except Exception as e:
