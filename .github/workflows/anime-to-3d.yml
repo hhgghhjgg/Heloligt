@@ -1,4 +1,4 @@
-name: Anime to 3D Final Working
+name: Anime to 3D Final Fix
 
 on:
   workflow_dispatch:
@@ -59,7 +59,6 @@ jobs:
               api_name="/run"
           )
 
-          # result is tuple: (gallery_list, metadata_dict)
           gallery = result[0]
           image_path = gallery[0]['image']
           shutil.copy(image_path, "anime_original.png")
@@ -76,17 +75,16 @@ jobs:
           client = Client("tencent/Hunyuan3D-2")
 
           result = client.predict(
-              "anime character",                # caption
-              handle_file("anime_original.png"), # image
-              25,                               # steps
-              6,                                # guidance_scale
-              42,                               # seed
-              "256",                            # octree_resolution
-              True,                             # check_box_rembg
+              caption="anime character",
+              image=handle_file("anime_original.png"),
+              steps=25.0,
+              guidance_scale=6.0,
+              seed=42.0,
+              octree_resolution="256",
+              check_box_rembg=True,
               api_name="/shape_generation"
           )
 
-          # result is tuple: (glb_path, obj_path, html_path)
           glb_path = result[0]
           shutil.copy(glb_path, "anime_model.glb")
           print("✅ 3D model saved.")
