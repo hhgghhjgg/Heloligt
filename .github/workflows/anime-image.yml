@@ -1,0 +1,78 @@
+name: Generate Anime Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'توضیحات کاراکتر انیمه‌ای (انگلیسی)'
+        required: true
+        default: '1girl, solo, long hair, blue eyes, detailed kimono, cherry blossoms, masterpiece, best quality'
+      negative_prompt:
+        description: 'چیزهایی که نمی‌خواهید'
+        required: false
+        default: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry'
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -q gradio_client
+
+      - name: Generate anime image
+        env:
+          PROMPT: ${{ inputs.prompt }}
+          NEGATIVE_PROMPT: ${{ inputs.negative_prompt }}
+        run: |
+          python3 << 'PYEOF'
+          import os, shutil
+          from gradio_client import Client
+
+          prompt = os.environ["PROMPT"]
+          neg_prompt = os.environ["NEGATIVE_PROMPT"]
+
+          print("🎨 Generating anime image...")
+          client = Client("cagliostrolab/animagine-xl-3.1")
+
+          result = client.predict(
+              prompt,
+              neg_prompt,
+              42,                      # seed
+              1024,                    # width
+              1024,                    # height
+              7,                       # guidance_scale
+              28,                      # num_inference_steps
+              "DPM++ 2M Karras",       # sampler
+              "1024 x 1024",           # aspect_ratio
+              "(None)",                # style_preset
+              "Standard v3.1",         # quality_tags_presets
+              False,                   # use_upscaler
+              0.5,                     # strength
+              1.0,                     # upscale_by
+              True,                    # add_quality_tags
+              api_name="/run"
+          )
+
+          # result is tuple: (gallery_list, metadata_dict)
+          gallery = result[0]
+          image_path = gallery[0]['image']
+          shutil.copy(image_path, "anime_output.png")
+          print("✅ Image saved: anime_output.png")
+          PYEOF
+
+      - name: Commit and push image
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add anime_output.png
+          git commit -m "🎨 New anime image | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
+          echo "✅ Done!"
