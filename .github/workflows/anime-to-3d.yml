@@ -1,4 +1,4 @@
-name: Anime Image → 3D Model (Fixed API)
+name: Anime Image → 3D Model (Fixed Positional)
 
 on:
   workflow_dispatch:
@@ -40,25 +40,27 @@ jobs:
 
           client = Client("cagliostrolab/animagine-xl-3.1")
           
-          # از api_name="/run" که توسط info فضا تأیید شده استفاده می‌کنیم
+          # به ترتیب positional طبق info فضا:
+          # prompt, negative_prompt, seed, width, height, guidance_scale,
+          # num_inference_steps, sampler, aspect_ratio, style_preset, quality_tags_presets
           result = client.predict(
-              prompt=prompt,
-              negative_prompt=neg_prompt,
-              seed=42,
-              width=1024,
-              height=1024,
-              guidance_scale=7,
-              num_inference_steps=28,
-              sampler="DPM++ 2M Karras",
-              aspect_ratio="1024 x 1024",
-              style_preset="(None)",
-              quality_tags_presets="Standard v3.1",
+              prompt,               # 1
+              neg_prompt,           # 2
+              42,                   # 3 seed
+              1024,                 # 4 width
+              1024,                 # 5 height
+              7,                    # 6 guidance_scale
+              28,                   # 7 num_inference_steps
+              "DPM++ 2M Karras",    # 8 sampler
+              "1024 x 1024",        # 9 aspect_ratio
+              "(None)",             # 10 style_preset
+              "Standard v3.1",      # 11 quality_tags_presets
               api_name="/run"
           )
           
-          # نتیجه یک مسیر فایل موقت است
+          # result مسیر فایل تصویر خروجی است
           shutil.copy(result, "anime_original.png")
-          print(f"✅ تصویر اصلی ذخیره شد: anime_original.png")
+          print("✅ تصویر انیمه ذخیره شد: anime_original.png")
           PYEOF
 
       - name: 2. Convert to 3D Model (Hunyuan3D-2)
@@ -68,30 +70,32 @@ jobs:
           import os, shutil
           from gradio_client import Client, handle_file
 
-          # از api_name="/shape_generation" که توسط info فضا تأیید شده استفاده می‌کنیم
           client = Client("tencent/Hunyuan3D-2")
+          
+          # به ترتیب positional طبق info:
+          # caption, image, steps, guidance_scale, seed, octree_resolution, check_box_rembg
           result = client.predict(
-              caption="anime character",
-              image=handle_file("anime_original.png"),
-              steps=25,
-              guidance_scale=6,
-              seed=42,
-              octree_resolution="256",
-              check_box_rembg=True,
+              "anime character",              # 1 caption
+              handle_file("anime_original.png"), # 2 image
+              25,                             # 3 steps
+              6,                              # 4 guidance_scale
+              42,                             # 5 seed
+              "256",                          # 6 octree_resolution
+              True,                           # 7 check_box_rembg
               api_name="/shape_generation"
           )
 
           print(f"خروجی مدل سه‌بعدی: {result}")
-          # خروجی یک تاپل (glb_path, obj_path, html_viewer) است
-          if isinstance(result, tuple) and len(result) >= 2:
+          # خروجی یک tuple (glb_path, obj_path, html_viewer) است
+          if isinstance(result, tuple) and len(result) >= 1:
               glb_path = result[0]
               if glb_path and isinstance(glb_path, str) and glb_path.endswith('.glb'):
                   shutil.copy(glb_path, "anime_model.glb")
-                  print("✅ مدل نهایی ذخیره شد: anime_model.glb")
+                  print("✅ مدل سه‌بعدی ذخیره شد: anime_model.glb")
               else:
-                  print("⚠️ خروجی اول یک فایل glb معتبر نبود.")
+                  print("⚠️ اولین خروجی یک فایل glb معتبر نبود.")
           else:
-              print("⚠️ ساختار خروجی غیرمنتظره بود. کل خروجی چاپ شد.")
+              print("⚠️ ساختار خروجی غیرمنتظره. کل خروجی چاپ شد.")
           PYEOF
 
       - name: 3. Commit and Push Results
@@ -100,6 +104,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add anime_original.png anime_model.glb 2>/dev/null || true
-          git commit -m "🎨 تولید تصویر انیمه و مدل سه‌بعدی | $(date '+%H:%M:%S')" || echo "چیزی برای کامیت نبود"
+          git commit -m "🎨 تصویر انیمه + مدل سه‌بعدی | $(date '+%H:%M:%S')" || echo "چیزی برای کامیت نبود"
           git push || (git pull --rebase && git push)
-          echo "✅ فرآیند تکمیل شد!"
+          echo "✅ همه چیز تمام شد!"
