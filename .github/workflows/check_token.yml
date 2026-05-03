@@ -1,0 +1,98 @@
+name: Check HF Token Scopes
+
+on:
+  workflow_dispatch:
+    inputs:
+      token:
+        description: 'Hugging Face Token برای بررسی'
+        required: true
+        default: ''
+
+jobs:
+  check-scopes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: بررسی اطلاعات توکن
+        env:
+          HF_TOKEN: ${{ inputs.token }}
+        run: |
+          echo "========================================="
+          echo "🔍 شروع بررسی توکن Hugging Face"
+          echo "========================================="
+          
+          # 1. گرفتن اطلاعات کاربر
+          echo ""
+          echo "📌 1. اطلاعات صاحب توکن:"
+          USER_INFO=$(curl -s -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/whoami)
+          USERNAME=$(echo $USER_INFO | python3 -c "import sys,json; print(json.load(sys.stdin).get('name','نامشخص'))")
+          echo "   نام کاربری: $USERNAME"
+          echo "   اطلاعات کامل: $USER_INFO"
+          
+          # 2. بررسی دسترسی خواندن مدل‌ها
+          echo ""
+          echo "📌 2. تست دسترسی خواندن (Read):"
+          READ_TEST=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/models/gpt2)
+          if [ "$READ_TEST" == "200" ]; then
+            echo "   ✅ دسترسی خواندن: فعال (کد $READ_TEST)"
+          else
+            echo "   ❌ دسترسی خواندن: غیرفعال (کد $READ_TEST)"
+          fi
+          
+          # 3. بررسی دسترسی نوشتن
+          echo ""
+          echo "📌 3. تست دسترسی نوشتن (Write):"
+          # ساخت یه ریکوئست تستی برای بررسی write
+          WRITE_TEST=$(curl -s -X POST -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $HF_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"key":"test"}' \
+            "https://huggingface.co/api/repos/create?name=test-token-check-$(date +%s)&type=model&private=true")
+          if [ "$WRITE_TEST" == "200" ]; then
+            echo "   ✅ دسترسی نوشتن: فعال - می‌تونی مدل/دیتاست بسازی (کد $WRITE_TEST)"
+          elif [ "$WRITE_TEST" == "400" ]; then
+            echo "   ⚠️ احتمالاً دسترسی نوشتن فعاله ولی یه خطای جزئی رخ داد (کد $WRITE_TEST)"
+          else
+            echo "   ❌ دسترسی نوشتن: غیرفعال (کد $WRITE_TEST)"
+          fi
+          
+          # 4. بررسی دسترسی به Spaces
+          echo ""
+          echo "📌 4. تست دسترسی به Spaces:"
+          SPACES_LIST=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/spaces)
+          if [ "$SPACES_LIST" == "200" ]; then
+            echo "   ✅ دسترسی به Spaces: فعال (کد $SPACES_LIST)"
+          else
+            echo "   ❌ دسترسی به Spaces: غیرفعال (کد $SPACES_LIST)"
+          fi
+          
+          # 5. بررسی دسترسی به Inference API
+          echo ""
+          echo "📌 5. تست دسترسی به Inference API:"
+          INFERENCE_TEST=$(curl -s -X POST -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $HF_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"inputs":"Hello"}' \
+            "https://api-inference.huggingface.co/models/gpt2")
+          if [ "$INFERENCE_TEST" == "200" ]; then
+            echo "   ✅ Inference API: فعال (کد $INFERENCE_TEST)"
+          elif [ "$INFERENCE_TEST" == "503" ]; then
+            echo "   ⚠️ Inference API: فعاله اما مدل در حال بارگذاریه (کد $INFERENCE_TEST)"
+          else
+            echo "   ❌ Inference API: غیرفعال یا محدود (کد $INFERENCE_TEST)"
+          fi
+          
+          # 6. بررسی سازمان‌ها (Orgs)
+          echo ""
+          echo "📌 6. سازمان‌های مرتبط:"
+          ORGS=$(curl -s -H "Authorization: Bearer $HF_TOKEN" https://huggingface.co/api/whoami | python3 -c "import sys,json; orgs=json.load(sys.stdin).get('orgs',[]); print(json.dumps(orgs, indent=2))")
+          echo "   $ORGS"
+          
+          echo ""
+          echo "========================================="
+          echo "✅ بررسی کامل شد!"
+          echo "========================================="
+
+      - name: هشدار امنیتی
+        run: |
+          echo "⚠️  یادت باشه توکن رو بعد از تست از جای امن پاک کنی!"
+          echo "⚠️  هیچوقت توکن رو توی کد هاردکد نکن!"
