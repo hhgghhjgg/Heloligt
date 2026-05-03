@@ -1,16 +1,16 @@
-name: Anime Image → 3D Model (Auto-detect API)
+name: Anime Image → 3D Model (Really Fixed)
 
 on:
   workflow_dispatch:
     inputs:
       prompt:
-        description: 'توضیحات کاراکتر انیمه‌ای (انگلیسی)'
+        description: 'پرامپت (انگلیسی)'
         required: true
         default: '1girl, solo, long hair, blue eyes, detailed kimono, cherry blossoms, masterpiece, best quality'
       negative_prompt:
-        description: 'چیزایی که نمی‌خوای'
+        description: 'پرامپت منفی'
         required: false
-        default: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry'
+        default: 'lowres, bad anatomy, bad hands, text, error, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry'
 
 permissions:
   contents: write
@@ -25,14 +25,14 @@ jobs:
       - name: Install Dependencies
         run: pip install -q gradio_client pillow
 
-      - name: 1. Generate Anime Image (Auto-detect API)
+      - name: Generate Anime Image
         env:
           PROMPT: ${{ inputs.prompt }}
           NEGATIVE_PROMPT: ${{ inputs.negative_prompt }}
         run: |
           echo "🎨 مرحله ۱: ساخت تصویر انیمه‌ای..."
           python3 << 'PYEOF'
-          import os, shutil, json
+          import os, shutil
           from gradio_client import Client
 
           prompt = os.environ["PROMPT"]
@@ -40,162 +40,77 @@ jobs:
 
           client = Client("cagliostrolab/animagine-xl-3.1")
           
-          # ۱. اول endpoint ها رو کامل چاپ کن
-          print("🔍 بررسی ساختار Space...")
-          info = client.view_api(return_format="dict")
-          
-          # endpoint مورد نظر رو پیدا کن
-          target_endpoint = None
-          for name, endpoint in info.get("named_endpoints", {}).items():
-              print(f"  ✓ endpoint: /{name}")
-              params = endpoint.get("parameters", [])
-              print(f"    پارامترها: {len(params)} عدد")
-              for i, p in enumerate(params):
-                  print(f"      [{i}] {p.get('parameter_name')} ({p.get('type')}) - required={p.get('required')}")
-              if "run" in name.lower() or "predict" in name.lower() or len(params) >= 11:
-                  target_endpoint = name
-          
-          if not target_endpoint:
-              # اولین endpoint رو بردار
-              target_endpoint = list(info.get("named_endpoints", {}).keys())[0]
-          
-          print(f"\n🎯 استفاده از endpoint: /{target_endpoint}")
-          
-          # ۲. حالا endpoint مورد نظر رو دقیق اسکن کن
-          endpoint_info = info["named_endpoints"][target_endpoint]
-          params = endpoint_info["parameters"]
-          
-          # ۳. خونه‌های ورودی رو تشخیص بده
-          inputs = []
-          arg_index = 0
-          for p in params:
-              param_name = p.get("parameter_name", "")
-              param_type = p.get("type", "")
-              
-              # تشخیص اینکه کدوم پارامتر prompt هست
-              if "prompt" in param_name.lower() and arg_index == 0:
-                  inputs.append(prompt)
-                  print(f"  📝 arg[{arg_index}] = prompt: '{prompt[:80]}...'")
-              elif "negative" in param_name.lower():
-                  inputs.append(neg_prompt)
-                  print(f"  📝 arg[{arg_index}] = negative_prompt")
-              elif "seed" in param_name.lower():
-                  inputs.append(42)
-                  print(f"  📝 arg[{arg_index}] = seed=42")
-              elif "width" in param_name.lower():
-                  inputs.append(1024)
-                  print(f"  📝 arg[{arg_index}] = width=1024")
-              elif "height" in param_name.lower():
-                  inputs.append(1024)
-                  print(f"  📝 arg[{arg_index}] = height=1024")
-              elif "guidance" in param_name.lower() or "cfg" in param_name.lower():
-                  inputs.append(7)
-                  print(f"  📝 arg[{arg_index}] = guidance=7")
-              elif "step" in param_name.lower() or "inference" in param_name.lower():
-                  inputs.append(28)
-                  print(f"  📝 arg[{arg_index}] = steps=28")
-              elif "sampler" in param_name.lower():
-                  inputs.append("DPM++ 2M Karras")
-                  print(f"  📝 arg[{arg_index}] = sampler")
-              elif "aspect" in param_name.lower() or "ratio" in param_name.lower():
-                  inputs.append("1024 x 1024")
-                  print(f"  📝 arg[{arg_index}] = aspect")
-              elif "style" in param_name.lower() or "preset" in param_name.lower():
-                  inputs.append("(None)")
-                  print(f"  📝 arg[{arg_index}] = style")
-              elif "quality" in param_name.lower() or "tag" in param_name.lower():
-                  inputs.append("Standard v3.1")
-                  print(f"  📝 arg[{arg_index}] = quality")
-              else:
-                  # برای پارامترهای ناشناخته، مقدار پیش‌فرض رو بده
-                  default = p.get("default", None)
-                  if default is not None:
-                      inputs.append(default)
-                      print(f"  📝 arg[{arg_index}] = default={default}")
-                  elif param_type == "number":
-                      inputs.append(0)
-                      print(f"  📝 arg[{arg_index}] = 0 (number)")
-                  elif param_type == "boolean":
-                      inputs.append(True)
-                      print(f"  📝 arg[{arg_index}] = True (bool)")
-                  else:
-                      inputs.append("")
-                      print(f"  📝 arg[{arg_index}] = '' (string)")
-              
-              arg_index += 1
-          
-          # ۴. اجرای predict با تعداد صحیح پارامتر
-          print(f"\n🚀 ارسال درخواست با {len(inputs)} پارامتر...")
-          result = client.predict(*inputs, api_name=f"/{target_endpoint}")
+          result = client.predict(
+              prompt=prompt,
+              negative_prompt=neg_prompt,
+              seed=42,
+              width=1024,
+              height=1024,
+              guidance_scale=7,
+              num_inference_steps=28,
+              sampler="DPM++ 2M Karras",
+              aspect_ratio="1024 x 1024",
+              style_preset="(None)",
+              quality_tags_presets="Standard v3.1",
+              use_upscaler=False,
+              strength=0.5,
+              upscale_by=1.0,
+              add_quality_tags=True,
+              api_name="/predict"
+          )
           
           shutil.copy(result, "anime_original.png")
           print("✅ تصویر انیمه ذخیره شد: anime_original.png")
           PYEOF
 
-      - name: 2. Convert to 3D Model (Hunyuan3D-2)
+      - name: Convert to 3D Model
         run: |
           echo "🧊 مرحله ۲: تبدیل به مدل سه‌بعدی..."
           python3 << 'PYEOF'
-          import os, shutil
+          import shutil
           from gradio_client import Client, handle_file
 
           client = Client("tencent/Hunyuan3D-2")
           
-          # auto-detect coordinates for Hunyuan
-          info = client.view_api(return_format="dict")
-          endpoint_name = list(info.get("named_endpoints", {}).keys())[0]
-          params = info["named_endpoints"][endpoint_name]["parameters"]
-          
-          inputs = []
-          for p in params:
-              pname = p.get("parameter_name", "").lower()
-              ptype = p.get("type", "")
-              
-              if "caption" in pname or "prompt" in pname or "text" in pname:
-                  inputs.append("anime character")
-              elif "image" in pname:
-                  inputs.append(handle_file("anime_original.png"))
-              elif "step" in pname:
-                  inputs.append(25)
-              elif "guidance" in pname or "cfg" in pname:
-                  inputs.append(6)
-              elif "seed" in pname:
-                  inputs.append(42)
-              elif "octree" in pname or "resolution" in pname:
-                  inputs.append("256")
-              elif "rembg" in pname or "background" in pname:
-                  inputs.append(True)
-              else:
-                  default = p.get("default", None)
-                  if default is not None:
-                      inputs.append(default)
-                  elif ptype == "number":
-                      inputs.append(0)
-                  elif ptype == "boolean":
-                      inputs.append(True)
-                  else:
-                      inputs.append("")
-          
-          print(f"پارامترهای Hunyuan3D-2: {len(inputs)} عدد")
-          result = client.predict(*inputs, api_name=f"/{endpoint_name}")
+          result = client.predict(
+              caption="anime character",
+              image=handle_file("anime_original.png"),
+              steps=25,
+              guidance_scale=6,
+              seed=42,
+              octree_resolution="256",
+              check_box_rembg=True,
+              api_name="/shape_generation"
+          )
+
+          print(f"خروجی مدل سه‌بعدی: {result}")
           
           if isinstance(result, tuple) and len(result) >= 1:
-              glb_path = result[0]
-              if glb_path and isinstance(glb_path, str) and glb_path.endswith('.glb'):
-                  shutil.copy(glb_path, "anime_model.glb")
+              glb_file = result[0]
+              if glb_file and isinstance(glb_file, str) and glb_file.endswith('.glb'):
+                  shutil.copy(glb_file, "anime_model.glb")
                   print("✅ مدل سه‌بعدی ذخیره شد: anime_model.glb")
               else:
-                  print(f"⚠️ خروجی اول glb نیست: {glb_path}")
+                  print(f"⚠️ خروجی اول glb نیست: {glb_file}")
+                  # شاید ساختار خروجی متفاوت باشه
+                  if isinstance(result, str) and result.endswith('.glb'):
+                      shutil.copy(result, "anime_model.glb")
+                      print("✅ مدل سه‌بعدی (از خروجی مستقیم) ذخیره شد")
+          elif isinstance(result, str) and result.endswith('.glb'):
+              shutil.copy(result, "anime_model.glb")
+              print("✅ مدل سه‌بعدی ذخیره شد: anime_model.glb")
           else:
               print(f"⚠️ خروجی غیرمنتظره - نوع: {type(result)}")
+              with open("output_info.txt", "w") as f:
+                  f.write(str(result))
           PYEOF
 
-      - name: 3. Commit Results
+      - name: Commit and Push Results
         run: |
-          echo "📤 ذخیره نتایج..."
+          echo "📤 ذخیره نتایج در ریپازیتوری..."
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add anime_original.png anime_model.glb 2>/dev/null || true
-          git commit -m "🎨 تولید خودکار تصویر و مدل سه‌بعدی | $(date '+%H:%M:%S')" || echo "چیزی برای کامیت نبود"
-          git pull --rebase && git push || echo "Push انجام نشد"
-          echo "✅ تمام!"
+          git add anime_original.png anime_model.glb output_info.txt 2>/dev/null || true
+          git commit -m "🎨 تصویر انیمه و مدل سه‌بعدی | $(date '+%H:%M:%S')" || echo "چیزی برای کامیت نبود"
+          git pull --rebase && git push || echo "Push ناموفق"
+          echo "✅ فرآیند تکمیل شد!"
