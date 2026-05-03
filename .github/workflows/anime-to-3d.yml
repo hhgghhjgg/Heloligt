@@ -1,4 +1,4 @@
-name: Anime to 3D Final (Positional)
+name: Anime to 3D Final Working
 
 on:
   workflow_dispatch:
@@ -25,13 +25,13 @@ jobs:
       - name: Install dependencies
         run: pip install -q gradio_client pillow
 
-      - name: Generate anime image
+      - name: Generate anime image with Animagine XL
         env:
           PROMPT: ${{ inputs.prompt }}
           NEGATIVE_PROMPT: ${{ inputs.negative_prompt }}
         run: |
           python3 << 'PYEOF'
-          import os, shutil, json
+          import os, shutil
           from gradio_client import Client
 
           prompt = os.environ["PROMPT"]
@@ -59,24 +59,14 @@ jobs:
               api_name="/run"
           )
 
-          # The result is a gallery (list of dicts with 'image' key)
-          if isinstance(result, list) and len(result) > 0:
-              img_path = result[0].get('image')
-              if img_path:
-                  shutil.copy(img_path, "anime_original.png")
-                  print("✅ Anime image saved.")
-              else:
-                  raise RuntimeError("No image key in gallery")
-          elif isinstance(result, str) and result.endswith(('.png', '.jpg', '.webp')):
-              shutil.copy(result, "anime_original.png")
-              print("✅ Direct image saved.")
-          else:
-              with open("debug_animagine.json", "w") as f:
-                  json.dump(result, f)
-              raise RuntimeError("Unexpected result from Animagine. See debug_animagine.json")
+          # result is tuple: (gallery_list, metadata_dict)
+          gallery = result[0]
+          image_path = gallery[0]['image']
+          shutil.copy(image_path, "anime_original.png")
+          print("✅ Anime image saved.")
           PYEOF
 
-      - name: Convert to 3D model
+      - name: Convert to 3D with Hunyuan3D-2
         run: |
           python3 << 'PYEOF'
           import shutil
@@ -96,31 +86,17 @@ jobs:
               api_name="/shape_generation"
           )
 
-          # Standard output: tuple (glb_path, obj_path, html_path)
-          glb_saved = False
-          if isinstance(result, tuple):
-              for item in result:
-                  if isinstance(item, str) and item.endswith('.glb'):
-                      shutil.copy(item, "anime_model.glb")
-                      glb_saved = True
-                      print("✅ 3D model saved.")
-                      break
-          elif isinstance(result, str) and result.endswith('.glb'):
-              shutil.copy(result, "anime_model.glb")
-              glb_saved = True
-              print("✅ 3D model from string.")
-
-          if not glb_saved:
-              with open("debug_hunyuan.txt", "w") as f:
-                  f.write(str(result))
-              print("❌ No GLB found. Debug saved to debug_hunyuan.txt.")
+          # result is tuple: (glb_path, obj_path, html_path)
+          glb_path = result[0]
+          shutil.copy(glb_path, "anime_model.glb")
+          print("✅ 3D model saved.")
           PYEOF
 
       - name: Commit and push results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add anime_original.png anime_model.glb debug_*.json debug_*.txt 2>/dev/null || true
-          git commit -m "🎨 New anime 3D generation | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git add anime_original.png anime_model.glb
+          git commit -m "🎨 Anime image + 3D model | $(date '+%H:%M:%S')" || echo "Nothing to commit"
           git pull --rebase && git push
-          echo "✅ Finished."
+          echo "✅ Workflow finished."
