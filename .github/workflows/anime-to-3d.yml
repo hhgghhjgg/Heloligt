@@ -1,4 +1,4 @@
-name: Anime to 3D Final Fixed
+name: Anime to 3D Robust Final
 
 on:
   workflow_dispatch:
@@ -65,11 +65,36 @@ jobs:
           print("✅ Anime image saved.")
           PYEOF
 
-      - name: Convert to 3D with Hunyuan3D-2
+      - name: Convert to 3D with Hunyuan3D-2 (robust extraction)
         run: |
           python3 << 'PYEOF'
-          import shutil
+          import shutil, json, os
           from gradio_client import Client, handle_file
+
+          def find_glb_file(data, path_prefix=""):
+              """بازگشتی می‌گردد و اولین فایل GLB را برمی‌گرداند"""
+              if isinstance(data, str) and data.endswith('.glb'):
+                  return data
+              elif isinstance(data, (list, tuple)):
+                  for item in data:
+                      found = find_glb_file(item)
+                      if found:
+                          return found
+              elif isinstance(data, dict):
+                  for key, value in data.items():
+                      if isinstance(value, str) and value.endswith('.glb'):
+                          return value
+                      # شاید کلید "file" یا "path" مقدارش یک مسیر فایل باشد
+                      if key in ('file', 'path', 'filename', 'name') and isinstance(value, str):
+                          # اگر پسوند glb داشت که عالی
+                          if value.endswith('.glb'):
+                              return value
+                          # در غیر این صورت شاید فایلی با مسیر کامل نباشد؛ ادامه بده
+                      # جستجوی عمیق در value
+                      found = find_glb_file(value)
+                      if found:
+                          return found
+              return None
 
           print("🧊 Converting to 3D...")
           client = Client("tencent/Hunyuan3D-2")
@@ -85,16 +110,25 @@ jobs:
               api_name="/shape_generation"
           )
 
-          glb_path = result[0]
-          shutil.copy(glb_path, "anime_model.glb")
-          print("✅ 3D model saved.")
+          print("Conversion result type:", type(result))
+          # ذخیره خروجی خام برای بررسی دستی (در صورت نیاز)
+          with open("hunyuan_raw_output.json", "w") as f:
+              json.dump(str(result), f)
+
+          glb_path = find_glb_file(result)
+          if glb_path and os.path.exists(glb_path):
+              shutil.copy(glb_path, "anime_model.glb")
+              print("✅ 3D model saved.")
+          else:
+              print("⚠️ GLB file not found automatically. Check hunyuan_raw_output.json")
+              exit(1)
           PYEOF
 
       - name: Commit and push results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add anime_original.png anime_model.glb
+          git add anime_original.png anime_model.glb hunyuan_raw_output.json 2>/dev/null || true
           git commit -m "🎨 Anime image + 3D model | $(date '+%H:%M:%S')" || echo "Nothing to commit"
           git pull --rebase && git push
           echo "✅ Workflow finished."
