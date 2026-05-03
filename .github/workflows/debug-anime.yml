@@ -1,0 +1,62 @@
+name: Anime to 3D Debug
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'پرامپت'
+        required: true
+        default: '1girl, solo, long hair, blue eyes, detailed kimono, cherry blossoms, masterpiece, best quality'
+      negative_prompt:
+        description: 'پرامپت منفی'
+        required: false
+        default: 'lowres, bad anatomy, bad hands, text, error, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry'
+
+permissions:
+  contents: write
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install
+        run: pip install -q gradio_client
+
+      - name: Debug Animagine
+        env:
+          PROMPT: ${{ inputs.prompt }}
+          NEGATIVE_PROMPT: ${{ inputs.negative_prompt }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json
+          from gradio_client import Client
+
+          client = Client("cagliostrolab/animagine-xl-3.1")
+
+          prompt = os.environ["PROMPT"]
+          neg = os.environ["NEGATIVE_PROMPT"]
+
+          result = client.predict(
+              prompt, neg, 42, 1024, 1024, 7, 28,
+              "DPM++ 2M Karras", "1024 x 1024", "(None)",
+              "Standard v3.1", False, 0.5, 1.0, True,
+              api_name="/run"
+          )
+
+          print("TYPE:", type(result))
+          print("REPR:", repr(result))
+          
+          with open("debug_result.json", "w") as f:
+              json.dump(result if isinstance(result, (dict, list)) else str(result), f)
+          PYEOF
+
+      - name: Commit
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@github.com"
+          git add debug_result.json
+          git commit -m "Debug output" || true
+          git pull --rebase && git push || true
