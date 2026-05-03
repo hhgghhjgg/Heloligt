@@ -1,0 +1,156 @@
+name: Anime Image → 3D Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'توضیحات کاراکتر انیمه‌ای (انگلیسی)'
+        required: true
+        default: '1girl, solo, long hair, blue eyes, detailed kimono, cherry blossoms, masterpiece, best quality'
+      negative_prompt:
+        description: 'چیزایی که نمی‌خوای'
+        required: false
+        default: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry'
+
+permissions:
+  contents: write
+
+jobs:
+  image-to-3d:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          pip install -q gradio_client pillow rembg trimesh numpy
+
+      - name: Generate Anime Image
+        env:
+          PROMPT: ${{ inputs.prompt }}
+          NEGATIVE_PROMPT: ${{ inputs.negative_prompt }}
+        run: |
+          python3 << 'PYEOF'
+          from gradio_client import Client
+          import os
+          import json
+          
+          prompt = os.environ["PROMPT"]
+          negative_prompt = os.environ["NEGATIVE_PROMPT"]
+          
+          print("🎨 مرحله ۱: ساخت تصویر انیمه‌ای...")
+          print(f"پرامپت: {prompt}")
+          
+          # تنظیمات حرفه‌ای برای بهترین کیفیت
+          client = Client("cagliostrolab/animagine-xl-3.1")
+          
+          result = client.predict(
+              prompt=prompt,
+              negative_prompt=negative_prompt,
+              width=1024,
+              height=1024,
+              num_inference_steps=30,
+              guidance_scale=7,
+              seed=42,
+              api_name="/predict"
+          )
+          
+          # ذخیره عکس اصلی
+          import shutil
+          shutil.copy(result, "anime_original.png")
+          print(f"✅ تصویر اصلی ساخته شد")
+          PYEOF
+
+      - name: Remove Background
+        run: |
+          python3 << 'PYEOF'
+          from rembg import remove
+          from PIL import Image
+          
+          print("✂️ مرحله ۲: حذف پس‌زمینه برای بهبود ۳D...")
+          
+          img = Image.open("anime_original.png")
+          output = remove(img)
+          output.save("anime_nobg.png")
+          print("✅ پس‌زمینه حذف شد و ذخیره گردید")
+          PYEOF
+
+      - name: Convert to 3D Model
+        env:
+          PROMPT_3D: ${{ inputs.prompt }}
+        run: |
+          python3 << 'PYEOF'
+          from gradio_client import Client, handle_file
+          import time
+          import os
+          import shutil
+          
+          print("🧊 مرحله ۳: تبدیل به مدل سه‌بعدی با Hunyuan3D-2...")
+          print("⏳ این مرحله حدود ۲-۳ دقیقه طول می‌کشه...")
+          
+          client = Client("tencent/Hunyuan3D-2")
+          
+          try:
+              result = client.predict(
+                  image=handle_file("anime_nobg.png"),
+                  prompt=os.environ.get("PROMPT_3D", "anime character"),
+                  steps=25,
+                  guidance_scale=6,
+                  seed=42,
+                  api_name="/predict"
+              )
+              
+              print(f"📦 خروجی: {result}")
+              
+              # معمولاً یک دیکشنری یا تاپل برمی‌گردونه
+              if isinstance(result, str) and result.endswith(('.glb', '.gltf', '.obj')):
+                  shutil.copy(result, "anime_model.glb")
+                  print(f"✅ مدل سه‌بعدی ذخیره شد: anime_model.glb")
+              elif isinstance(result, dict):
+                  # بعضی وقتا کلید have 'model' یا یه چیز مشابه
+                  for key, value in result.items():
+                      if isinstance(value, str) and value.endswith(('.glb', '.gltf', '.obj')):
+                          shutil.copy(value, f"anime_model_{key}.glb")
+                          print(f"✅ مدل از کلید {key} ذخیره شد")
+              elif isinstance(result, tuple):
+                  for i, item in enumerate(result):
+                      if isinstance(item, str) and item.endswith(('.glb', '.gltf', '.obj')):
+                          shutil.copy(item, f"anime_model_{i}.glb")
+                          print(f"✅ مدل از ایندکس {i} ذخیره شد")
+              else:
+                  print(f"⚠️ خروجی غیرمنتظره: {type(result)} = {str(result)[:200]}")
+                  # ذخیره خروجی خام
+                  with open("output_info.json", "w") as f:
+                      f.write(str(result))
+              
+          except Exception as e:
+              print(f"❌ خطا در تبدیل: {e}")
+              # سعی دوباره با پارامترهای ساده‌تر
+              print("🔄 تلاش مجدد با پارامترهای پیش‌فرض...")
+              try:
+                  result = client.predict(
+                      image=handle_file("anime_nobg.png"),
+                      api_name="/predict"
+                  )
+                  print(f"📦 خروجی ساده: {result}")
+              except Exception as e2:
+                  print(f"❌ خطای دوم: {e2}")
+          PYEOF
+
+      - name: Commit Results
+        run: |
+          echo "📤 ذخیره نتایج در ریپازیتوری..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # اضافه کردن فایل‌های ساخته شده
+          git add anime_original.png anime_nobg.png 2>/dev/null || true
+          git add anime_model.glb anime_model_*.glb output_info.json 2>/dev/null || true
+          
+          git commit -m "🎨 عکس انیمه و مدل ۳بعدی | $(date '+%H:%M:%S')" || echo "چیزی برای commit نبود"
+          git push || echo "Push ناموفق - تلاش با pull"
+          git pull --rebase || true
+          git push || true
+          
+          echo "✅ کار تمام شد!"
