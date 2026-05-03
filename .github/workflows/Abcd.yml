@@ -1,13 +1,18 @@
-name: Kingofshojo Test
+name: Fetch Any Page with FlareSolverr
 
 on:
   workflow_dispatch:
+    inputs:
+      url:
+        description: 'آدرس کامل صفحه (مثلاً صفحه چپتر یا هر صفحه دیگر)'
+        required: true
+        default: 'https://kingofshojo.com/'
 
 permissions:
   contents: write
 
 jobs:
-  test:
+  fetch:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -35,13 +40,15 @@ jobs:
             sleep 2
           done
 
-      - name: Fetch Kingofshojo homepage
+      - name: Fetch page
+        env:
+          TARGET_URL: ${{ inputs.url }}
         run: |
           python3 << 'PYEOF'
-          import requests, time, os
+          import requests, time, os, re
           from datetime import datetime
 
-          target = "https://kingofshojo.com/"
+          target = os.environ["TARGET_URL"]
 
           url = "http://localhost:8191/v1"
           headers = {"Content-Type": "application/json"}
@@ -51,7 +58,7 @@ jobs:
               "maxTimeout": 180000
           }
 
-          print(f"Fetching {target}")
+          print(f"Fetching: {target}")
           start = time.time()
 
           try:
@@ -60,7 +67,7 @@ jobs:
               data = resp.json()
 
               print(f"Time: {elapsed}s")
-              print(f"Status: {data.get('status')}")
+              print(f"FlareSolverr status: {data.get('status')}")
               print(f"Message: {data.get('message')}")
 
               sol = data.get("solution", {})
@@ -68,29 +75,36 @@ jobs:
               html = sol.get("response", "")
               cookies = sol.get("cookies", [])
 
-              print(f"HTTP Status: {http_status}")
-              print(f"Cookies count: {len(cookies) if isinstance(cookies, list) else 0}")
+              print(f"HTTP status: {http_status}")
 
-              with open("kingofshojo.html", "w", encoding="utf-8") as f:
+              # نام فایل بر اساس URL
+              safe_name = re.sub(r'[^a-zA-Z0-9\u0600-\u06FF_\-\.]', '_', target)
+              if len(safe_name) > 100:
+                  safe_name = safe_name[:100]
+
+              html_filename = f"page_{safe_name}.html"
+              txt_filename = f"result_{safe_name}.txt"
+
+              with open(html_filename, "w", encoding="utf-8") as f:
                   f.write(html if html else "")
 
-              with open("result.txt", "w", encoding="utf-8") as f:
+              with open(txt_filename, "w", encoding="utf-8") as f:
                   f.write(f"URL: {target}\n")
                   f.write(f"Date: {datetime.now()}\n")
                   f.write(f"Time: {elapsed}s\n")
-                  f.write(f"Status: {data.get('status')}\n")
+                  f.write(f"FlareSolverr status: {data.get('status')}\n")
                   f.write(f"Message: {data.get('message')}\n")
-                  f.write(f"HTTP Status: {http_status}\n")
+                  f.write(f"HTTP status: {http_status}\n")
                   f.write(f"Cookies: {cookies}\n\n")
                   f.write("=== HTML (first 3000 chars) ===\n")
                   f.write(html[:3000] if html else "EMPTY")
 
               if http_status == 200 and html:
-                  print("\n✅ SUCCESS - Kingofshojo opened!")
+                  print("✅ SUCCESS")
               elif http_status == 403:
-                  print("\n❌ Blocked by Cloudflare (403)")
+                  print("❌ Blocked by Cloudflare (403)")
               else:
-                  print(f"\n⚠️ HTTP {http_status}")
+                  print(f"⚠️ HTTP {http_status}")
 
           except Exception as e:
               print(f"Error: {e}")
@@ -100,6 +114,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add kingofshojo.html result.txt 2>/dev/null || true
-          git commit -m "Kingofshojo homepage | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git add page_*.html result_*.txt 2>/dev/null || true
+          git commit -m "Fetched ${{ inputs.url }} | $(date '+%H:%M:%S')" || echo "Nothing to commit"
           git pull --rebase && git push || true
