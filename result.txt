@@ -1,94 +1,36 @@
-URL: https://www.mgeko.cc/manga/im-the-king-of-wealth-in-the-three-realms/
-Date: 2026-05-03 15:26:07.010867
-Time: 2.1s
+URL: https://kingofshojo.com/
+Date: 2026-05-03 16:02:55.943578
+Time: 8.7s
 Status: ok
 Message: Challenge not detected!
-HTTP: 200
-Cookies: [{'domain': '.mgeko.cc', 'expiry': 1812381966, 'httpOnly': False, 'name': '_ga', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'GA1.1.807132707.1777821967'}, {'domain': '.mgeko.cc', 'expiry': 1812381966, 'httpOnly': False, 'name': '_ga_P1MBHKW2D4', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'GS2.1.s1777821966$o1$g0$t1777821966$j60$l0$h0'}, {'domain': 'www.mgeko.cc', 'expiry': 1778426766, 'httpOnly': False, 'name': 'vliadbox', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': '1777821966576'}, {'domain': 'www.mgeko.cc', 'expiry': 1778426766, 'httpOnly': False, 'name': 'lnwfontname', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'default'}, {'domain': 'www.mgeko.cc', 'expiry': 1778426766, 'httpOnly': False, 'name': 'nightmode', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': '0'}, {'domain': 'www.mgeko.cc', 'expiry': 1809271566, 'httpOnly': False, 'name': 'csrftoken', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'xn8OByPgnEEGWn6capHNvYV7B4aR0RJx'}]
+HTTP Status: 200
+Cookies: [{'domain': '.kingofshojo.com', 'expiry': 1809360174, 'httpOnly': False, 'name': '_sharedID', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'a3001717-3e3a-46dc-b0d0-b5de3c77c78a'}, {'domain': '.kingofshojo.com', 'expiry': 1809360174, 'httpOnly': False, 'name': '_sharedID_cst', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'zix7LPQsHA%3D%3D'}, {'domain': 'kingofshojo.com', 'expiry': 1811988174, 'httpOnly': False, 'name': 'webgl', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': '4baa4e4aa26153fd13a7be3bc0f9c48e1ab24c48'}, {'domain': '.kingofshojo.com', 'expiry': 1812384173, 'httpOnly': False, 'name': '_ga', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'GA1.1.1157566026.1777824173'}, {'domain': '.kingofshojo.com', 'expiry': 1812384173, 'httpOnly': False, 'name': '_ga_XF9CR28MET', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': 'GS2.1.s1777824173$o1$g0$t1777824173$j60$l0$h0'}, {'domain': 'kingofshojo.com', 'expiry': 1780416174, 'httpOnly': False, 'name': 'X2Wdo13iWT', 'path': '/', 'sameSite': 'Lax', 'secure': False, 'value': '1'}, {'domain': 'kingofshojo.com', 'expiry': 1777860172, 'httpOnly': True, 'name': 'wpdiscuz_nonce_69d72e4d09c35e5bb7c8f4134e737465', 'path': '/', 'sameSite': 'Strict', 'secure': False, 'value': '85169a7e7d'}]
 
-=== HTML (first 5000 chars) ===
-<html lang="en" xml:lang="en" xmlns="http://www.w3.org/1999/xhtml"><head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=5.0">
+=== HTML (first 3000 chars) ===
+<html lang="en-US" prefix="og: https://ogp.me/ns#" data-fp="kina2o67utn"><head><script type="text/javascript" async="" src="https://cdn.id5-sync.com/api/1.0/id5PrebidModule.js"></script>
+    
+	<script async="" data-cfasync="false" src="https://cdn.pubfuture-ad.com/v2/unit/pt.js" type="text/javascript"></script>
+	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+	<meta name="viewport" content="width=device-width">
+		<meta name="theme-color" content="#8224e3">
+	<meta name="msapplication-navbutton-color" content="#8224e3">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-status-bar-style" content="#8224e3">
 
-
-
-
-
-<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<meta charset="utf-8">
-<meta name="title" content="I’m the King of Wealth in the Three Realms [ALL CHAPTERS]">
-<meta name="description" content="I’m the King of Wealth in the Three Realms is a manga/manhwa/manhua written by updating and is updated fast and free on www.mgeko.cc. Enjoy reading online on Mgeko.">
-<meta name="keywords" content="I’m the King of Wealth in the Three Realms, I’m the King of Wealth in the Three Realms raw manga, webtoons, I’m the King of Wealth in the Three Realms chapters, I’m the King of Wealth in the Three Realms read online, I’m the King of Wealth in the Three Realms manhwa, read I’m the King of Wealth in the Three Realms manga chapters,">
-<meta name="mobile-web-app-capable" content="yes">
-<meta property="og:image" content="https://www.mgeko.cc/media/manga_covers/5df4g56dfg46-350x476.png">
-<meta name="image" content="https://www.mgeko.cc/media/manga_covers/5df4g56dfg46-350x476.png">
-<meta itemprop="image" content="https://www.mgeko.cc/media/manga_covers/5df4g56dfg46-350x476.png">
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://www.mgeko.cc/manga/im-the-king-of-wealth-in-the-three-realms/">
-<meta property="og:site_name" content="Mgeko">
-<meta property="og:title" content="[Manga]: Manga I’m the King of Wealth in the Three Realms Read">
-<meta property="og:description" content="I’m the King of Wealth in the Three Realms is a manga/manhwa/manhua written by updating and is updated fast and free on www.mgeko.cc.Enjoy reading Online on Mgeko.">
-<meta property="og:image:secure_url" content="https://www.mgeko.cc/media/manga_covers/5df4g56dfg46-350x476.png">
+<!-- Search Engine Optimization by Rank Math - https://rankmath.com/ -->
+<title>Kingofshojo | The Best Platform For Reading Shoujo And Romance For Free!</title>
+<meta name="description" content="The Best Website For Reading Shoujo and Romance in English.">
+<meta name="robots" content="follow, index, max-snippet:-1, max-video-preview:-1, max-image-preview:large">
+<link rel="canonical" href="https://kingofshojo.com/">
+<link rel="next" href="https://kingofshojo.com/page/2/">
 <meta property="og:locale" content="en_US">
-<meta name="twitter:site" content="Mgeko">
-<meta name="twitter:creator" content="Mgeko">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Kingofshojo | The Best Website For Reading Shoujo and Romance in English.">
+<meta property="og:description" content="The Best Website For Reading Shoujo and Romance in English.">
+<meta property="og:url" content="https://kingofshojo.com/">
+<meta property="og:site_name" content="Kingofshojo">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="[Manga] Manga: I’m the King of Wealth in the Three Realms Read">
-<meta name="twitter:description" content="I’m the King of Wealth in the Three Realms is a manga/manhwa/manhua written by updating and is updated fast and free on www.mgeko.cc,Enjoy reading online">
-<meta name="twitter:url" content="https://www.mgeko.cc/manga/im-the-king-of-wealth-in-the-three-realms/">
-<meta name="twitter:image">
-<link rel="alternate" hreflang="en" href="https://www.mgeko.cc/manga/im-the-king-of-wealth-in-the-three-realms/">
-<link rel="canonical" href="https://www.mgeko.cc/manga/im-the-king-of-wealth-in-the-three-realms/">
-<meta name="referrer" content="origin">
-
-
-
-
-
-
-
-
-<title>Read I’m the King of Wealth in the Three Realms Manga Online for Free</title>
-
-
-
-<link rel="apple-touch-icon" href="/static/img/logo_200x200.png">
-
-
-
-
-
-
-
-
-
-
-
-<link rel="preconnect" href="https://imgsrv4.com" crossorigin="">
-
-
-<link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin="">
-<link rel="preconnect" href="https://www.googletagmanager.com">
-<link rel="preconnect" href="https://www.google-analytics.com">
-
-<link rel="stylesheet" as="style" href="https://fonts.googleapis.com/css?family=Material+Icons|Material+Icons+Outlined|Roboto:400,500,700|Nunito+Sans:400,600,700|Raleway:400,500|Lora|Noto+Sans&amp;display=swap" crossorigin="" onload="this.rel='stylesheet'">
-<link rel="stylesheet" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/Swiper/4.2.6/css/swiper.min.css" crossorigin="" onload="this.rel='stylesheet'">
-<noscript>
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Material+Icons|Material+Icons+Outlined|Roboto:400,500,700|Nunito+Sans:400,600,700|Raleway:400,500|Lora|Noto+Sans&display=swap" />
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Swiper/4.2.6/css/swiper.min.css" integrity="sha256-/MUsbxMVqlXbxtYsVUN7Scrbq8Hd5Up+BntZl2TuMLQ=" crossorigin="anonymous" />
-    </noscript>
-
-<link rel="stylesheet" type="text/css" media="all" href="/static/ln/media_mobile.css?version=4assdjuw8jda888888872">
-<link rel="stylesheet" type="text/css" media="screen and (min-width: 768px)" href="/static/ln/786.css">
-<link rel="stylesheet" type="text/css" media="screen and (min-width: 1024px)" href="/static/ln/1024.css">
-<link rel="stylesheet" type="text/css" media="screen and (min-width: 1270px)" href="/static/ln/1270.css">
-<link rel="stylesheet" type="text/css" href="/static/ln/paged.css">
-<link rel="icon" type="image/png" href="/static/img/logo_200x200.png">
-<link rel="preload stylesheet" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.11.2/css/all.min.css">
-<link rel="stylesheet" type="text/css" href="/static/mgeko.css?v=5">
-<link rel="stylesheet" type="text/css" href="/static/comment.css?v=34">
-
-
-<script type="text/javascript">
-function myFunction() {
-var x = document.getElementById("search-se
+<meta name="twitter:title" content="Kingofshojo | The Best Website For Reading Shoujo and Romance in English.">
+<meta name="twitter:description" content="The Best Website For Reading Shoujo and Romance in English.">
+<meta name="twitter:site" content="@ozulscans">
+<script type="application/ld+json" class="rank-math-schema">{"@context":"https://schema.org","@graph":[{"@type":"Person","@id":"https://kingofshojo.com/#person","name":"Kingofshojo","sameAs":["https://twitter.com/ozulscans"],"image":{"@type":"ImageObject","@id":"https://kingofshojo.com/#logo","url":"https://kingofshojo.com/wp-content/uploads/2024/03/adawewtyy-1.png","contentUrl":"https://kingofshojo.com/wp-content/uploads/2024/03/adawewtyy-1.png","caption":"Kingofshojo","inLanguage":"en-US","width":"512","height":"534"}},{"@type":"WebSite","@id":"https://kingofshojo.com/#website","url":"https://kingofshojo.com","name":"Kingofshojo","publisher":{"@id":"https://kingofshojo.com/#person"},"inLanguage":"en-US","potentialAction":{"@type":"SearchAction","target":"https://kingofshojo.com/?s={search_term_string}","query-input":"required name=search_term_string"}},{"@type":"CollectionPage","@id":"https://kingofshojo.com/#webpage","url":"https://kingofshojo.com/","name":"Kingofshojo | The Best Platform For Reading Shoujo And Romance For Free!","about":{"@id":"https://kingofshojo.com/#person"},"isPartOf":{"@
