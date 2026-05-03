@@ -1,4 +1,4 @@
-name: Anime to 3D Final Fix
+name: Anime to 3D Final Fixed
 
 on:
   workflow_dispatch:
@@ -77,9 +77,9 @@ jobs:
           result = client.predict(
               caption="anime character",
               image=handle_file("anime_original.png"),
-              steps=25.0,
+              steps=25,
               guidance_scale=6.0,
-              seed=42.0,
+              seed=42,
               octree_resolution="256",
               check_box_rembg=True,
               api_name="/shape_generation"
