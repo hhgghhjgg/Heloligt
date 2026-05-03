@@ -1,18 +1,13 @@
-name: Download Manga Chapter to Repository
+name: Kingofshojo Test
 
 on:
   workflow_dispatch:
-    inputs:
-      chapter_url:
-        description: 'لینک صفحه Reader فصل'
-        required: true
-        default: 'https://www.mgeko.cc/reader/en/im-the-king-of-wealth-in-the-three-realms-chapter-11-eng-li/'
 
 permissions:
   contents: write
 
 jobs:
-  download:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -25,11 +20,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install dependencies
-        run: pip install -q requests beautifulsoup4
+        run: pip install -q requests
 
       - name: Wait for FlareSolverr
         run: |
@@ -42,58 +35,71 @@ jobs:
             sleep 2
           done
 
-      - name: Fetch Manga Chapter
-        env:
-          CHAPTER_URL: ${{ inputs.chapter_url }}
+      - name: Fetch Kingofshojo homepage
         run: |
           python3 << 'PYEOF'
-          import os, re, json, time, requests
-          from bs4 import BeautifulSoup
-          from urllib.parse import urljoin
-          from pathlib import Path
+          import requests, time, os
+          from datetime import datetime
 
-          chapter_url = os.environ["CHAPTER_URL"]
-          chapter_name = "chapter_" + re.search(r'chapter-(\d+)', chapter_url).group(1)
+          target = "https://kingofshojo.com/"
 
-          print(f"Fetching: {chapter_url}")
-          resp = requests.post("http://localhost:8191/v1", json={
-              "cmd": "request.get", "url": chapter_url, "maxTimeout": 180000
-          }, timeout=240)
-          data = resp.json()
+          url = "http://localhost:8191/v1"
+          headers = {"Content-Type": "application/json"}
+          payload = {
+              "cmd": "request.get",
+              "url": target,
+              "maxTimeout": 180000
+          }
 
-          html = data.get("solution", {}).get("response", "")
-          if not html:
-              print("Error: Empty response")
-              exit(1)
+          print(f"Fetching {target}")
+          start = time.time()
 
-          soup = BeautifulSoup(html, 'html.parser')
-          images = []
-          for img in soup.find_all('img'):
-              src = img.get('src') or img.get('data-src') or ''
-              if src and 'imgsrv4.com' in src:
-                  images.append(urljoin(chapter_url, src))
+          try:
+              resp = requests.post(url, headers=headers, json=payload, timeout=240)
+              elapsed = round(time.time() - start, 1)
+              data = resp.json()
 
-          images = list(dict.fromkeys(images))
-          print(f"Found {len(images)} images")
+              print(f"Time: {elapsed}s")
+              print(f"Status: {data.get('status')}")
+              print(f"Message: {data.get('message')}")
 
-          os.makedirs(f"manga_downloads/{chapter_name}", exist_ok=True)
+              sol = data.get("solution", {})
+              http_status = sol.get("status")
+              html = sol.get("response", "")
+              cookies = sol.get("cookies", [])
 
-          for i, img_url in enumerate(images, 1):
-              fname = f"manga_downloads/{chapter_name}/{i:03d}.jpg"
-              r = requests.get(img_url, timeout=60)
-              if r.status_code == 200:
-                  Path(fname).write_bytes(r.content)
-                  print(f"  [{i}/{len(images)}] OK ({len(r.content)//1024} KB)")
-              time.sleep(0.3)
+              print(f"HTTP Status: {http_status}")
+              print(f"Cookies count: {len(cookies) if isinstance(cookies, list) else 0}")
 
-          print("Done!")
+              with open("kingofshojo.html", "w", encoding="utf-8") as f:
+                  f.write(html if html else "")
+
+              with open("result.txt", "w", encoding="utf-8") as f:
+                  f.write(f"URL: {target}\n")
+                  f.write(f"Date: {datetime.now()}\n")
+                  f.write(f"Time: {elapsed}s\n")
+                  f.write(f"Status: {data.get('status')}\n")
+                  f.write(f"Message: {data.get('message')}\n")
+                  f.write(f"HTTP Status: {http_status}\n")
+                  f.write(f"Cookies: {cookies}\n\n")
+                  f.write("=== HTML (first 3000 chars) ===\n")
+                  f.write(html[:3000] if html else "EMPTY")
+
+              if http_status == 200 and html:
+                  print("\n✅ SUCCESS - Kingofshojo opened!")
+              elif http_status == 403:
+                  print("\n❌ Blocked by Cloudflare (403)")
+              else:
+                  print(f"\n⚠️ HTTP {http_status}")
+
+          except Exception as e:
+              print(f"Error: {e}")
           PYEOF
 
-      - name: Save to Repository
+      - name: Commit results
         run: |
-          git config user.name "MangaBot"
-          git config user.email "mangabot@noreply.github.com"
-          git pull origin main --rebase
-          git add manga_downloads/
-          git commit -m "📖 Add manga chapter $(date +%Y%m%d_%H%M%S)" || echo "No new files"
-          git push origin main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add kingofshojo.html result.txt 2>/dev/null || true
+          git commit -m "Kingofshojo homepage | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
