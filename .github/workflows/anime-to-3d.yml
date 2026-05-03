@@ -1,4 +1,4 @@
-name: Anime to 3D Final
+name: Anime to 3D Final (Positional)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         default: '1girl, solo, long hair, blue eyes, detailed kimono, cherry blossoms, masterpiece, best quality'
       negative_prompt:
-        description: 'چیزهایی که نمی‌خواهی'
+        description: 'چیزهایی که نمی‌خواهید'
         required: false
         default: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry'
 
@@ -23,10 +23,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: |
-          pip install -q gradio_client pillow
+        run: pip install -q gradio_client pillow
 
-      - name: Generate anime image with Animagine XL
+      - name: Generate anime image
         env:
           PROMPT: ${{ inputs.prompt }}
           NEGATIVE_PROMPT: ${{ inputs.negative_prompt }}
@@ -34,108 +33,94 @@ jobs:
           python3 << 'PYEOF'
           import os, shutil, json
           from gradio_client import Client
-          
+
           prompt = os.environ["PROMPT"]
           neg_prompt = os.environ["NEGATIVE_PROMPT"]
-          
-          print("🎨 Connecting to Animagine XL...")
+
+          print("🎨 Generating anime image...")
           client = Client("cagliostrolab/animagine-xl-3.1")
-          
-          # فراخوانی با endpoint صحیح /run و پارامترهای نام‌دار
+
           result = client.predict(
-              prompt=prompt,
-              negative_prompt=neg_prompt,
-              seed=42,
-              width=1024,
-              height=1024,
-              guidance_scale=7,
-              num_inference_steps=28,
-              sampler="DPM++ 2M Karras",
-              aspect_ratio="1024 x 1024",
-              style_preset="(None)",
-              quality_tags_presets="Standard v3.1",
-              use_upscaler=False,
-              strength=0.5,
-              upscale_by=1.0,
-              add_quality_tags=True,
+              prompt,                  # 1
+              neg_prompt,              # 2
+              42,                      # 3 seed
+              1024,                    # 4 width
+              1024,                    # 5 height
+              7,                       # 6 guidance_scale
+              28,                      # 7 num_inference_steps
+              "DPM++ 2M Karras",       # 8 sampler
+              "1024 x 1024",           # 9 aspect_ratio
+              "(None)",                # 10 style_preset
+              "Standard v3.1",         # 11 quality_tags_presets
+              False,                   # 12 use_upscaler
+              0.5,                     # 13 strength
+              1.0,                     # 14 upscale_by
+              True,                    # 15 add_quality_tags
               api_name="/run"
           )
-          
-          # خروجی یک Gallery است: لیستی از دیکشنری‌ها با کلید image
+
+          # The result is a gallery (list of dicts with 'image' key)
           if isinstance(result, list) and len(result) > 0:
-              first_item = result[0]
-              if isinstance(first_item, dict) and 'image' in first_item:
-                  image_path = first_item['image']
-                  shutil.copy(image_path, "anime_original.png")
-                  print("✅ Anime image saved: anime_original.png")
+              img_path = result[0].get('image')
+              if img_path:
+                  shutil.copy(img_path, "anime_original.png")
+                  print("✅ Anime image saved.")
               else:
-                  # اگر ساختار غیرمنتظره بود، برای بررسی ذخیره کن
-                  with open("gallery_output.json", "w") as f:
-                      json.dump(result, f)
-                  raise RuntimeError("Unexpected gallery format. Check gallery_output.json")
+                  raise RuntimeError("No image key in gallery")
+          elif isinstance(result, str) and result.endswith(('.png', '.jpg', '.webp')):
+              shutil.copy(result, "anime_original.png")
+              print("✅ Direct image saved.")
           else:
-              with open("gallery_output.json", "w") as f:
+              with open("debug_animagine.json", "w") as f:
                   json.dump(result, f)
-              raise RuntimeError("No images returned. Check gallery_output.json")
+              raise RuntimeError("Unexpected result from Animagine. See debug_animagine.json")
           PYEOF
 
-      - name: Convert image to 3D with Hunyuan3D-2
+      - name: Convert to 3D model
         run: |
           python3 << 'PYEOF'
           import shutil
           from gradio_client import Client, handle_file
-          
-          print("🧊 Converting to 3D with Hunyuan3D-2...")
+
+          print("🧊 Converting to 3D...")
           client = Client("tencent/Hunyuan3D-2")
-          
+
           result = client.predict(
-              caption="anime character",
-              image=handle_file("anime_original.png"),
-              steps=25,
-              guidance_scale=6,
-              seed=42,
-              octree_resolution="256",
-              check_box_rembg=True,
+              "anime character",                # caption
+              handle_file("anime_original.png"), # image
+              25,                               # steps
+              6,                                # guidance_scale
+              42,                               # seed
+              "256",                            # octree_resolution
+              True,                             # check_box_rembg
               api_name="/shape_generation"
           )
-          
-          print("📦 Hunyuan3D-2 output type:", type(result))
-          print("Output preview:", str(result)[:200])
-          
-          # مدیریت خروجی‌های مختلف
+
+          # Standard output: tuple (glb_path, obj_path, html_path)
           glb_saved = False
           if isinstance(result, tuple):
-              for idx, item in enumerate(result):
+              for item in result:
                   if isinstance(item, str) and item.endswith('.glb'):
                       shutil.copy(item, "anime_model.glb")
                       glb_saved = True
-                      print(f"✅ Saved GLB from tuple index {idx}")
-                      break
-          elif isinstance(result, list):
-              for idx, item in enumerate(result):
-                  if isinstance(item, str) and item.endswith('.glb'):
-                      shutil.copy(item, "anime_model.glb")
-                      glb_saved = True
-                      print(f"✅ Saved GLB from list index {idx}")
+                      print("✅ 3D model saved.")
                       break
           elif isinstance(result, str) and result.endswith('.glb'):
               shutil.copy(result, "anime_model.glb")
               glb_saved = True
-              print("✅ Saved GLB from direct string")
-          
+              print("✅ 3D model from string.")
+
           if not glb_saved:
-              # ذخیره کل خروجی برای بررسی دستی
-              with open("hunyuan_output.txt", "w") as f:
+              with open("debug_hunyuan.txt", "w") as f:
                   f.write(str(result))
-              print("⚠️ No GLB found. Output saved to hunyuan_output.txt")
+              print("❌ No GLB found. Debug saved to debug_hunyuan.txt.")
           PYEOF
 
       - name: Commit and push results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git add anime_original.png anime_model.glb hunyuan_output.txt gallery_output.json 2>/dev/null || true
-          git commit -m "🎨 Anime image + 3D model | $(date '+%H:%M:%S')" || echo "Nothing to commit"
-          git pull --rebase && git push || echo "Push failed"
-          echo "✅ Workflow completed"
+          git add anime_original.png anime_model.glb debug_*.json debug_*.txt 2>/dev/null || true
+          git commit -m "🎨 New anime 3D generation | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git pull --rebase && git push
+          echo "✅ Finished."
