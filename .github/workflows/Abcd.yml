@@ -1,120 +1,96 @@
-name: Byparr Cloudflare Bypass (Fixed)
+name: FlareSolverr for mgeko.cc
 
 on:
   workflow_dispatch:
-    inputs:
-      url:
-        description: 'آدرس سایت'
-        required: true
-        default: 'https://manhwaus.org'
 
 jobs:
-  byparr:
+  bypass:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     services:
-      byparr:
-        image: ghcr.io/thephaseless/byparr:latest
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
         ports:
           - 8191:8191
-        env:
-          LOG_LEVEL: info
-          BYPARR_BROWSER_TIMEOUT: 180000
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install requests
         run: pip install -q requests
 
-      - name: Wait for Byparr to be ready
+      - name: Wait for FlareSolverr
         run: |
-          echo "Waiting for Byparr..."
-          for i in $(seq 1 60); do
+          echo "Waiting for FlareSolverr..."
+          for i in $(seq 1 30); do
             status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
-            if [ "$status" = "200" ]; then
-              echo "Byparr is ready!"
+            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
+              echo "FlareSolverr is ready (status: $status)"
               break
             fi
-            echo "Attempt $i/60 - status: $status"
-            sleep 5
+            echo "  attempt $i/30 - status: $status"
+            sleep 2
           done
 
-      - name: Test Byparr connection
-        run: |
-          curl -s http://localhost:8191/v1 | python3 -m json.tool
-
-      - name: Bypass Cloudflare and fetch page
-        env:
-          TARGET_URL: ${{ inputs.url }}
+      - name: Bypass and fetch mgeko.cc
         run: |
           python3 << 'PYEOF'
           import requests, time, os
           from datetime import datetime
 
-          target_url = os.environ["TARGET_URL"]
+          target = "https://www.mgeko.cc/manga/im-the-king-of-wealth-in-the-three-realms/"
 
           url = "http://localhost:8191/v1"
           headers = {"Content-Type": "application/json"}
           payload = {
               "cmd": "request.get",
-              "url": target_url,
+              "url": target,
               "maxTimeout": 180000
           }
 
-          print(f"Connecting to {target_url}")
-          print("Max timeout: 180 seconds. Please wait...")
-          
-          start_time = time.time()
+          print(f"Requesting {target}")
+          start = time.time()
 
           try:
-              response = requests.post(url, headers=headers, json=payload, timeout=240)
-              elapsed = round(time.time() - start_time, 1)
-              result = response.json()
+              resp = requests.post(url, headers=headers, json=payload, timeout=240)
+              elapsed = round(time.time() - start, 1)
+              data = resp.json()
 
-              print(f"\nTime: {elapsed}s")
-              print(f"Status: {result.get('status')}")
-              print(f"Message: {result.get('message')}")
+              print(f"Time: {elapsed}s")
+              print(f"Status: {data.get('status')}")
+              print(f"Message: {data.get('message')}")
 
-              solution = result.get("solution", {})
-              http_status = solution.get("status")
-              html_content = solution.get("response", "")
-              cookies = solution.get("cookies", [])
-              user_agent = solution.get("userAgent", "")
+              sol = data.get("solution", {})
+              http_status = sol.get("status")
+              html = sol.get("response", "")
+              cookies = sol.get("cookies", [])
 
-              print(f"HTTP Status: {http_status}")
-              print(f"User-Agent: {user_agent}")
-              print(f"Cookies count: {len(cookies) if isinstance(cookies, list) else 0}")
+              print(f"HTTP: {http_status}")
+              print(f"Cookies: {len(cookies) if isinstance(cookies, list) else 0}")
 
-              # Save full result
               with open("result.txt", "w", encoding="utf-8") as f:
-                  f.write(f"URL: {target_url}\n")
+                  f.write(f"URL: {target}\n")
                   f.write(f"Date: {datetime.now()}\n")
                   f.write(f"Time: {elapsed}s\n")
-                  f.write(f"Status: {result.get('status')}\n")
-                  f.write(f"Message: {result.get('message')}\n")
-                  f.write(f"HTTP Status: {http_status}\n")
-                  f.write(f"User-Agent: {user_agent}\n")
+                  f.write(f"Status: {data.get('status')}\n")
+                  f.write(f"Message: {data.get('message')}\n")
+                  f.write(f"HTTP: {http_status}\n")
                   f.write(f"Cookies: {cookies}\n\n")
-                  f.write(f"=== HTML (first 5000 chars) ===\n{html_content[:5000] if html_content else 'EMPTY'}\n")
+                  f.write("=== HTML (first 5000 chars) ===\n")
+                  f.write(html[:5000] if html else "EMPTY")
 
-              # Save HTML
               with open("page.html", "w", encoding="utf-8") as f:
-                  f.write(html_content if html_content else "")
+                  f.write(html if html else "")
 
-              if http_status == 200 and html_content:
-                  print("\n✅ Cloudflare bypassed successfully!")
+              if http_status == 200 and html:
+                  print("\n✅ SUCCESS - Cloudflare bypassed!")
               elif http_status == 403:
-                  print("\n❌ Blocked by Cloudflare (403)")
-              elif http_status is None:
-                  print(f"\n⚠️ Failed - {result.get('message')}")
+                  print("\n❌ Blocked by Cloudflare")
               else:
-                  print(f"\n⚠️ Unknown result - HTTP {http_status}")
+                  print(f"\n⚠️ Result - HTTP {http_status}")
 
-          except requests.exceptions.Timeout:
-              print("\n❌ Total timeout after 240 seconds")
           except Exception as e:
               print(f"\n❌ Error: {e}")
           PYEOF
@@ -122,15 +98,15 @@ jobs:
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: byparr-results
+          name: mgeko-results
           path: |
             result.txt
             page.html
 
-      - name: Commit results to repository
+      - name: Commit results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add result.txt page.html 2>/dev/null || true
-          git commit -m "Byparr results for ${{ inputs.url }} | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git commit -m "mgeko.cc bypass result | $(date '+%H:%M:%S')" || echo "Nothing to commit"
           git pull --rebase && git push || true
