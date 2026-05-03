@@ -1,64 +1,136 @@
-name: Advanced Cloudflare Bypass (SeleniumBase)
+name: Byparr Cloudflare Bypass
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'آدرس سایت (مثلاً https://manhwaus.org)'
+        description: 'آدرس سایت'
         required: true
         default: 'https://manhwaus.org'
 
 jobs:
-  bypass:
+  byparr:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    services:
+      byparr:
+        image: ghcr.io/byparr/byparr:latest
+        ports:
+          - 8191:8191
+        env:
+          LOG_LEVEL: info
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python & Chrome
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable || true
-          pip install seleniumbase
+      - name: Install dependencies
+        run: pip install -q requests
 
-      - name: Fetch page with SeleniumBase (undetected Chrome)
+      - name: Wait for Byparr to be ready
+        run: |
+          echo "Waiting for Byparr..."
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
+            if [ "$status" = "200" ]; then
+              echo "Byparr is ready!"
+              break
+            fi
+            echo "Attempt $i/30 - status: $status"
+            sleep 3
+          done
+
+      - name: Test Byparr connection
+        run: |
+          curl -s http://localhost:8191/v1 | python3 -m json.tool
+
+      - name: Bypass Cloudflare and fetch page
         env:
           TARGET_URL: ${{ inputs.url }}
         run: |
           python3 << 'PYEOF'
-          import os, sys
-          from seleniumbase import SB
+          import requests, time, os
+          from datetime import datetime
 
-          target = os.environ["TARGET_URL"]
-          print(f"Navigating to {target} with undetected Chrome...")
+          target_url = os.environ["TARGET_URL"]
 
-          with SB(uc=True, headless=True) as sb:
-              sb.uc_open_with_reconnect(target, reconnect_time=5)
-              sb.sleep(5)  # Wait for Cloudflare challenge to complete
-              source = sb.get_page_source()
-              title = sb.get_title()
-              print(f"Page title: {title}")
+          url = "http://localhost:8191/v1"
+          headers = {"Content-Type": "application/json"}
+          payload = {
+              "cmd": "request.get",
+              "url": target_url,
+              "maxTimeout": 180000
+          }
+
+          print(f"Connecting to {target_url}")
+          print(f"Max timeout: 180 seconds")
+          print("Please wait...")
+          
+          start_time = time.time()
+
+          try:
+              response = requests.post(url, headers=headers, json=payload, timeout=240)
+              elapsed = round(time.time() - start_time, 1)
+              result = response.json()
+
+              print(f"\nTime: {elapsed}s")
+              print(f"Status: {result.get('status')}")
+              print(f"Message: {result.get('message')}")
+
+              solution = result.get("solution", {})
+              http_status = solution.get("status")
+              html_content = solution.get("response", "")
+              cookies = solution.get("cookies", [])
+              user_agent = solution.get("userAgent", "")
+
+              print(f"HTTP Status: {http_status}")
+              print(f"User-Agent: {user_agent}")
+              print(f"Cookies: {cookies}")
+
+              # Save full result
+              with open("result.txt", "w", encoding="utf-8") as f:
+                  f.write(f"URL: {target_url}\n")
+                  f.write(f"Date: {datetime.now()}\n")
+                  f.write(f"Time: {elapsed}s\n")
+                  f.write(f"Status: {result.get('status')}\n")
+                  f.write(f"Message: {result.get('message')}\n")
+                  f.write(f"HTTP Status: {http_status}\n")
+                  f.write(f"User-Agent: {user_agent}\n")
+                  f.write(f"Cookies: {cookies}\n\n")
+                  f.write(f"=== HTML (first 5000 chars) ===\n{html_content[:5000]}\n")
+
+              # Save HTML
               with open("page.html", "w", encoding="utf-8") as f:
-                  f.write(source)
-              print("Page saved to page.html")
-              # Optionally take screenshot
-              sb.save_screenshot("screenshot.png")
+                  f.write(html_content)
+
+              if http_status == 200 and html_content:
+                  print("\n✅ Cloudflare bypassed successfully!")
+              elif http_status == 403:
+                  print("\n❌ Blocked by Cloudflare")
+              elif http_status is None:
+                  print(f"\n⚠️ Failed - {result.get('message')}")
+              else:
+                  print(f"\n⚠️ Unknown result - HTTP {http_status}")
+
+          except requests.exceptions.Timeout:
+              print(f"\n❌ Total timeout after 240 seconds")
+          except Exception as e:
+              print(f"\n❌ Error: {e}")
           PYEOF
 
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: bypass-result
+          name: byparr-results
           path: |
+            result.txt
             page.html
-            screenshot.png
 
-      - name: Commit results
+      - name: Commit results to repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add page.html screenshot.png 2>/dev/null || true
-          git commit -m "نتایج Cloudflare Bypass برای ${{ inputs.url }} | $(date '+%H:%M:%S')" || echo "چیزی برای commit نیست"
+          git add result.txt page.html 2>/dev/null || true
+          git commit -m "Byparr results for ${{ inputs.url }} | $(date '+%H:%M:%S')" || echo "Nothing to commit"
           git pull --rebase && git push || true
