@@ -1,0 +1,10 @@
+URL: https://mgeko.cc/
+Date: 2026-05-03 16:40:07.649482
+Time: 131.2s
+FlareSolverr status: error
+Message: Error: Error solving the challenge. HTTPConnectionPool(host='localhost', port=51963): Read timed out. (read timeout=120)
+HTTP status: None
+Cookies: []
+
+=== HTML (first 3000 chars) ===
+EMPTY
