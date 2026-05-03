@@ -1,10 +1,15 @@
-name: FlareSolverr for mgeko.cc
+name: Download Manga Chapter with Images
 
 on:
   workflow_dispatch:
+    inputs:
+      chapter_url:
+        description: 'لینک صفحه Reader فصل'
+        required: true
+        default: 'https://www.mgeko.cc/reader/en/im-the-king-of-wealth-in-the-three-realms-chapter-11-eng-li/'
 
 jobs:
-  bypass:
+  download:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -18,8 +23,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install requests
-        run: pip install -q requests
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4
 
       - name: Wait for FlareSolverr
         run: |
@@ -34,23 +39,26 @@ jobs:
             sleep 2
           done
 
-      - name: Bypass and fetch mgeko.cc
+      - name: Fetch chapter page via FlareSolverr
+        env:
+          CHAPTER_URL: ${{ inputs.chapter_url }}
         run: |
           python3 << 'PYEOF'
-          import requests, time, os
+          import requests, time, os, re
           from datetime import datetime
+          from urllib.parse import urljoin
 
-          target = "https://www.mgeko.cc/manga/im-the-king-of-wealth-in-the-three-realms/"
+          chapter_url = os.environ["CHAPTER_URL"]
 
           url = "http://localhost:8191/v1"
           headers = {"Content-Type": "application/json"}
           payload = {
               "cmd": "request.get",
-              "url": target,
+              "url": chapter_url,
               "maxTimeout": 180000
           }
 
-          print(f"Requesting {target}")
+          print(f"Fetching chapter page: {chapter_url}")
           start = time.time()
 
           try:
@@ -67,46 +75,125 @@ jobs:
               html = sol.get("response", "")
               cookies = sol.get("cookies", [])
 
-              print(f"HTTP: {http_status}")
-              print(f"Cookies: {len(cookies) if isinstance(cookies, list) else 0}")
+              print(f"HTTP Status: {http_status}")
+
+              if http_status != 200 or not html:
+                  print("Failed to fetch chapter page")
+                  with open("error.txt", "w") as f:
+                      f.write(f"Failed: HTTP {http_status}\n{data.get('message')}")
+                  exit(1)
+
+              # Save HTML
+              with open("chapter.html", "w", encoding="utf-8") as f:
+                  f.write(html)
+
+              # Extract image URLs
+              from bs4 import BeautifulSoup
+              soup = BeautifulSoup(html, 'html.parser')
+
+              # Find all img tags
+              images = []
+              for img in soup.find_all('img'):
+                  src = img.get('src') or img.get('data-src') or img.get('data-lazy-src') or ''
+                  if src and ('imgsrv4.com' in src or 'mgeko.cc' in src or 'media' in src.lower()):
+                      full_url = urljoin(chapter_url, src)
+                      images.append(full_url)
+
+              # Remove duplicates, preserve order
+              seen = set()
+              unique_images = []
+              for img in images:
+                  if img not in seen:
+                      seen.add(img)
+                      unique_images.append(img)
+
+              print(f"\nFound {len(unique_images)} manga images:")
+              for i, img in enumerate(unique_images, 1):
+                  print(f"  {i}. {img}")
+
+              # Save image list
+              with open("image_links.txt", "w") as f:
+                  for link in unique_images:
+                      f.write(link + "\n")
 
               with open("result.txt", "w", encoding="utf-8") as f:
-                  f.write(f"URL: {target}\n")
+                  f.write(f"Chapter URL: {chapter_url}\n")
                   f.write(f"Date: {datetime.now()}\n")
                   f.write(f"Time: {elapsed}s\n")
-                  f.write(f"Status: {data.get('status')}\n")
-                  f.write(f"Message: {data.get('message')}\n")
-                  f.write(f"HTTP: {http_status}\n")
+                  f.write(f"HTTP Status: {http_status}\n")
                   f.write(f"Cookies: {cookies}\n\n")
-                  f.write("=== HTML (first 5000 chars) ===\n")
-                  f.write(html[:5000] if html else "EMPTY")
-
-              with open("page.html", "w", encoding="utf-8") as f:
-                  f.write(html if html else "")
-
-              if http_status == 200 and html:
-                  print("\n✅ SUCCESS - Cloudflare bypassed!")
-              elif http_status == 403:
-                  print("\n❌ Blocked by Cloudflare")
-              else:
-                  print(f"\n⚠️ Result - HTTP {http_status}")
+                  f.write(f"Found {len(unique_images)} images\n")
 
           except Exception as e:
-              print(f"\n❌ Error: {e}")
+              print(f"Error: {e}")
+              exit(1)
+          PYEOF
+
+      - name: Download all images
+        run: |
+          python3 << 'PYEOF'
+          import requests, os, time
+
+          # Read image links
+          with open("image_links.txt", "r") as f:
+              images = [line.strip() for line in f if line.strip()]
+
+          if not images:
+              print("No images to download")
+              exit(1)
+
+          # Create folder
+          os.makedirs("chapter_images", exist_ok=True)
+
+          print(f"Downloading {len(images)} images...")
+
+          for i, img_url in enumerate(images, 1):
+              filename = f"chapter_images/{i:03d}.jpg"
+              print(f"  [{i}/{len(images)}] {img_url}")
+
+              try:
+                  img_resp = requests.get(img_url, timeout=60, headers={
+                      "Referer": os.environ.get("CHAPTER_URL", ""),
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                  })
+
+                  if img_resp.status_code == 200:
+                      with open(filename, "wb") as f:
+                          f.write(img_resp.content)
+                      size_kb = len(img_resp.content) // 1024
+                      print(f"    ✅ Saved ({size_kb} KB)")
+                  else:
+                      print(f"    ❌ HTTP {img_resp.status_code}")
+
+              except Exception as e:
+                  print(f"    ❌ Error: {e}")
+
+              time.sleep(0.5)  # Be nice
+
+          # Create ZIP
+          import zipfile
+          with zipfile.ZipFile("chapter_images.zip", "w") as zf:
+              for filename in sorted(os.listdir("chapter_images")):
+                  zf.write(os.path.join("chapter_images", filename), filename)
+
+          print(f"\nDone! {len(os.listdir('chapter_images'))} files in chapter_images.zip")
           PYEOF
 
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: mgeko-results
+          name: manga-chapter
           path: |
+            chapter.html
             result.txt
-            page.html
+            image_links.txt
+            chapter_images.zip
+            error.txt
 
-      - name: Commit results
+      - name: Commit results to repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add result.txt page.html 2>/dev/null || true
-          git commit -m "mgeko.cc bypass result | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git add chapter.html result.txt image_links.txt chapter_images.zip error.txt chapter_images/ 2>/dev/null || true
+          git commit -m "Manga chapter download | $(date '+%H:%M:%S')" || echo "Nothing to commit"
           git pull --rebase && git push || true
