@@ -1,0 +1,72 @@
+name: Download from DeviantArt with gallery-dl
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'لینک صفحه DeviantArt (مثلاً گالری یا یه پست)'
+        required: true
+        default: 'https://www.deviantart.com/artistname/art/model-name'
+      cookies:
+        description: 'کوکی‌های اکانت DeviantArt (اختیاری - برای محتوای خصوصی)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install gallery-dl
+        run: |
+          pip install -q gallery-dl
+
+      - name: Download with gallery-dl
+        env:
+          TARGET_URL: ${{ inputs.url }}
+          COOKIES: ${{ inputs.cookies }}
+        run: |
+          mkdir -p downloads
+          
+          # اگر کوکی داده شده، ذخیره کن
+          if [ -n "$COOKIES" ]; then
+              echo "$COOKIES" > cookies.txt
+              COOKIE_ARG="--cookies cookies.txt"
+          else
+              COOKIE_ARG=""
+          fi
+          
+          # دانلود با gallery-dl
+          echo "📥 Downloading from: $TARGET_URL"
+          gallery-dl \
+              --dest downloads \
+              --no-part \
+              $COOKIE_ARG \
+              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
+              "$TARGET_URL"
+          
+          echo "✅ Download completed"
+
+      - name: List downloaded files
+        run: |
+          echo "📁 Downloaded files:"
+          find downloads -type f | head -50
+          echo ""
+          echo "Total files: $(find downloads -type f | wc -l)"
+          echo "Total size: $(du -sh downloads | cut -f1)"
+
+      - name: Commit and push downloads
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add downloads/ 2>/dev/null || true
+          git commit -m "📥 Downloaded from DeviantArt | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
+          echo "✅ Done!"
