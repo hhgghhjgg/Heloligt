@@ -1,0 +1,125 @@
+name: Get Telegram Channel Posts
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'نام کاربری کانال تلگرام (بدون @)'
+        required: true
+        default: 'iicenet'
+      count:
+        description: 'تعداد پست‌های آخر'
+        required: false
+        default: '20'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4
+
+      - name: Fetch Telegram posts
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          COUNT: ${{ inputs.count }}
+        run: |
+          python3 << 'PYEOF'
+          import requests, re, os
+          from bs4 import BeautifulSoup
+          from datetime import datetime
+
+          channel = os.environ["CHANNEL"]
+          count = int(os.environ["COUNT"])
+          url = f"https://t.me/s/{channel}"
+
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.5",
+          }
+
+          print(f"Fetching {url}")
+          resp = requests.get(url, headers=headers, timeout=30)
+
+          if resp.status_code != 200:
+              print(f"Error: HTTP {resp.status_code}")
+              # Save error
+              with open(f"{channel}_posts.txt", "w", encoding="utf-8") as f:
+                  f.write(f"Error: HTTP {resp.status_code}")
+              exit(1)
+
+          with open(f"{channel}_raw.html", "w", encoding="utf-8") as f:
+              f.write(resp.text)
+
+          soup = BeautifulSoup(resp.text, 'html.parser')
+          messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+
+          print(f"Found {len(messages)} total messages")
+          latest = messages[:count]
+
+          output = []
+          output.append(f"کانال: @{channel}")
+          output.append(f"تاریخ دریافت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+          output.append(f"تعداد پست‌های دریافت شده: {len(latest)}")
+          output.append("=" * 60)
+          output.append("")
+
+          for idx, msg in enumerate(latest, 1):
+              msg_id = msg.get('data-post', 'unknown')
+              text_div = msg.find('div', class_='tgme_widget_message_text')
+              text = text_div.get_text('\n', strip=True) if text_div else "بدون متن"
+              text = re.sub(r'\n{3,}', '\n\n', text)
+
+              date_tag = msg.find('time', class_='time')
+              date_str = date_tag.get('datetime', '') if date_tag else ''
+
+              views_tag = msg.find('span', class_='tgme_widget_message_views')
+              views = views_tag.get_text(strip=True) if views_tag else 'N/A'
+
+              links = []
+              if text_div:
+                  for a in text_div.find_all('a'):
+                      href = a.get('href', '')
+                      if href and ('t.me' in href or 'http' in href):
+                          links.append(href)
+
+              output.append(f"━━━ پست #{idx} ━━━")
+              output.append(f"شناسه: {msg_id}")
+              output.append(f"تاریخ: {date_str}")
+              output.append(f"بازدید: {views}")
+              output.append("")
+              output.append("📝 متن:")
+              output.append(text)
+              if links:
+                  output.append("")
+                  output.append("🔗 لینک‌ها:")
+                  for link in links:
+                      output.append(f"  • {link}")
+              output.append("")
+              output.append("")
+
+          result = '\n'.join(output)
+          filename = f"{channel}_posts.txt"
+          with open(filename, "w", encoding="utf-8") as f:
+              f.write(result)
+
+          print(f"Done! Saved {len(latest)} posts to {filename}")
+          print(f"Total characters: {len(result)}")
+          PYEOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "TelegramBot"
+          git config user.email "tgbot@noreply.github.com"
+          git add *_posts.txt *_raw.html 2>/dev/null || true
+          git commit -m "📡 @${{ inputs.channel }} latest ${{ inputs.count }} posts | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
