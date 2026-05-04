@@ -1,0 +1,151 @@
+name: Get DA Links & Download via FlareSolverr
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'لینک گالری یا پست DeviantArt'
+        required: true
+        default: 'https://www.deviantart.com/alilexx/gallery'
+      max_files:
+        description: 'حداکثر تعداد فایل برای دانلود (برای تست)'
+        required: false
+        default: '5'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pip install -q gallery-dl
+
+      - name: Wait for FlareSolverr
+        run: |
+          echo "Waiting for FlareSolverr..."
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
+            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
+              echo "FlareSolverr ready (status: $status)"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Get direct image URLs via gallery-dl --get-urls
+        env:
+          TARGET_URL: ${{ inputs.url }}
+        run: |
+          mkdir -p downloads
+
+          echo "Getting direct image URLs from: $TARGET_URL"
+          # از gallery-dl با پارامتر --get-urls فقط لیست لینک‌ها را می‌گیریم
+          gallery-dl --get-urls \
+            --sleep 2 \
+            --sleep-request 1 \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
+            "$TARGET_URL" > all_urls.txt 2> error.log || true
+
+          echo "---------- gallery-dl output ----------"
+          cat all_urls.txt
+          echo "---------- errors ----------"
+          cat error.log
+
+          # فقط URLهایی که با http شروع می‌شوند را جداسازی می‌کنیم
+          grep -E '^https?://' all_urls.txt > urls.txt || true
+          echo "Found $(wc -l < urls.txt) direct URLs"
+
+      - name: Download files via FlareSolverr
+        env:
+          MAX_FILES: ${{ inputs.max_files }}
+        run: |
+          if [ ! -s urls.txt ]; then
+            echo "No URLs to download. Exiting."
+            exit 0
+          fi
+
+          count=0
+          while IFS= read -r file_url; do
+            if [ -z "$file_url" ]; then continue; fi
+            count=$((count + 1))
+            if [ $count -gt $MAX_FILES ]; then
+              echo "Reached limit of $MAX_FILES downloads."
+              break
+            fi
+
+            echo "--------------------------------------------------"
+            echo "Downloading ($count): $file_url"
+
+            # نام فایل را از انتهای URL استخراج می‌کنیم
+            filename=$(basename "$file_url" | sed 's/[?&].*//')
+            # اگر نام فایل خیلی بلند بود کوتاه می‌کنیم
+            if [ ${#filename} -gt 100 ]; then
+              extension="${filename##*.}"
+              filename="file_${count}.${extension}"
+            fi
+            # اگر پسوند نداشت jpg پیش‌فرض بگذاریم
+            if [ "${filename##*.}" = "$filename" ]; then
+              filename="${filename}.jpg"
+            fi
+
+            # ساختن payload برای FlareSolverr
+            payload=$(cat <<EOF
+{
+  "cmd": "request.get",
+  "url": "$file_url",
+  "maxTimeout": 180000
+}
+EOF
+)
+            # ارسال درخواست به FlareSolverr
+            response=$(curl -s -X POST http://localhost:8191/v1 \
+              -H "Content-Type: application/json" \
+              -d "$payload")
+
+            # استخراج status و response body
+            http_status=$(echo "$response" | jq -r '.solution.status')
+            body=$(echo "$response" | jq -r '.solution.response')
+            msg=$(echo "$response" | jq -r '.message')
+
+            echo "FlareSolverr message: $msg"
+            echo "HTTP status: $http_status"
+
+            if [ "$http_status" = "200" ] && [ -n "$body" ] && [ "$body" != "null" ]; then
+              # ذخیره محتوای فایل
+              echo "$body" > "downloads/$filename"
+              echo "✅ Saved to downloads/$filename"
+            else
+              echo "❌ Could not download. Response:"
+              echo "$response" | head -c 500
+            fi
+
+            # کمی تاخیر برای جلوگیری از بلاک شدن
+            sleep 2
+          done < urls.txt
+
+      - name: List downloaded files
+        run: |
+          echo "Downloaded files:"
+          ls -lh downloads/ 2>/dev/null || echo "No files downloaded."
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add downloads/ all_urls.txt urls.txt error.log 2>/dev/null || true
+          git commit -m "📥 DA media via FlareSolverr | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
