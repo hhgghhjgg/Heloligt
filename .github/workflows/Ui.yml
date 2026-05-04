@@ -1,0 +1,93 @@
+name: Generate UI with UIGEN-X
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'توضیحات UI مورد نظر (انگلیسی)'
+        required: true
+        default: 'Design a Crunchyroll-style anime streaming homepage with React, Tailwind CSS, and shadcn/ui. Dark theme with orange accent (#F47521). Include header with nav and search, hero carousel, anime card grid, and footer.'
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -q gradio_client
+
+      - name: Generate UI with UIGEN-X
+        env:
+          PROMPT: ${{ inputs.prompt }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json
+          from gradio_client import Client
+          from datetime import datetime
+
+          prompt = os.environ["PROMPT"]
+
+          print("🎨 Connecting to UIGEN-X 32B...")
+          client = Client("flytech/UIGEN-X-32B-0727")
+
+          result = client.predict(
+              user_prompt=prompt,
+              style="Glassmorphism",
+              api_name="/generate_ui"
+          )
+
+          # result is a tuple: (code, explanation)
+          if isinstance(result, tuple):
+              code = result[0]
+              explanation = result[1] if len(result) > 1 else ""
+          else:
+              code = str(result)
+              explanation = ""
+
+          print(f"Generated code length: {len(code)} chars")
+
+          # Save the generated code
+          ext = ".html"
+          if "```html" in code or "<!DOCTYPE html>" in code or "<html" in code[:500]:
+              ext = ".html"
+          elif "```jsx" in code or "import React" in code[:500] or "export default" in code[:500]:
+              ext = ".jsx"
+          elif "```tsx" in code:
+              ext = ".tsx"
+          elif "```css" in code:
+              ext = ".css"
+
+          filename = f"ui_output{ext}"
+          with open(filename, "w", encoding="utf-8") as f:
+              f.write(code)
+
+          print(f"✅ Saved: {filename}")
+
+          # Save explanation
+          with open("ui_explanation.md", "w", encoding="utf-8") as f:
+              f.write(f"# UI Generation Result\n\n")
+              f.write(f"**Date:** {datetime.now()}\n\n")
+              f.write(f"**Prompt:** {prompt}\n\n")
+              f.write(f"**Style:** Glassmorphism\n\n")
+              f.write(f"**Code length:** {len(code)} chars\n\n")
+              f.write(f"## Explanation\n\n{explanation}\n\n")
+              f.write(f"## Generated Code\n\n```\n{code[:2000]}\n...\n```\n")
+
+          print("Done!")
+          PYEOF
+
+      - name: Commit and push results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ui_output.* ui_explanation.md 2>/dev/null || true
+          git commit -m "🎨 New UI generated | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
+          echo "✅ Done!"
