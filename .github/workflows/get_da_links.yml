@@ -1,4 +1,4 @@
-name: Get DA Links and Download via FlareSolverr
+name: Download 3D Models from DeviantArt
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       max_files:
         description: 'حداکثر تعداد فایل برای دانلود'
         required: false
-        default: '10'
+        default: '5'
 
 permissions:
   contents: write
@@ -31,7 +31,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: pip install -q gallery-dl
+        run: |
+          pip install -q gallery-dl beautifulsoup4
 
       - name: Wait for FlareSolverr
         run: |
@@ -44,16 +45,59 @@ jobs:
             sleep 2
           done
 
-      - name: Get direct image URLs
+      - name: Get Download Page URLs
         env:
           TARGET_URL: ${{ inputs.url }}
         run: |
           mkdir -p downloads
-          gallery-dl --get-urls --sleep 2 --sleep-request 1 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" "$TARGET_URL" > all_urls.txt 2> error.log || true
-          grep -E '^https?://' all_urls.txt > urls.txt || true
-          echo "Found $(wc -l < urls.txt) direct URLs"
+          # اینبار به جای `--get-urls` از `--write-pages` استفاده می‌کنیم
+          # تا لینک صفحات دانلود رو بگیریم
+          gallery-dl --write-pages --sleep 2 --sleep-request 1 \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "$TARGET_URL" > gallery_output.txt 2> error.log || true
+          # فقط URLهای صفحه دانلود رو استخراج کن
+          grep -oP 'https?://www\.deviantart\.com/[^/]+/art/[^/\s]+' gallery_output.txt | sort -u > download_pages.txt
+          echo "Found $(wc -l < download_pages.txt) download pages"
 
-      - name: Download files via FlareSolverr
+      - name: Process Download Pages
+        env:
+          MAX_FILES: ${{ inputs.max_files }}
+        run: |
+          if [ ! -s download_pages.txt ]; then
+            echo "No download pages found. Trying direct URL method..."
+            # روش جایگزین: gallery-dl --get-urls
+            gallery-dl --get-urls --sleep 2 --sleep-request 1 \
+              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "$TARGET_URL" | grep -E '^https?://' > urls.txt || true
+            echo "Found $(wc -l < urls.txt) direct URLs"
+          else
+            echo "Processing download pages..."
+            count=0
+            > urls.txt
+            while IFS= read -r page_url; do
+              [ -z "$page_url" ] && continue
+              count=$((count + 1))
+              [ $count -gt $MAX_FILES ] && break
+              echo "Processing ($count): $page_url"
+
+              # باز کردن صفحه با FlareSolverr
+              payload="{\"cmd\":\"request.get\",\"url\":\"$page_url\",\"maxTimeout\":180000}"
+              response=$(curl -s -X POST http://localhost:8191/v1 -H "Content-Type: application/json" -d "$payload")
+              body=$(echo "$response" | jq -r '.solution.response')
+
+              # استخراج لینک دانلود مستقیم فایل سه‌بعدی
+              download_link=$(echo "$body" | grep -oP 'https?://[^"\047]+\.(?:blend|fbx|obj|zip|rar|glb|gltf|stl|dae|3ds|max|unitypackage)[^"\047]*' | head -1)
+              if [ -n "$download_link" ]; then
+                echo "$download_link" >> urls.txt
+                echo "  -> Found: $download_link"
+              else
+                echo "  -> No 3D file found"
+              fi
+              sleep 3
+            done < download_pages.txt
+          fi
+
+      - name: Download 3D Files via FlareSolverr
         env:
           MAX_FILES: ${{ inputs.max_files }}
         run: |
@@ -69,21 +113,18 @@ jobs:
             filename=$(basename "$file_url" | sed 's/[?&].*//')
             if [ ${#filename} -gt 100 ]; then
               ext="${filename##*.}"
-              filename="file_${count}.${ext}"
+              filename="3d_model_${count}.${ext}"
             fi
-            case "$filename" in
-              *.*) ;;
-              *) filename="${filename}.jpg" ;;
-            esac
+            echo "Downloading: $filename"
             payload="{\"cmd\":\"request.get\",\"url\":\"$file_url\",\"maxTimeout\":180000}"
             response=$(curl -s -X POST http://localhost:8191/v1 -H "Content-Type: application/json" -d "$payload")
             http_status=$(echo "$response" | jq -r '.solution.status')
             body=$(echo "$response" | jq -r '.solution.response')
             if [ "$http_status" = "200" ] && [ -n "$body" ] && [ "$body" != "null" ]; then
               echo "$body" > "downloads/$filename"
-              echo "OK: $filename"
+              echo "  ✅ $filename ($(du -h "downloads/$filename" | cut -f1))"
             else
-              echo "FAIL: $file_url"
+              echo "  ❌ Failed"
             fi
             sleep 2
           done < urls.txt
@@ -92,6 +133,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/ all_urls.txt urls.txt error.log 2>/dev/null || true
-          git commit -m "DA links and downloads | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git add downloads/ all_urls.txt urls.txt error.log download_pages.txt 2>/dev/null || true
+          git commit -m "3D models from DA | $(date '+%H:%M:%S')" || echo "Nothing to commit"
           git pull --rebase && git push || true
