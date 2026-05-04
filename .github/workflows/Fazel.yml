@@ -1,4 +1,4 @@
-name: Get Telegram Channel Posts
+name: Build Telegram Channel Viewer
 
 on:
   workflow_dispatch:
@@ -7,8 +7,8 @@ on:
         description: 'نام کاربری کانال تلگرام (بدون @)'
         required: true
         default: 'iicenet'
-      count:
-        description: 'تعداد پست‌های آخر'
+      post_count:
+        description: 'تعداد پست‌های آخر برای نمایش'
         required: false
         default: '20'
 
@@ -16,29 +16,30 @@ permissions:
   contents: write
 
 jobs:
-  fetch:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout repository
+      - name: 1. Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: 2. Install tools
         run: pip install -q requests beautifulsoup4
 
-      - name: Fetch Telegram posts
+      - name: 3. Scrape posts from Telegram
         env:
           CHANNEL: ${{ inputs.channel }}
-          COUNT: ${{ inputs.count }}
+          POST_COUNT: ${{ inputs.post_count }}
         run: |
           python3 << 'PYEOF'
-          import requests, re, os
+          import requests, re, os, json, hashlib, time
           from bs4 import BeautifulSoup
           from datetime import datetime
+          from pathlib import Path
 
           channel = os.environ["CHANNEL"]
-          count = int(os.environ["COUNT"])
+          post_count = int(os.environ["POST_COUNT"])
           url = f"https://t.me/s/{channel}"
 
           headers = {
@@ -47,79 +48,335 @@ jobs:
               "Accept-Language": "en-US,en;q=0.5",
           }
 
-          print(f"Fetching {url}")
+          print(f"Fetching {url} ...")
           resp = requests.get(url, headers=headers, timeout=30)
-
           if resp.status_code != 200:
               print(f"Error: HTTP {resp.status_code}")
-              # Save error
-              with open(f"{channel}_posts.txt", "w", encoding="utf-8") as f:
-                  f.write(f"Error: HTTP {resp.status_code}")
               exit(1)
 
-          with open(f"{channel}_raw.html", "w", encoding="utf-8") as f:
-              f.write(resp.text)
-
           soup = BeautifulSoup(resp.text, 'html.parser')
-          messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+          all_messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+          latest_messages = all_messages[:post_count]
 
-          print(f"Found {len(messages)} total messages")
-          latest = messages[:count]
+          print(f"Found {len(all_messages)} total messages, processing {len(latest_messages)} ...")
 
-          output = []
-          output.append(f"کانال: @{channel}")
-          output.append(f"تاریخ دریافت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-          output.append(f"تعداد پست‌های دریافت شده: {len(latest)}")
-          output.append("=" * 60)
-          output.append("")
+          # پوشه assets برای ذخیره عکس‌ها و فایل‌ها
+          Path("assets").mkdir(exist_ok=True)
 
-          for idx, msg in enumerate(latest, 1):
-              msg_id = msg.get('data-post', 'unknown')
+          posts_data = []
+
+          for idx, msg in enumerate(latest_messages):
+              msg_id = msg.get('data-post', f'post-{idx}')
+              
+              # متن پیام
               text_div = msg.find('div', class_='tgme_widget_message_text')
-              text = text_div.get_text('\n', strip=True) if text_div else "بدون متن"
-              text = re.sub(r'\n{3,}', '\n\n', text)
-
+              raw_text = text_div.get_text('\n', strip=True) if text_div else ""
+              
+              # تاریخ
               date_tag = msg.find('time', class_='time')
               date_str = date_tag.get('datetime', '') if date_tag else ''
-
+              
+              # بازدید
               views_tag = msg.find('span', class_='tgme_widget_message_views')
-              views = views_tag.get_text(strip=True) if views_tag else 'N/A'
-
+              views = views_tag.get_text(strip=True) if views_tag else ''
+              
+              # لینک‌ها
               links = []
               if text_div:
-                  for a in text_div.find_all('a'):
-                      href = a.get('href', '')
-                      if href and ('t.me' in href or 'http' in href):
-                          links.append(href)
+                  for a in text_div.find_all('a', href=True):
+                      links.append(a['href'])
+              
+              # عکس‌ها (از لینک‌های preview)
+              images = []
+              photo_div = msg.find('a', class_='tgme_widget_message_photo_wrap')
+              if photo_div:
+                  style = photo_div.get('style', '')
+                  bg_match = re.search(r"background-image:url\('([^']+)'\)", style)
+                  if bg_match:
+                      images.append(bg_match.group(1))
+              
+              # ویدیوها
+              videos = []
+              video_tag = msg.find('video')
+              if video_tag:
+                  video_src = video_tag.get('src', '')
+                  if video_src:
+                      videos.append(video_src)
+              
+              # فایل‌ها (از لینک‌های دانلود)
+              files_downloaded = []
+              for link in links:
+                  if any(link.endswith(ext) for ext in ['.pdf', '.zip', '.rar', '.doc', '.docx', '.mp3', '.apk']):
+                      try:
+                          file_resp = requests.get(link, timeout=30, stream=True)
+                          if file_resp.status_code == 200:
+                              content_length = int(file_resp.headers.get('content-length', 0))
+                              if content_length < 20 * 1024 * 1024:  # زیر ۲۰ مگابایت
+                                  file_hash = hashlib.md5(link.encode()).hexdigest()[:10]
+                                  ext = link.split('.')[-1].split('?')[0]
+                                  filename = f"{file_hash}.{ext}"
+                                  filepath = f"assets/{filename}"
+                                  with open(filepath, "wb") as f:
+                                      f.write(file_resp.content)
+                                  files_downloaded.append({"name": filename, "url": link})
+                                  print(f"  Downloaded file: {filename}")
+                      except:
+                          pass
+              
+              posts_data.append({
+                  "id": msg_id,
+                  "date": date_str,
+                  "views": views,
+                  "text": raw_text,
+                  "links": links,
+                  "images": images,
+                  "videos": videos,
+                  "files": files_downloaded
+              })
+              
+              print(f"  Processed post {idx+1}/{len(latest_messages)}")
 
-              output.append(f"━━━ پست #{idx} ━━━")
-              output.append(f"شناسه: {msg_id}")
-              output.append(f"تاریخ: {date_str}")
-              output.append(f"بازدید: {views}")
-              output.append("")
-              output.append("📝 متن:")
-              output.append(text)
-              if links:
-                  output.append("")
-                  output.append("🔗 لینک‌ها:")
-                  for link in links:
-                      output.append(f"  • {link}")
-              output.append("")
-              output.append("")
+          # ذخیره داده‌ها
+          with open("posts_data.json", "w", encoding="utf-8") as f:
+              json.dump(posts_data, f, ensure_ascii=False, indent=2)
 
-          result = '\n'.join(output)
-          filename = f"{channel}_posts.txt"
-          with open(filename, "w", encoding="utf-8") as f:
-              f.write(result)
-
-          print(f"Done! Saved {len(latest)} posts to {filename}")
-          print(f"Total characters: {len(result)}")
+          print(f"Done! {len(posts_data)} posts saved to posts_data.json")
           PYEOF
 
-      - name: Commit and push
+      - name: 4. Download media files
         run: |
-          git config user.name "TelegramBot"
+          python3 << 'PYEOF'
+          import json, requests, hashlib, os
+          from pathlib import Path
+
+          Path("assets").mkdir(exist_ok=True)
+
+          with open("posts_data.json", "r", encoding="utf-8") as f:
+              posts = json.load(f)
+
+          for post in posts:
+              # دانلود عکس‌ها
+              for img_url in post.get("images", []):
+                  try:
+                      img_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
+                      ext = img_url.split('.')[-1].split('?')[0] or 'jpg'
+                      filename = f"img_{img_hash}.{ext}"
+                      filepath = f"assets/{filename}"
+                      if not os.path.exists(filepath):
+                          img_resp = requests.get(img_url, timeout=30)
+                          if img_resp.status_code == 200:
+                              with open(filepath, "wb") as f_img:
+                                  f_img.write(img_resp.content)
+                              post["images_downloaded"] = post.get("images_downloaded", []) + [filename]
+                              print(f"  Downloaded image: {filename}")
+                  except Exception as e:
+                      print(f"  Image error: {e}")
+
+              # دانلود ویدیوها
+              for vid_url in post.get("videos", []):
+                  try:
+                      vid_hash = hashlib.md5(vid_url.encode()).hexdigest()[:10]
+                      filename = f"vid_{vid_hash}.mp4"
+                      filepath = f"assets/{filename}"
+                      if not os.path.exists(filepath):
+                          vid_resp = requests.get(vid_url, timeout=60, stream=True)
+                          if vid_resp.status_code == 200:
+                              with open(filepath, "wb") as f_vid:
+                                  f_vid.write(vid_resp.content)
+                              post["videos_downloaded"] = post.get("videos_downloaded", []) + [filename]
+                              print(f"  Downloaded video: {filename}")
+                  except Exception as e:
+                      print(f"  Video error: {e}")
+
+          with open("posts_data.json", "w", encoding="utf-8") as f:
+              json.dump(posts, f, ensure_ascii=False, indent=2)
+          print("Media download complete.")
+          PYEOF
+
+      - name: 5. Generate beautiful HTML
+        env:
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+          from datetime import datetime
+
+          channel = os.environ["CHANNEL"]
+
+          with open("posts_data.json", "r", encoding="utf-8") as f:
+              posts = json.load(f)
+
+          def escape_html(text):
+              return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+
+          posts_html = ""
+          for post in posts:
+              posts_html += '<div class="post-card">\n'
+              
+              # هدر پست
+              posts_html += '  <div class="post-header">\n'
+              posts_html += f'    <span class="post-date">{escape_html(post.get("date", ""))}</span>\n'
+              posts_html += f'    <span class="post-views">👁 {escape_html(post.get("views", ""))}</span>\n'
+              posts_html += '  </div>\n'
+              
+              # متن پست
+              if post.get("text"):
+                  text_html = escape_html(post["text"]).replace('\n', '<br>')
+                  posts_html += f'  <div class="post-text">{text_html}</div>\n'
+              
+              # عکس‌ها
+              for img_file in post.get("images_downloaded", []):
+                  posts_html += f'  <div class="post-media"><img src="assets/{img_file}" alt="Image" loading="lazy"></div>\n'
+              
+              # ویدیوها
+              for vid_file in post.get("videos_downloaded", []):
+                  posts_html += f'  <div class="post-media"><video controls preload="none"><source src="assets/{vid_file}" type="video/mp4"></video></div>\n'
+              
+              # فایل‌های دانلودی
+              for file_info in post.get("files", []):
+                  posts_html += f'  <div class="post-file"><a href="assets/{file_info["name"]}" download>📎 {file_info["name"]}</a></div>\n'
+              
+              # لینک‌ها
+              if post.get("links"):
+                  posts_html += '  <div class="post-links">\n'
+                  for link in post["links"]:
+                      posts_html += f'    <a href="{escape_html(link)}" target="_blank">🔗 {escape_html(link[:80])}{"..." if len(link)>80 else ""}</a><br>\n'
+                  posts_html += '  </div>\n'
+              
+              posts_html += '</div>\n'
+
+          html = f'''<!DOCTYPE html>
+          <html lang="fa" dir="rtl">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>@{channel} - Telegram Channel Viewer</title>
+          <style>
+          * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+          body {{
+              font-family: 'Vazirmatn', 'Tahoma', sans-serif;
+              background: #0f0f0f;
+              color: #e0e0e0;
+              line-height: 1.8;
+              padding: 0;
+          }}
+          .container {{
+              max-width: 800px;
+              margin: 0 auto;
+              padding: 20px 15px;
+          }}
+          .header {{
+              background: linear-gradient(135deg, #1a1a2e, #16213e);
+              color: white;
+              padding: 30px 20px;
+              text-align: center;
+              margin-bottom: 30px;
+              border-bottom: 3px solid #e94560;
+          }}
+          .header h1 {{
+              font-size: 2em;
+              margin-bottom: 5px;
+          }}
+          .header p {{
+              opacity: 0.8;
+              font-size: 0.9em;
+          }}
+          .post-card {{
+              background: #1a1a1a;
+              border: 1px solid #2a2a2a;
+              border-radius: 12px;
+              padding: 20px;
+              margin-bottom: 20px;
+              transition: transform 0.2s, box-shadow 0.2s;
+          }}
+          .post-card:hover {{
+              transform: translateY(-2px);
+              box-shadow: 0 8px 25px rgba(0,0,0,0.5);
+          }}
+          .post-header {{
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 15px;
+              padding-bottom: 10px;
+              border-bottom: 1px solid #333;
+              font-size: 0.85em;
+              color: #999;
+          }}
+          .post-date {{
+              color: #e94560;
+              font-weight: bold;
+          }}
+          .post-text {{
+              margin-bottom: 15px;
+              font-size: 1.05em;
+              color: #d0d0d0;
+          }}
+          .post-media {{
+              margin-bottom: 15px;
+              border-radius: 8px;
+              overflow: hidden;
+          }}
+          .post-media img, .post-media video {{
+              width: 100%;
+              height: auto;
+              display: block;
+              border-radius: 8px;
+          }}
+          .post-file {{
+              margin: 10px 0;
+              padding: 10px;
+              background: #252525;
+              border-radius: 8px;
+          }}
+          .post-file a {{
+              color: #4fc3f7;
+              text-decoration: none;
+          }}
+          .post-links {{
+              margin-top: 10px;
+              font-size: 0.9em;
+          }}
+          .post-links a {{
+              color: #4fc3f7;
+              text-decoration: none;
+              word-break: break-all;
+          }}
+          .footer {{
+              text-align: center;
+              padding: 20px;
+              color: #666;
+              font-size: 0.8em;
+              border-top: 1px solid #2a2a2a;
+              margin-top: 30px;
+          }}
+          </style>
+          </head>
+          <body>
+          <div class="header">
+              <h1>📡 @{channel}</h1>
+              <p>تولید شده: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | تعداد پست‌ها: {len(posts)}</p>
+          </div>
+          <div class="container">
+          {posts_html}
+          </div>
+          <div class="footer">
+              <p>ساخته شده با ❤️ توسط GitHub Actions | قابل اجرا روی KSWEB</p>
+          </div>
+          </body>
+          </html>'''
+
+          with open("index.html", "w", encoding="utf-8") as f:
+              f.write(html)
+
+          print(f"index.html generated with {len(posts)} posts.")
+          PYEOF
+
+      - name: 6. Commit everything
+        run: |
+          git config user.name "TelegramViewerBot"
           git config user.email "tgbot@noreply.github.com"
-          git add *_posts.txt *_raw.html 2>/dev/null || true
-          git commit -m "📡 @${{ inputs.channel }} latest ${{ inputs.count }} posts | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git add index.html posts_data.json assets/ 2>/dev/null || true
+          git commit -m "📡 Updated @${{ inputs.channel }} viewer | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
+          echo "✅ Done! View with KSWEB at http://localhost:8080"
