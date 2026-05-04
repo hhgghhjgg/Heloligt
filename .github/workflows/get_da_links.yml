@@ -10,7 +10,7 @@ on:
       max_files:
         description: 'حداکثر تعداد فایل برای دانلود'
         required: false
-        default: '5'
+        default: '10'
 
 permissions:
   contents: write
