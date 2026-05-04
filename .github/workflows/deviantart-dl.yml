@@ -1,16 +1,16 @@
-name: Download from DeviantArt with gallery-dl
+name: DeviantArt with FlareSolverr + gallery-dl
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'لینک صفحه DeviantArt (مثلاً گالری یا یه پست)'
+        description: 'لینک گالری یا پست DeviantArt'
         required: true
-        default: 'https://www.deviantart.com/artistname/art/model-name'
-      cookies:
-        description: 'کوکی‌های اکانت DeviantArt (اختیاری - برای محتوای خصوصی)'
+        default: 'https://www.deviantart.com/artistname/gallery'
+      sleep_time:
+        description: 'تأخیر بین درخواست‌ها (ثانیه)'
         required: false
-        default: ''
+        default: '5'
 
 permissions:
   contents: write
@@ -18,55 +18,102 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install gallery-dl
+      - name: Install dependencies
         run: |
           pip install -q gallery-dl
+          sudo apt-get install -y jq
 
-      - name: Download with gallery-dl
+      - name: Wait for FlareSolverr
+        run: |
+          echo "Waiting for FlareSolverr..."
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
+            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
+              echo "FlareSolverr ready (status: $status)"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Get cookies from DeviantArt via FlareSolverr
+        run: |
+          echo "Getting cookies from DeviantArt..."
+          RESPONSE=$(curl -s -X POST http://localhost:8191/v1 \
+            -H "Content-Type: application/json" \
+            -d '{
+              "cmd": "request.get",
+              "url": "https://www.deviantart.com/",
+              "maxTimeout": 180000
+            }')
+          
+          echo "FlareSolverr response:"
+          echo "$RESPONSE" | jq .
+          
+          # Extract cookies array
+          COOKIES=$(echo "$RESPONSE" | jq -r '.solution.cookies[]? | "\(.name)\t\(.value)\t\(.domain)\t\(.path)\t\(.expires)\t\(.httpOnly)\t\(.secure)"' || echo "")
+          
+          if [ -z "$COOKIES" ]; then
+            echo "No cookies obtained. Checking if challenge was solved..."
+            STATUS=$(echo "$RESPONSE" | jq -r '.solution.status')
+            if [ "$STATUS" = "200" ]; then
+              echo "Page returned 200 but no cookies. Possibly no cloudflare."
+            else
+              echo "Failed to solve challenge. HTTP status: $STATUS"
+              exit 1
+            fi
+          else
+            echo "Cookies obtained. Saving to cookies.txt in Netscape format..."
+            echo "# Netscape HTTP Cookie File" > cookies.txt
+            echo "$COOKIES" >> cookies.txt
+            echo "Saved cookies:"
+            cat cookies.txt
+          fi
+
+      - name: Download with gallery-dl using cookies
         env:
           TARGET_URL: ${{ inputs.url }}
-          COOKIES: ${{ inputs.cookies }}
+          SLEEP: ${{ inputs.sleep_time }}
         run: |
           mkdir -p downloads
           
-          # اگر کوکی داده شده، ذخیره کن
-          if [ -n "$COOKIES" ]; then
-              echo "$COOKIES" > cookies.txt
-              COOKIE_ARG="--cookies cookies.txt"
-          else
-              COOKIE_ARG=""
+          COOKIE_ARG=""
+          if [ -f cookies.txt ] && [ -s cookies.txt ]; then
+            COOKIE_ARG="--cookies cookies.txt"
           fi
           
-          # دانلود با gallery-dl
-          echo "📥 Downloading from: $TARGET_URL"
+          echo "Downloading from: $TARGET_URL"
           gallery-dl \
-              --dest downloads \
-              --no-part \
-              $COOKIE_ARG \
-              --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
-              "$TARGET_URL"
-          
-          echo "✅ Download completed"
+            --dest downloads \
+            --no-part \
+            $COOKIE_ARG \
+            --sleep $SLEEP \
+            --sleep-request 2 \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
+            "$TARGET_URL" || echo "Download ended with errors (some may still have succeeded)"
 
-      - name: List downloaded files
+      - name: List downloads
         run: |
-          echo "📁 Downloaded files:"
+          echo "Downloaded files:"
           find downloads -type f | head -50
-          echo ""
           echo "Total files: $(find downloads -type f | wc -l)"
-          echo "Total size: $(du -sh downloads | cut -f1)"
+          du -sh downloads
 
-      - name: Commit and push downloads
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/ 2>/dev/null || true
-          git commit -m "📥 Downloaded from DeviantArt | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git add downloads/ cookies.txt 2>/dev/null || true
+          git commit -m "📥 DA download via FlareSolverr + gallery-dl | $(date '+%H:%M:%S')" || echo "Nothing to commit"
           git pull --rebase && git push || true
-          echo "✅ Done!"
