@@ -1,0 +1,10 @@
+URL: https://maneast.fun/
+Date: 2026-05-04 09:28:08.115835
+Time: 131.1s
+FlareSolverr status: error
+Message: Error: Error solving the challenge. HTTPConnectionPool(host='localhost', port=38301): Read timed out. (read timeout=120)
+HTTP status: None
+Cookies: []
+
+=== HTML (first 3000 chars) ===
+EMPTY
