@@ -1,4 +1,4 @@
-name: دانلود فایل حجیم از t.me/s
+name: دانلود فایل تصادفی از ArchiveKuraiScans
 
 on:
   workflow_dispatch:
@@ -9,54 +9,79 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: دانلود فایل APK از کانال رسمی تلگرام
+      - name: دریافت پست تصادفی و دانلود فایل
         run: |
-          echo "📡 باز کردن کانال رسمی تلگرام (t.me/s/tgandroid)..."
-          
+          echo "📡 باز کردن کانال t.me/s/ArchiveKuraiScans..."
+
           PAGE=$(curl -sL -k \
-            -H "User-Agent: Mozilla/5.0" \
-            "https://t.me/s/tgandroid")
-          
-          LAST_POST=$(echo "$PAGE" | grep -oP 'https://t\.me/tgandroid/\d+' | head -1)
-          
-          if [ -z "$LAST_POST" ]; then
-            echo "⚠️ هیچ پستی پیدا نشد. شاید t.me/s/tgandroid در دسترس نیست."
-            exit 0
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://t.me/s/ArchiveKuraiScans")
+
+          # استخراج همه لینک‌های پست
+          POSTS=$(echo "$PAGE" | grep -oP 'https://t\.me/ArchiveKuraiScans/\d+' | sort -u)
+          POST_COUNT=$(echo "$POSTS" | wc -l)
+
+          echo "📊 تعداد پست‌های پیدا شده: $POST_COUNT"
+
+          if [ "$POST_COUNT" -eq 0 ]; then
+            echo "❌ هیچ پستی پیدا نشد"
+            exit 1
           fi
-          
-          echo "🔗 پست: $LAST_POST"
-          
+
+          # انتخاب یه پست تصادفی
+          RANDOM_INDEX=$(( (RANDOM % POST_COUNT) + 1 ))
+          RANDOM_POST=$(echo "$POSTS" | sed -n "${RANDOM_INDEX}p")
+          echo "🎲 پست تصادفی انتخاب شده: $RANDOM_POST"
+
+          # گرفتن محتوای پست
           POST_PAGE=$(curl -sL -k \
-            -H "User-Agent: Mozilla/5.0" \
-            "$LAST_POST")
-          
-          CDN_URL=$(echo "$POST_PAGE" | grep -oP 'https://[^"]+\.apk[^"]*' | head -1)
-          
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "$RANDOM_POST")
+
+          # استخراج لینک فایل (هر نوع فایلی)
+          CDN_URL=$(echo "$POST_PAGE" | grep -oP 'https://[^"]+\.(zip|rar|pdf|apk|epub|mobi|cbz|cbr|7z|tar\.gz)[^"]*' | head -1)
+
           if [ -z "$CDN_URL" ]; then
-            echo "⚠️ لینک APK پیدا نشد."
-            exit 0
+            # اگه فرمت خاصی نبود، هر لینک دانلودی رو بگیر
+            CDN_URL=$(echo "$POST_PAGE" | grep -oP 'https://cdn[0-9]+\.telesco\.pe/[^"]+' | head -1)
           fi
-          
-          echo "📥 در حال دانلود..."
-          
-          curl -k -L -o Telegram.apk \
-            -H "User-Agent: Mozilla/5.0" \
-            --connect-timeout 30 --max-time 300 \
+
+          if [ -z "$CDN_URL" ]; then
+            echo "❌ لینک فایل پیدا نشد"
+            exit 1
+          fi
+
+          echo "🔗 لینک دانلود: ${CDN_URL:0:100}..."
+
+          # استخراج اسم فایل از لینک
+          FILENAME=$(echo "$CDN_URL" | grep -oP '[^/]+(?=[\?&]|$)' | head -1)
+          if [ -z "$FILENAME" ]; then
+            FILENAME="downloaded_file"
+          fi
+
+          echo "📥 در حال دانلود: $FILENAME"
+
+          curl -k -L -o "$FILENAME" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            --connect-timeout 30 \
+            --max-time 300 \
             "$CDN_URL"
-          
-          if [ -f Telegram.apk ]; then
-            SIZE=$(stat -c%s Telegram.apk)
+
+          if [ -f "$FILENAME" ]; then
+            SIZE=$(stat -c%s "$FILENAME" 2>/dev/null || echo 0)
             SIZE_MB=$((SIZE / 1024 / 1024))
-            echo "✅ سایز: ${SIZE} بایت (${SIZE_MB}MB)"
-            if [ "$SIZE_MB" -gt 20 ]; then
-              echo "🎉 اثبات شد! فایل ${SIZE_MB}MB از t.me/s دانلود شد!"
-            fi
+            echo "========================================="
+            echo "✅ فایل با موفقیت دانلود شد!"
+            echo "📁 نام: $FILENAME"
+            echo "📊 سایز: ${SIZE} بایت (${SIZE_MB}MB)"
+            echo "🔗 از پست: $RANDOM_POST"
+            echo "========================================="
           else
             echo "❌ دانلود ناموفق"
           fi
@@ -65,6 +90,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Telegram.apk 2>/dev/null || true
-          git commit -m "📦 Telegram APK from t.me/s" || echo "Nothing to commit"
+          git add *.zip *.rar *.pdf *.apk *.epub *.mobi *.cbz *.cbr *.7z *.tar.gz downloaded_file 2>/dev/null || true
+          git commit -m "📦 فایل تصادفی از ArchiveKuraiScans | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
