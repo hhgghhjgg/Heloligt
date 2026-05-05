@@ -17,11 +17,11 @@ jobs:
 
       - name: دریافت پست تصادفی و دانلود فایل
         run: |
-          echo "📡 باز کردن کانال t.me/s/ArchiveKuraiScans..."
+          echo "📡 باز کردن کانال t.me/s/ArchiveKuraiScans?q=index..."
 
           PAGE=$(curl -sL -k \
             -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            "https://t.me/s/ArchiveKuraiScans")
+            "https://t.me/s/ArchiveKuraiScans?q=index")
 
           # استخراج همه لینک‌های پست
           POSTS=$(echo "$PAGE" | grep -oP 'https://t\.me/ArchiveKuraiScans/\d+' | sort -u)
@@ -42,7 +42,7 @@ jobs:
           # گرفتن محتوای پست
           POST_PAGE=$(curl -sL -k \
             -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            "$RANDOM_POST")
+            "$RANDOM_POST?embed=1")
 
           # استخراج لینک فایل (هر نوع فایلی)
           CDN_URL=$(echo "$POST_PAGE" | grep -oP 'https://[^"]+\.(zip|rar|pdf|apk|epub|mobi|cbz|cbr|7z|tar\.gz)[^"]*' | head -1)
