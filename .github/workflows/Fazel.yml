@@ -1,24 +1,20 @@
-name: Get Telegram Channel Stats from Telemetr
+name: Debug Telemetr HTML Structure
 
 on:
   workflow_dispatch:
     inputs:
       channel:
-        description: 'نام کاربری کانال تلگرام (بدون @)'
+        description: 'نام کاربری کانال (بدون @)'
         required: true
         default: 'badsoccer'
-      post_count:
-        description: 'تعداد پست‌های آخر برای تحلیل'
-        required: false
-        default: '10'
 
 permissions:
   contents: write
 
 jobs:
-  fetch:
+  debug:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     services:
       flaresolverr:
@@ -41,145 +37,46 @@ jobs:
             sleep 2
           done
 
-      - name: Fetch Telemetr page
+      - name: Fetch and save raw HTML
         env:
           CHANNEL: ${{ github.event.inputs.channel }}
-          POST_COUNT: ${{ github.event.inputs.post_count }}
         run: |
           python3 << 'PYEOF'
-          import os, json, requests, re, html
-          from bs4 import BeautifulSoup
+          import os, requests
           from datetime import datetime
 
           channel = os.environ["CHANNEL"]
-          post_limit = int(os.environ["POST_COUNT"])
           telemetr_url = f"https://telemetr.io/en/channels/@{channel}"
 
           print(f"📡 Fetching {telemetr_url}")
 
-          # Use FlareSolverr
           fs_url = "http://localhost:8191/v1"
           payload = {"cmd": "request.get", "url": telemetr_url, "maxTimeout": 120000}
           resp = requests.post(fs_url, json=payload, timeout=150)
           data = resp.json()
 
           html_content = data.get("solution", {}).get("response", "")
-          if not html_content:
-              print("❌ No HTML received from FlareSolverr")
-              exit(1)
+          status = data.get("status", "unknown")
+          message = data.get("message", "")
 
-          soup = BeautifulSoup(html_content, 'html.parser')
+          print(f"Status: {status}")
+          print(f"Message: {message}")
+          print(f"HTML length: {len(html_content)} chars")
 
-          # Extract all post blocks
-          posts = soup.find_all('div', class_='post-item')
-          if not posts:
-              posts = soup.find_all('div', class_='post')
-          if not posts:
-              posts = soup.find_all('div', {'data-post-id': True})
-
-          print(f"📊 Found {len(posts)} post blocks")
-
-          results = []
-          for post in posts[:post_limit]:
-              # Post text
-              text_elem = post.find('div', class_='post-text') or post.find('div', class_='text') or post.find('p')
-              post_text = text_elem.get_text(strip=True) if text_elem else ""
-
-              # Views
-              views_elem = post.find('span', class_='views') or post.find('div', class_='views-count')
-              views = views_elem.get_text(strip=True) if views_elem else "0"
-
-              # Date
-              date_elem = post.find('time') or post.find('span', class_='date')
-              post_date = date_elem.get_text(strip=True) if date_elem else ""
-
-              # Comments
-              comments_elem = post.find('span', class_='comments') or post.find('div', class_='comments-count')
-              comments_count = comments_elem.get_text(strip=True) if comments_elem else "0"
-
-              # Reactions
-              reactions = {}
-              reaction_elems = post.find_all('span', class_='reaction') or post.find_all('div', class_='emoji')
-              if not reaction_elems:
-                  reaction_container = post.find('div', class_='reactions') or post.find('div', class_='reactions-block')
-                  if reaction_container:
-                      reaction_elems = reaction_container.find_all(['span', 'div'])
-
-              for r in reaction_elems:
-                  r_text = r.get_text(strip=True)
-                  if r_text:
-                      # Try to split emoji and count
-                      parts = re.split(r'\s+', r_text)
-                      if len(parts) >= 2:
-                          emoji = parts[0]
-                          count = parts[-1].replace('K', '000').replace('k', '000').replace('M', '000000')
-                          try:
-                              reactions[emoji] = int(float(count))
-                          except:
-                              reactions[r_text] = 0
-                      else:
-                          reactions[r_text] = 0
-
-              # Post link
-              link_elem = post.find('a', href=re.compile(r't\.me'))
-              post_link = link_elem['href'] if link_elem else ""
-
-              results.append({
-                  "text": post_text[:500],
-                  "views": views,
-                  "date": post_date,
-                  "comments": comments_count,
-                  "reactions": reactions,
-                  "link": post_link
-              })
-
-          # Save results
+          # Save raw HTML
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
           output_dir = f"sites/telegram/{channel}/{timestamp}"
           os.makedirs(output_dir, exist_ok=True)
 
-          with open(f"{output_dir}/stats.json", "w", encoding="utf-8") as f:
-              json.dump(results, f, ensure_ascii=False, indent=2)
+          with open(f"{output_dir}/raw.html", "w", encoding="utf-8") as f:
+              f.write(html_content)
 
-          # Generate nice HTML
-          html_output = f"""<!DOCTYPE html>
-          <html lang="fa" dir="rtl">
-          <head>
-          <meta charset="UTF-8">
-          <title>آمار کانال @{channel}</title>
-          <style>
-          body {{ font-family: 'Segoe UI', Tahoma; background: #1e1e2e; color: #cdd6f4; padding: 20px; }}
-          h1 {{ color: #cba6f7; }}
-          .stats {{ color: #a6adc8; margin-bottom: 20px; }}
-          .post {{ background: #181825; border: 1px solid #313244; border-radius: 10px; padding: 15px; margin-bottom: 15px; }}
-          .post-text {{ margin-bottom: 10px; }}
-          .post-meta {{ display: flex; gap: 15px; font-size: 0.9em; color: #6c7086; }}
-          .reactions {{ margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap; }}
-          .reaction {{ background: #252536; padding: 5px 10px; border-radius: 20px; font-size: 0.9em; }}
-          </style>
-          </head>
-          <body>
-          <h1>📊 @{channel}</h1>
-          <p class="stats">تاریخ: {timestamp} | تعداد پست: {len(results)}</p>
-          {"".join(f'''<div class="post">
-              <div class="post-text">{html.escape(r['text'][:300])}</div>
-              <div class="post-meta">
-                  <span>👁 {r['views']}</span>
-                  <span>💬 {r['comments']}</span>
-                  <span>📅 {r['date']}</span>
-              </div>
-              <div class="reactions">{" ".join(f'<span class="reaction">{emoji} {count}</span>' for emoji, count in r['reactions'].items())}</div>
-          </div>''' for r in results)}
-          </body>
-          </html>"""
-
-          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
-              f.write(html_output)
+          # Also save first 5000 chars for quick preview
+          with open(f"{output_dir}/preview.txt", "w", encoding="utf-8") as f:
+              f.write(html_content[:5000])
 
           print(f"✅ Saved to {output_dir}")
-          print(f"📊 {len(results)} posts extracted")
-          for i, r in enumerate(results):
-              print(f"  [{i+1}] Views:{r['views']} | Comments:{r['comments']} | Reactions:{r['reactions']}")
+          print(f"📄 Preview saved")
           PYEOF
 
       - name: Commit and push
@@ -187,5 +84,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sites/telegram/
-          git commit -m "📊 Telegram stats for @${{ github.event.inputs.channel }} | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git commit -m "🔍 Debug HTML for @${{ github.event.inputs.channel }}" || echo "Nothing to commit"
           git pull --rebase && git push || true
