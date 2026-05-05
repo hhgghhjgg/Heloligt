@@ -1,0 +1,23 @@
+name: Test Cloudflare Worker
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Test Worker with curl
+        run: |
+          echo "=== Test 1: Simple GET ==="
+          curl -v "https://morning-waterfall-79c0.workers.dev" 2>&1 | head -20
+          
+          echo ""
+          echo "=== Test 2: With timeout ==="
+          curl -m 10 "https://morning-waterfall-79c0.workers.dev" || echo "TIMEOUT or FAILED"
+          
+          echo ""
+          echo "=== Test 3: Test with different host header ==="
+          curl -v -H "Host: morning-waterfall-79c0.workers.dev" "https://morning-waterfall-79c0.workers.dev" 2>&1 | head -20
