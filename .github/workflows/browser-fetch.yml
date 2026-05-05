@@ -1,0 +1,138 @@
+name: Fetch URL (browser-fetch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'آدرس کامل سایت (مثلاً https://example.com/page)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4
+
+      - name: Wait for FlareSolverr
+        run: |
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
+            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
+              echo "FlareSolverr ready (status: $status)"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Fetch page via FlareSolverr
+        env:
+          TARGET_URL: ${{ github.event.inputs.url }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, requests, re, hashlib, shutil, base64
+          from bs4 import BeautifulSoup
+          from datetime import datetime
+          from urllib.parse import urljoin, urlparse
+
+          target_url = os.environ["TARGET_URL"]
+          domain = urlparse(target_url).netloc
+
+          # ساختن نام پوشه با تاریخ و زمان
+          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+          output_dir = f"sites/{domain}/{timestamp}"
+          os.makedirs(output_dir, exist_ok=True)
+
+          print(f"Fetching {target_url}")
+
+          # درخواست از FlareSolverr
+          fs_url = "http://localhost:8191/v1"
+          payload = {
+              "cmd": "request.get",
+              "url": target_url,
+              "maxTimeout": 120000
+          }
+
+          resp = requests.post(fs_url, json=payload, timeout=150)
+          data = resp.json()
+
+          html = data.get("solution", {}).get("response", "")
+          if not html:
+              print("خطا: HTML دریافت نشد")
+              exit(1)
+
+          # ذخیره HTML اصلی
+          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
+              f.write(html)
+
+          # دانلود CSS، JS، عکس‌ها و فونت‌ها
+          soup = BeautifulSoup(html, 'html.parser')
+          assets = []
+
+          # CSS
+          for tag in soup.find_all('link', rel='stylesheet'):
+              href = tag.get('href')
+              if href:
+                  full = urljoin(target_url, href)
+                  assets.append(('css', full))
+
+          # JS
+          for tag in soup.find_all('script', src=True):
+              src = tag.get('src')
+              if src:
+                  full = urljoin(target_url, src)
+                  assets.append(('js', full))
+
+          # عکس‌ها
+          for tag in soup.find_all('img', src=True):
+              src = tag.get('src')
+              if src:
+                  full = urljoin(target_url, src)
+                  assets.append(('img', full))
+
+          # دانلود و ذخیره
+          for asset_type, asset_url in assets:
+              try:
+                  asset_resp = requests.get(asset_url, timeout=15, headers={"User-Agent": "MagicBrowser/1.0"})
+                  if asset_resp.status_code == 200:
+                      # مسیر فایل محلی
+                      parsed = urlparse(asset_url)
+                      filename = os.path.basename(parsed.path)
+                      if not filename or len(filename) > 80:
+                          filename = f"{hashlib.md5(asset_url.encode()).hexdigest()[:10]}.{asset_type}"
+                      local_path = f"{output_dir}/{filename}"
+                      with open(local_path, "wb") as f_asset:
+                          f_asset.write(asset_resp.content)
+                      print(f"  Downloaded: {filename}")
+              except Exception as e:
+                  print(f"  Error downloading {asset_url}: {e}")
+
+          # لیست فایل‌های دانلود شده
+          files = os.listdir(output_dir)
+          print(f"Total files: {len(files)}")
+          for f in files:
+              size = os.path.getsize(f"{output_dir}/{f}")
+              print(f"  - {f} ({size} bytes)")
+          PYEOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sites/
+          git commit -m "🌐 Fetch ${{ github.event.inputs.url }} | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
