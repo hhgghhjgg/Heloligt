@@ -15,41 +15,109 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: pip install -q duckduckgo-search
+        run: pip install -q requests beautifulsoup4
 
-      - name: Search and save results as HTML
+      - name: Wait for FlareSolverr
+        run: |
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
+            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
+              echo "FlareSolverr ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Search via FlareSolverr
         env:
           SEARCH_QUERY: ${{ github.event.inputs.query }}
         run: |
           python3 << 'PYEOF'
-          import os, json
+          import os, json, requests
+          from bs4 import BeautifulSoup
           from datetime import datetime
-          from duckduckgo_search import DDGS
+          from urllib.parse import quote_plus
 
           query = os.environ["SEARCH_QUERY"]
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
           output_dir = f"sites/search/{timestamp}"
           os.makedirs(output_dir, exist_ok=True)
 
-          results = []
-          try:
-              with DDGS() as ddgs:
-                  for r in ddgs.text(query, max_results=10):
-                      results.append({
-                          "title": r.get("title", ""),
-                          "url": r.get("href", ""),
-                          "description": r.get("body", "")
-                      })
-          except Exception as e:
-              print(f"Search error: {e}")
+          search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
 
-          # Build HTML
-          html = f"""<!DOCTYPE html>
+          print(f"🔍 Searching: {query}")
+          print(f"📡 URL: {search_url}")
+
+          # ارسال به FlareSolverr
+          fs_url = "http://localhost:8191/v1"
+          payload = {
+              "cmd": "request.get",
+              "url": search_url,
+              "maxTimeout": 120000
+          }
+
+          resp = requests.post(fs_url, json=payload, timeout=150)
+          data = resp.json()
+
+          html = data.get("solution", {}).get("response", "")
+          status = data.get("status", "error")
+          message = data.get("message", "")
+
+          print(f"Status: {status}")
+          print(f"Message: {message}")
+
+          if not html:
+              print("❌ No HTML received")
+              html = "<h1>😔 نتیجه‌ای یافت نشد. لطفاً دوباره تلاش کنید.</h1>"
+              results = []
+          else:
+              # استخراج نتایج
+              soup = BeautifulSoup(html, 'html.parser')
+              results = []
+
+              for item in soup.find_all('div', class_='result'):
+                  title_tag = item.find('a', class_='result__a')
+                  snippet_tag = item.find('a', class_='result__snippet')
+                  link_tag = item.find('a', class_='result__url')
+
+                  title = title_tag.get_text(strip=True) if title_tag else ""
+                  link = link_tag.get('href', '') if link_tag else ""
+                  snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
+
+                  if title and link:
+                      results.append({
+                          "title": title,
+                          "url": link,
+                          "description": snippet
+                      })
+
+              print(f"✅ Found {len(results)} results")
+
+          # ساخت HTML خروجی
+          results_html = ""
+          for r in results:
+              results_html += f"""
+              <div class="result">
+                  <a href="{r['url']}">{r['title']}</a>
+                  <br><span class="url">{r['url']}</span>
+                  <br><span class="desc">{r['description']}</span>
+              </div>"""
+
+          if not results:
+              results_html = '<p>😔 نتیجه‌ای یافت نشد.</p>'
+
+          final_html = f"""<!DOCTYPE html>
           <html lang="fa" dir="rtl">
           <head>
           <meta charset="UTF-8">
@@ -70,17 +138,18 @@ jobs:
           <h1>🔍 نتایج جستجو برای: {query}</h1>
           <p class="stats">تاریخ: {timestamp} | تعداد نتایج: {len(results)}</p>
           <hr>
-          {"".join(f'<div class="result"><a href="{r["url"]}">{r["title"]}</a><br><span class="url">{r["url"]}</span><br><span class="desc">{r["description"]}</span></div>' for r in results) if results else '<p>😔 نتیجه‌ای یافت نشد.</p>'}
+          {results_html}
           </body>
           </html>"""
 
+          # ذخیره
           with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
-              f.write(html)
+              f.write(final_html)
 
           with open(f"{output_dir}/urls.json", "w", encoding="utf-8") as f:
               json.dump(results, f, ensure_ascii=False, indent=2)
 
-          print(f"Done. {len(results)} results saved to {output_dir}")
+          print(f"💾 Saved to {output_dir}")
           PYEOF
 
       - name: Commit and push
