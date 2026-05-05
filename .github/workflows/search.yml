@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: pip install -q googlesearch-python
+        run: pip install -q duckduckgo-search
 
       - name: Search and save results as HTML
         env:
@@ -29,19 +29,26 @@ jobs:
           python3 << 'PYEOF'
           import os, json
           from datetime import datetime
-          from googlesearch import search
+          from duckduckgo_search import DDGS
 
           query = os.environ["SEARCH_QUERY"]
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
           output_dir = f"sites/search/{timestamp}"
           os.makedirs(output_dir, exist_ok=True)
 
-          # Perform search (top 10 results)
           results = []
-          for url in search(query, num_results=10):
-              results.append(url)
+          try:
+              with DDGS() as ddgs:
+                  for r in ddgs.text(query, max_results=10):
+                      results.append({
+                          "title": r.get("title", ""),
+                          "url": r.get("href", ""),
+                          "description": r.get("body", "")
+                      })
+          except Exception as e:
+              print(f"Search error: {e}")
 
-          # Build simple HTML page
+          # Build HTML
           html = f"""<!DOCTYPE html>
           <html lang="fa" dir="rtl">
           <head>
@@ -51,29 +58,29 @@ jobs:
           <style>
           body {{ font-family: 'Segoe UI', Tahoma, sans-serif; background: #1e1e2e; color: #cdd6f4; padding: 20px; }}
           h1 {{ color: #cba6f7; border-bottom: 1px solid #313244; padding-bottom: 10px; }}
-          .result {{ margin-bottom: 15px; padding: 12px; background: #181825; border-radius: 8px; border: 1px solid #313244; }}
-          .result a {{ color: #89b4fa; text-decoration: none; font-size: 1.1em; }}
+          .stats {{ color: #a6adc8; font-size: 0.9em; margin-bottom: 20px; }}
+          .result {{ margin-bottom: 15px; padding: 15px; background: #181825; border-radius: 8px; border: 1px solid #313244; }}
+          .result a {{ color: #89b4fa; text-decoration: none; font-size: 1.1em; font-weight: bold; }}
           .result a:hover {{ text-decoration: underline; }}
-          .result .url {{ color: #a6adc8; font-size: 0.85em; }}
+          .result .url {{ color: #6c7086; font-size: 0.85em; }}
+          .result .desc {{ color: #a6adc8; margin-top: 5px; }}
           </style>
           </head>
           <body>
-          <h1>نتایج جستجو برای: {query}</h1>
-          <p>تاریخ: {timestamp}</p>
+          <h1>🔍 نتایج جستجو برای: {query}</h1>
+          <p class="stats">تاریخ: {timestamp} | تعداد نتایج: {len(results)}</p>
           <hr>
-          {"".join(f'<div class="result"><a href="{url}">{url}</a><br><span class="url">{url}</span></div>' for url in results)}
+          {"".join(f'<div class="result"><a href="{r["url"]}">{r["title"]}</a><br><span class="url">{r["url"]}</span><br><span class="desc">{r["description"]}</span></div>' for r in results) if results else '<p>😔 نتیجه‌ای یافت نشد.</p>'}
           </body>
           </html>"""
 
-          # Write HTML file
           with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
               f.write(html)
 
-          # Also save raw URLs as JSON for possible further processing
           with open(f"{output_dir}/urls.json", "w", encoding="utf-8") as f:
               json.dump(results, f, ensure_ascii=False, indent=2)
 
-          print(f"Search completed. {len(results)} results saved to {output_dir}/index.html")
+          print(f"Done. {len(results)} results saved to {output_dir}")
           PYEOF
 
       - name: Commit and push
