@@ -1,0 +1,85 @@
+name: Search Query (search)
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: 'عبارت جستجو'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -q googlesearch-python
+
+      - name: Search and save results as HTML
+        env:
+          SEARCH_QUERY: ${{ github.event.inputs.query }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json
+          from datetime import datetime
+          from googlesearch import search
+
+          query = os.environ["SEARCH_QUERY"]
+          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+          output_dir = f"sites/search/{timestamp}"
+          os.makedirs(output_dir, exist_ok=True)
+
+          # Perform search (top 10 results)
+          results = []
+          for url in search(query, num_results=10):
+              results.append(url)
+
+          # Build simple HTML page
+          html = f"""<!DOCTYPE html>
+          <html lang="fa" dir="rtl">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>نتایج جستجو: {query}</title>
+          <style>
+          body {{ font-family: 'Segoe UI', Tahoma, sans-serif; background: #1e1e2e; color: #cdd6f4; padding: 20px; }}
+          h1 {{ color: #cba6f7; border-bottom: 1px solid #313244; padding-bottom: 10px; }}
+          .result {{ margin-bottom: 15px; padding: 12px; background: #181825; border-radius: 8px; border: 1px solid #313244; }}
+          .result a {{ color: #89b4fa; text-decoration: none; font-size: 1.1em; }}
+          .result a:hover {{ text-decoration: underline; }}
+          .result .url {{ color: #a6adc8; font-size: 0.85em; }}
+          </style>
+          </head>
+          <body>
+          <h1>نتایج جستجو برای: {query}</h1>
+          <p>تاریخ: {timestamp}</p>
+          <hr>
+          {"".join(f'<div class="result"><a href="{url}">{url}</a><br><span class="url">{url}</span></div>' for url in results)}
+          </body>
+          </html>"""
+
+          # Write HTML file
+          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
+              f.write(html)
+
+          # Also save raw URLs as JSON for possible further processing
+          with open(f"{output_dir}/urls.json", "w", encoding="utf-8") as f:
+              json.dump(results, f, ensure_ascii=False, indent=2)
+
+          print(f"Search completed. {len(results)} results saved to {output_dir}/index.html")
+          PYEOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sites/search/
+          git commit -m "🔍 Search: ${{ github.event.inputs.query }} | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
