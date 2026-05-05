@@ -1,4 +1,4 @@
-name: تست نهایی دانلود فایل حجیم
+name: Download Random File from Cubli
 
 on:
   workflow_dispatch:
@@ -7,49 +7,81 @@ permissions:
   contents: write
 
 jobs:
-  test:
+  download:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
-      - name: گرفتن فایل از کانال عمومی
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch random file from t.me/s/cubli
         run: |
-          echo "📡 تست با کانال عمومی @cubli..."
-          
-          # 1. صفحه t.me/s رو باز کن
-          PAGE=$(curl -sL -H "User-Agent: Mozilla/5.0" "https://t.me/s/cubli")
-          
-          # 2. اولین لینک پست رو پیدا کن
-          POST_LINK=$(echo "$PAGE" | grep -oP 'https://t\.me/cubli/\d+' | head -1)
-          echo "🔗 پست: $POST_LINK"
-          
-          if [ -z "$POST_LINK" ]; then
-            echo "❌ پستی پیدا نشد!"
-            exit 0
+          echo "📡 Fetching t.me/s/cubli..."
+          PAGE=$(curl -sL -k \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+            "https://t.me/s/cubli")
+
+          # Extract all post links
+          POSTS=$(echo "$PAGE" | grep -oP 'https://t\.me/cubli/\d+' | sort -u)
+          POST_COUNT=$(echo "$POSTS" | wc -l)
+
+          echo "Found $POST_COUNT posts"
+
+          if [ "$POST_COUNT" -eq 0 ]; then
+            echo "❌ No posts found"
+            exit 1
           fi
-          
-          # 3. محتوای پست رو بگیر
-          POST_PAGE=$(curl -sL -H "User-Agent: Mozilla/5.0" "$POST_LINK")
-          
-          # 4. لینک مستقیم فایل رو استخراج کن
-          FILE_URL=$(echo "$POST_PAGE" | grep -oP 'https://[^"]+\.(apk|zip|pdf|rar|7z|tar\.gz)[^"]*' | head -1)
-          
-          if [ -z "$FILE_URL" ]; then
-            echo "❌ فایلی توی این پست نیست!"
-            exit 0
+
+          # Select random post
+          RANDOM_INDEX=$(( (RANDOM % POST_COUNT) + 1 ))
+          RANDOM_POST=$(echo "$POSTS" | sed -n "${RANDOM_INDEX}p")
+          echo "🎲 Random post: $RANDOM_POST"
+
+          # Get post page
+          POST_PAGE=$(curl -sL -k \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+            "$RANDOM_POST")
+
+          # Extract direct file URL (any common format)
+          CDN_URL=$(echo "$POST_PAGE" | grep -oP 'https://[^"]+\.(apk|zip|rar|pdf|7z|tar\.gz|epub|mobi|cbr|cbz)[^"]*' | head -1)
+
+          if [ -z "$CDN_URL" ]; then
+            echo "❌ No file URL found in post"
+            exit 1
           fi
-          
-          echo "📥 در حال دانلود..."
-          curl -L -o test_file.download "$FILE_URL"
-          
-          if [ -f test_file.download ]; then
-            SIZE=$(stat -c%s test_file.download)
+
+          echo "🔗 Download URL: ${CDN_URL:0:100}..."
+
+          # Extract filename from URL
+          FILENAME=$(echo "$CDN_URL" | grep -oP '[^/]+(?=\?|$)' | head -1)
+          if [ -z "$FILENAME" ]; then
+            FILENAME="downloaded_file"
+          fi
+
+          echo "📥 Downloading $FILENAME..."
+
+          curl -k -L -o "$FILENAME" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+            --connect-timeout 30 --max-time 300 \
+            "$CDN_URL"
+
+          if [ -f "$FILENAME" ]; then
+            SIZE=$(stat -c%s "$FILENAME")
             SIZE_MB=$((SIZE / 1024 / 1024))
-            echo "✅ سایز: ${SIZE} بایت (${SIZE_MB}MB)"
-            if [ $SIZE_MB -gt 20 ]; then
-              echo "🎉🎉🎉 اثبات شد! 🎉🎉🎉"
-              echo "فایل ${SIZE_MB} مگابایتی با موفقیت دانلود شد."
-              echo "محدودیت ۲۰MB برای t.me/s وجود ندارد!"
+            echo "✅ File downloaded: $FILENAME ($SIZE bytes, ~${SIZE_MB} MB)"
+            if [ "$SIZE_MB" -gt 20 ]; then
+              echo "🎉 Success! File >20MB downloaded from t.me/s"
             fi
           else
-            echo "❌ دانلود ناموفق"
+            echo "❌ Download failed"
+            exit 1
           fi
+
+      - name: Commit and push file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add *.apk *.zip *.rar *.pdf *.7z *.tar.gz *.epub *.mobi *.cbr *.cbz downloaded_file 2>/dev/null || true
+          git commit -m "📦 Random file from @cubli | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
