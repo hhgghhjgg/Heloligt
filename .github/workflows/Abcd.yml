@@ -1,4 +1,4 @@
-name: دانلود فایل تصادفی از ArchiveKuraiScans
+name: تست نهایی دانلود فایل حجیم
 
 on:
   workflow_dispatch:
@@ -7,89 +7,49 @@ permissions:
   contents: write
 
 jobs:
-  download:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 10
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: دریافت پست تصادفی و دانلود فایل
+      - name: گرفتن فایل از کانال عمومی
         run: |
-          echo "📡 باز کردن کانال t.me/s/ArchiveKuraiScans?q=index..."
-
-          PAGE=$(curl -sL -k \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            "https://t.me/s/ArchiveKuraiScans?q=index")
-
-          # استخراج همه لینک‌های پست
-          POSTS=$(echo "$PAGE" | grep -oP 'https://t\.me/ArchiveKuraiScans/\d+' | sort -u)
-          POST_COUNT=$(echo "$POSTS" | wc -l)
-
-          echo "📊 تعداد پست‌های پیدا شده: $POST_COUNT"
-
-          if [ "$POST_COUNT" -eq 0 ]; then
-            echo "❌ هیچ پستی پیدا نشد"
-            exit 1
+          echo "📡 تست با کانال عمومی @cubli..."
+          
+          # 1. صفحه t.me/s رو باز کن
+          PAGE=$(curl -sL -H "User-Agent: Mozilla/5.0" "https://t.me/s/cubli")
+          
+          # 2. اولین لینک پست رو پیدا کن
+          POST_LINK=$(echo "$PAGE" | grep -oP 'https://t\.me/cubli/\d+' | head -1)
+          echo "🔗 پست: $POST_LINK"
+          
+          if [ -z "$POST_LINK" ]; then
+            echo "❌ پستی پیدا نشد!"
+            exit 0
           fi
-
-          # انتخاب یه پست تصادفی
-          RANDOM_INDEX=$(( (RANDOM % POST_COUNT) + 1 ))
-          RANDOM_POST=$(echo "$POSTS" | sed -n "${RANDOM_INDEX}p")
-          echo "🎲 پست تصادفی انتخاب شده: $RANDOM_POST"
-
-          # گرفتن محتوای پست
-          POST_PAGE=$(curl -sL -k \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            "$RANDOM_POST?embed=1")
-
-          # استخراج لینک فایل (هر نوع فایلی)
-          CDN_URL=$(echo "$POST_PAGE" | grep -oP 'https://[^"]+\.(zip|rar|pdf|apk|epub|mobi|cbz|cbr|7z|tar\.gz)[^"]*' | head -1)
-
-          if [ -z "$CDN_URL" ]; then
-            # اگه فرمت خاصی نبود، هر لینک دانلودی رو بگیر
-            CDN_URL=$(echo "$POST_PAGE" | grep -oP 'https://cdn[0-9]+\.telesco\.pe/[^"]+' | head -1)
+          
+          # 3. محتوای پست رو بگیر
+          POST_PAGE=$(curl -sL -H "User-Agent: Mozilla/5.0" "$POST_LINK")
+          
+          # 4. لینک مستقیم فایل رو استخراج کن
+          FILE_URL=$(echo "$POST_PAGE" | grep -oP 'https://[^"]+\.(apk|zip|pdf|rar|7z|tar\.gz)[^"]*' | head -1)
+          
+          if [ -z "$FILE_URL" ]; then
+            echo "❌ فایلی توی این پست نیست!"
+            exit 0
           fi
-
-          if [ -z "$CDN_URL" ]; then
-            echo "❌ لینک فایل پیدا نشد"
-            exit 1
-          fi
-
-          echo "🔗 لینک دانلود: ${CDN_URL:0:100}..."
-
-          # استخراج اسم فایل از لینک
-          FILENAME=$(echo "$CDN_URL" | grep -oP '[^/]+(?=[\?&]|$)' | head -1)
-          if [ -z "$FILENAME" ]; then
-            FILENAME="downloaded_file"
-          fi
-
-          echo "📥 در حال دانلود: $FILENAME"
-
-          curl -k -L -o "$FILENAME" \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            --connect-timeout 30 \
-            --max-time 300 \
-            "$CDN_URL"
-
-          if [ -f "$FILENAME" ]; then
-            SIZE=$(stat -c%s "$FILENAME" 2>/dev/null || echo 0)
+          
+          echo "📥 در حال دانلود..."
+          curl -L -o test_file.download "$FILE_URL"
+          
+          if [ -f test_file.download ]; then
+            SIZE=$(stat -c%s test_file.download)
             SIZE_MB=$((SIZE / 1024 / 1024))
-            echo "========================================="
-            echo "✅ فایل با موفقیت دانلود شد!"
-            echo "📁 نام: $FILENAME"
-            echo "📊 سایز: ${SIZE} بایت (${SIZE_MB}MB)"
-            echo "🔗 از پست: $RANDOM_POST"
-            echo "========================================="
+            echo "✅ سایز: ${SIZE} بایت (${SIZE_MB}MB)"
+            if [ $SIZE_MB -gt 20 ]; then
+              echo "🎉🎉🎉 اثبات شد! 🎉🎉🎉"
+              echo "فایل ${SIZE_MB} مگابایتی با موفقیت دانلود شد."
+              echo "محدودیت ۲۰MB برای t.me/s وجود ندارد!"
+            fi
           else
             echo "❌ دانلود ناموفق"
           fi
-
-      - name: Commit و Push فایل
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add *.zip *.rar *.pdf *.apk *.epub *.mobi *.cbz *.cbr *.7z *.tar.gz downloaded_file 2>/dev/null || true
-          git commit -m "📦 فایل تصادفی از ArchiveKuraiScans | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
-          git pull --rebase && git push || true
