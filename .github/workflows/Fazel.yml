@@ -1,88 +1,79 @@
-name: Debug Telemetr HTML Structure
+name: Test Cloudflare Worker
 
 on:
   workflow_dispatch:
-    inputs:
-      channel:
-        description: 'نام کاربری کانال (بدون @)'
-        required: true
-        default: 'badsoccer'
 
 permissions:
   contents: write
 
 jobs:
-  debug:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: pip install -q requests beautifulsoup4
-
-      - name: Wait for FlareSolverr
+      - name: Test Worker
         run: |
-          for i in $(seq 1 30); do
-            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
-            if [ "$status" = "200" ] || [ "$status" = "405" ]; then break; fi
-            sleep 2
-          done
+          echo "🧪 Testing Cloudflare Worker..."
+          
+          # آدرس Worker خودت رو اینجا بذار
+          WORKER_URL="https://morning-waterfall-79c0.workers.dev"
+          
+          echo "📡 Sending request to: $WORKER_URL"
+          
+          # تست ۱: درخواست ساده
+          echo ""
+          echo "=== Test 1: GET Request ==="
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" "$WORKER_URL" 2>&1)
+          HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
+          BODY=$(echo "$RESPONSE" | sed '/HTTP_CODE:/d')
+          
+          echo "HTTP Status: $HTTP_CODE"
+          echo "Response body (first 500 chars):"
+          echo "$BODY" | head -c 500
+          
+          # تست ۲: درخواست با User-Agent موبایل
+          echo ""
+          echo "=== Test 2: Mobile User-Agent ==="
+          MOBILE_RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
+            -H "User-Agent: Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36" \
+            "$WORKER_URL" 2>&1)
+          MOBILE_CODE=$(echo "$MOBILE_RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
+          echo "HTTP Status: $MOBILE_CODE"
+          
+          # تست ۳: DNS Resolution
+          echo ""
+          echo "=== Test 3: DNS Resolution ==="
+          WORKER_HOST=$(echo "$WORKER_URL" | sed 's|https://||')
+          nslookup "$WORKER_HOST" 2>&1 || echo "DNS lookup failed"
+          
+          # ذخیره نتایج
+          mkdir -p sites/worker-test
+          echo "Test URL: $WORKER_URL" > sites/worker-test/result.txt
+          echo "HTTP Status: $HTTP_CODE" >> sites/worker-test/result.txt
+          echo "Mobile Status: $MOBILE_CODE" >> sites/worker-test/result.txt
+          echo "" >> sites/worker-test/result.txt
+          echo "=== Response Body ===" >> sites/worker-test/result.txt
+          echo "$BODY" | head -c 2000 >> sites/worker-test/result.txt
+          
+          # نتیجه‌گیری
+          echo ""
+          echo "=== Summary ==="
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Worker is ACTIVE and responding!"
+          elif [ "$HTTP_CODE" = "530" ] || [ "$HTTP_CODE" = "000" ]; then
+            echo "⚠️ Worker is OFFLINE or not deployed"
+          else
+            echo "❓ Worker returned HTTP $HTTP_CODE"
+          fi
 
-      - name: Fetch and save raw HTML
-        env:
-          CHANNEL: ${{ github.event.inputs.channel }}
-        run: |
-          python3 << 'PYEOF'
-          import os, requests
-          from datetime import datetime
-
-          channel = os.environ["CHANNEL"]
-          telemetr_url = f"https://telemetr.io/en/channels/@{channel}"
-
-          print(f"📡 Fetching {telemetr_url}")
-
-          fs_url = "http://localhost:8191/v1"
-          payload = {"cmd": "request.get", "url": telemetr_url, "maxTimeout": 120000}
-          resp = requests.post(fs_url, json=payload, timeout=150)
-          data = resp.json()
-
-          html_content = data.get("solution", {}).get("response", "")
-          status = data.get("status", "unknown")
-          message = data.get("message", "")
-
-          print(f"Status: {status}")
-          print(f"Message: {message}")
-          print(f"HTML length: {len(html_content)} chars")
-
-          # Save raw HTML
-          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-          output_dir = f"sites/telegram/{channel}/{timestamp}"
-          os.makedirs(output_dir, exist_ok=True)
-
-          with open(f"{output_dir}/raw.html", "w", encoding="utf-8") as f:
-              f.write(html_content)
-
-          # Also save first 5000 chars for quick preview
-          with open(f"{output_dir}/preview.txt", "w", encoding="utf-8") as f:
-              f.write(html_content[:5000])
-
-          print(f"✅ Saved to {output_dir}")
-          print(f"📄 Preview saved")
-          PYEOF
-
-      - name: Commit and push
+      - name: Commit results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sites/telegram/
-          git commit -m "🔍 Debug HTML for @${{ github.event.inputs.channel }}" || echo "Nothing to commit"
+          git add sites/worker-test/
+          git commit -m "🧪 Cloudflare Worker test | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
