@@ -1,77 +1,57 @@
-name: تست دانلود فایل حجیم از کانال رسمی تلگرام
+name: تست دانلود APK تلگرام و ذخیره در ریپازیتوری
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  download_telegram_apk:
+  download:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: دانلود فایل APK از کانال رسمی تلگرام
         run: |
-          echo "📡 در حال باز کردن کانال رسمی تلگرام (t.me/s/tgandroid)..."
+          echo "📡 باز کردن کانال رسمی تلگرام (t.me/s/tgandroid)..."
           
-          # 1. کانال رسمی تلگرام رو باز می‌کنیم
           PAGE=$(curl -sL \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
+            -H "User-Agent: Mozilla/5.0" \
             "https://t.me/s/tgandroid")
           
-          # 2. لینک آخرین پست حاوی فایل APK رو پیدا می‌کنیم
           LAST_POST=$(echo "$PAGE" | grep -oP 'https://t\.me/tgandroid/\d+' | head -1)
+          echo "🔗 پست: $LAST_POST"
           
-          if [ -z "$LAST_POST" ]; then
-            echo "❌ نتونستم پستی پیدا کنم. شاید ساختار صفحه عوض شده."
-            exit 0
-          fi
-          
-          echo "🔗 آخرین پست: $LAST_POST"
-          
-          # 3. محتوای آخرین پست رو میگیریم
           POST_PAGE=$(curl -sL \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
+            -H "User-Agent: Mozilla/5.0" \
             "$LAST_POST")
           
-          # 4. لینک مستقیم فایل APK رو استخراج می‌کنیم
           CDN_URL=$(echo "$POST_PAGE" | grep -oP 'https://[^"]+\.apk[^"]*' | head -1)
+          echo "📥 در حال دانلود..."
           
-          if [ -z "$CDN_URL" ]; then
-            echo "❌ نتونستم لینک APK رو توی این پست پیدا کنم."
-            exit 0
-          fi
+          curl -L -o Telegram.apk \
+            -H "User-Agent: Mozilla/5.0" \
+            --connect-timeout 30 --max-time 300 \
+            "$CDN_URL"
           
-          echo "🔗 لینک مستقیم APK: ${CDN_URL:0:100}..."
-          echo "📥 در حال دانلود فایل APK (احتمالاً بالای ۷۰ مگابایت)..."
-          
-          # 5. دانلود فایل
-          curl -L -o /tmp/Telegram.apk \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
-            --connect-timeout 30 \
-            --max-time 300 \
-            "$CDN_URL" 2>/dev/null
-          
-          # 6. نمایش نتیجه
-          if [ -f /tmp/Telegram.apk ]; then
-            SIZE_BYTES=$(stat -c%s /tmp/Telegram.apk 2>/dev/null || echo 0)
-            SIZE_MB=$((SIZE_BYTES / 1024 / 1024))
-            
-            echo ""
-            echo "========================================="
-            echo " ✅ فایل با موفقیت دانلود شد!"
-            echo " 📁 نام: Telegram.apk"
-            echo " 📊 سایز دقیق: ${SIZE_BYTES} بایت"
-            echo " 📊 سایز تقریبی: ${SIZE_MB} مگابایت"
-            echo ""
-            
+          if [ -f Telegram.apk ]; then
+            SIZE=$(stat -c%s Telegram.apk)
+            SIZE_MB=$((SIZE / 1024 / 1024))
+            echo "✅ سایز: ${SIZE} بایت (${SIZE_MB}MB)"
             if [ "$SIZE_MB" -gt 20 ]; then
-              echo " 🎉🎉🎉 اثبات شد! 🎉🎉🎉"
-              echo " فایل ${SIZE_MB}MB با موفقیت از t.me/s دانلود شد."
-              echo " این ثابت میکنه که محدودیت ۲۰MB برای دانلود از t.me/s وجود ندارد!"
-            else
-              echo " ⚠️ فایل کمتر از ۲۰MB بود. شاید نسخه دیگه‌ای آپلود شده."
+              echo "🎉 اثبات شد! فایل ${SIZE_MB}MB با موفقیت از t.me/s دانلود شد!"
             fi
-            echo "========================================="
-          else
-            echo "❌ فایل دانلود نشد."
           fi
+
+      - name: ذخیره فایل در ریپازیتوری
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Telegram.apk 2>/dev/null || true
+          git commit -m "📦 Telegram APK downloaded from t.me/s" || echo "Nothing to commit"
+          git pull --rebase && git push || true
+          echo "✅ فایل در ریپازیتوری ذخیره شد!"
