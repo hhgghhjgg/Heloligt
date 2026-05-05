@@ -1,0 +1,22 @@
+name: Debug Search Output
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Check sites/search
+        run: |
+          echo "=== پوشه sites/search ==="
+          ls -la sites/search/ 2>/dev/null || echo "پوشه sites/search وجود نداره"
+          echo ""
+          echo "=== کل پوشه sites ==="
+          find sites/ -type d 2>/dev/null || echo "پوشه sites وجود نداره"
+          echo ""
+          echo "=== فایل‌های index.html ==="
+          find sites/ -name "index.html" 2>/dev/null || echo "هیچ فایل index.html پیدا نشد"
