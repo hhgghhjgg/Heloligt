@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'آدرس کامل سایت (مثلاً https://example.com/page)'
+        description: 'آدرس کامل سایت'
         required: true
 
 permissions:
@@ -32,10 +32,7 @@ jobs:
         run: |
           for i in $(seq 1 30); do
             status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
-            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
-              echo "FlareSolverr ready (status: $status)"
-              break
-            fi
+            if [ "$status" = "200" ] || [ "$status" = "405" ]; then break; fi
             sleep 2
           done
 
@@ -44,89 +41,121 @@ jobs:
           TARGET_URL: ${{ github.event.inputs.url }}
         run: |
           python3 << 'PYEOF'
-          import os, json, requests, re, hashlib, shutil, base64
+          import os, json, requests, re, hashlib, base64
           from bs4 import BeautifulSoup
           from datetime import datetime
           from urllib.parse import urljoin, urlparse
 
           target_url = os.environ["TARGET_URL"]
-          domain = urlparse(target_url).netloc
+          if not target_url.startswith('http'):
+              target_url = 'https://' + target_url
 
-          # ساختن نام پوشه با تاریخ و زمان
+          domain = urlparse(target_url).netloc
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
           output_dir = f"sites/{domain}/{timestamp}"
           os.makedirs(output_dir, exist_ok=True)
 
           print(f"Fetching {target_url}")
 
-          # درخواست از FlareSolverr
+          # Fetch with FlareSolverr
           fs_url = "http://localhost:8191/v1"
-          payload = {
-              "cmd": "request.get",
-              "url": target_url,
-              "maxTimeout": 120000
-          }
-
+          payload = {"cmd": "request.get", "url": target_url, "maxTimeout": 120000}
           resp = requests.post(fs_url, json=payload, timeout=150)
           data = resp.json()
-
           html = data.get("solution", {}).get("response", "")
+
           if not html:
-              print("خطا: HTML دریافت نشد")
-              exit(1)
+              print("ERROR: No HTML received")
+              with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
+                  f.write("<h1 style='color:red;text-align:center;padding:50px;'>❌ سایت بارگذاری نشد</h1><p style='text-align:center'>FlareSolverr نتونست صفحه رو دریافت کنه. احتمالاً سایت تحریم هست یا کلادفلر خیلی قوی داره.</p>")
+              exit(0)
 
-          # ذخیره HTML اصلی
-          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
-              f.write(html)
-
-          # دانلود CSS، JS، عکس‌ها و فونت‌ها
           soup = BeautifulSoup(html, 'html.parser')
-          assets = []
 
-          # CSS
+          # Inline all CSS
           for tag in soup.find_all('link', rel='stylesheet'):
               href = tag.get('href')
-              if href:
+              if href and not href.startswith('data:'):
                   full = urljoin(target_url, href)
-                  assets.append(('css', full))
+                  try:
+                      css_resp = requests.get(full, timeout=10, headers={"User-Agent": "MagicBrowser/1.0"})
+                      if css_resp.status_code == 200:
+                          style = soup.new_tag('style')
+                          style.string = css_resp.text
+                          tag.replace_with(style)
+                          print(f"  Inlined CSS: {href}")
+                  except Exception as e:
+                      print(f"  CSS error: {e}")
 
-          # JS
+          # Inline all JS
           for tag in soup.find_all('script', src=True):
               src = tag.get('src')
-              if src:
+              if src and not src.startswith('data:'):
                   full = urljoin(target_url, src)
-                  assets.append(('js', full))
+                  try:
+                      js_resp = requests.get(full, timeout=10, headers={"User-Agent": "MagicBrowser/1.0"})
+                      if js_resp.status_code == 200:
+                          script = soup.new_tag('script')
+                          script.string = js_resp.text
+                          tag.replace_with(script)
+                          print(f"  Inlined JS: {src}")
+                  except Exception as e:
+                      print(f"  JS error: {e}")
 
-          # عکس‌ها
-          for tag in soup.find_all('img', src=True):
-              src = tag.get('src')
-              if src:
+          # Download all images
+          for tag in soup.find_all('img'):
+              src = tag.get('src') or tag.get('data-src') or tag.get('data-lazy-src')
+              if src and not src.startswith('data:'):
                   full = urljoin(target_url, src)
-                  assets.append(('img', full))
+                  try:
+                      img_resp = requests.get(full, timeout=15, headers={"User-Agent": "MagicBrowser/1.0"})
+                      if img_resp.status_code == 200:
+                          content_type = img_resp.headers.get('content-type', '')
+                          ext = 'jpg'
+                          if 'png' in content_type: ext = 'png'
+                          elif 'gif' in content_type: ext = 'gif'
+                          elif 'svg' in content_type: ext = 'svg'
+                          elif 'webp' in content_type: ext = 'webp'
+                          fname = f"{hashlib.md5(full.encode()).hexdigest()[:10]}.{ext}"
+                          with open(f"{output_dir}/{fname}", "wb") as f:
+                              f.write(img_resp.content)
+                          tag['src'] = fname
+                          print(f"  Downloaded: {fname}")
+                  except Exception as e:
+                      print(f"  Image error: {e}")
 
-          # دانلود و ذخیره
-          for asset_type, asset_url in assets:
-              try:
-                  asset_resp = requests.get(asset_url, timeout=15, headers={"User-Agent": "MagicBrowser/1.0"})
-                  if asset_resp.status_code == 200:
-                      # مسیر فایل محلی
-                      parsed = urlparse(asset_url)
-                      filename = os.path.basename(parsed.path)
-                      if not filename or len(filename) > 80:
-                          filename = f"{hashlib.md5(asset_url.encode()).hexdigest()[:10]}.{asset_type}"
-                      local_path = f"{output_dir}/{filename}"
-                      with open(local_path, "wb") as f_asset:
-                          f_asset.write(asset_resp.content)
-                      print(f"  Downloaded: {filename}")
-              except Exception as e:
-                  print(f"  Error downloading {asset_url}: {e}")
+          # Download background images from style attributes
+          for tag in soup.find_all(style=True):
+              style_text = tag['style']
+              urls = re.findall(r'url\(["\']?([^)"\']+)["\']?\)', style_text)
+              for bg_url in urls:
+                  full = urljoin(target_url, bg_url)
+                  try:
+                      bg_resp = requests.get(full, timeout=15, headers={"User-Agent": "MagicBrowser/1.0"})
+                      if bg_resp.status_code == 200:
+                          content_type = bg_resp.headers.get('content-type', '')
+                          ext = 'jpg'
+                          if 'png' in content_type: ext = 'png'
+                          elif 'gif' in content_type: ext = 'gif'
+                          elif 'svg' in content_type: ext = 'svg'
+                          elif 'webp' in content_type: ext = 'webp'
+                          fname = f"bg_{hashlib.md5(full.encode()).hexdigest()[:10]}.{ext}"
+                          with open(f"{output_dir}/{fname}", "wb") as f:
+                              f.write(bg_resp.content)
+                          tag['style'] = style_text.replace(bg_url, fname)
+                          print(f"  Downloaded BG: {fname}")
+                  except Exception as e:
+                      print(f"  BG error: {e}")
 
-          # لیست فایل‌های دانلود شده
-          files = os.listdir(output_dir)
-          print(f"Total files: {len(files)}")
-          for f in files:
-              size = os.path.getsize(f"{output_dir}/{f}")
-              print(f"  - {f} ({size} bytes)")
+          # Save final HTML
+          html_content = str(soup)
+          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
+              f.write(html_content)
+
+          # List files
+          for fn in os.listdir(output_dir):
+              size = os.path.getsize(f"{output_dir}/{fn}")
+              print(f"  File: {fn} ({size} bytes)")
           PYEOF
 
       - name: Commit and push
@@ -134,5 +163,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sites/
-          git commit -m "🌐 Fetch ${{ github.event.inputs.url }} | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git commit -m "🌐 ${{ github.event.inputs.url }}" || echo "Nothing to commit"
           git pull --rebase && git push || true
