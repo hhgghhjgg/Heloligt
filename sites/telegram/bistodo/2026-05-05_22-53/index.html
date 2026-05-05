@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>@bistodo - Telegram Viewer</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #0f0f0f;
+    color: #e0e0e0;
+    line-height: 1.8;
+}
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px 15px;
+}
+.header {
+    background: linear-gradient(135deg, #1a1a2e, #16213e);
+    color: white;
+    padding: 30px 20px;
+    text-align: center;
+    margin-bottom: 30px;
+    border-bottom: 3px solid #e94560;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+.header h1 {
+    font-size: 2em;
+    margin-bottom: 5px;
+}
+.header p {
+    opacity: 0.8;
+    font-size: 0.9em;
+}
+.post-card {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.post-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0,0,0,0.5);
+}
+.post-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #333;
+    font-size: 0.85em;
+    color: #999;
+}
+.post-date {
+    color: #e94560;
+    font-weight: bold;
+}
+.post-text {
+    margin-bottom: 15px;
+    font-size: 1.05em;
+    color: #d0d0d0;
+}
+.post-media {
+    margin-bottom: 15px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+.post-media img, .post-media video {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 8px;
+}
+.post-links {
+    margin-top: 10px;
+    font-size: 0.9em;
+}
+.post-links a {
+    color: #4fc3f7;
+    text-decoration: none;
+    word-break: break-all;
+}
+.footer {
+    text-align: center;
+    padding: 20px;
+    color: #666;
+    font-size: 0.8em;
+    border-top: 1px solid #2a2a2a;
+    margin-top: 30px;
+}
+</style>
+</head>
+<body>
+<div class="header">
+    <h1>📡 @bistodo</h1>
+    <p>تولید شده: 2026-05-05 22:53:55 | تعداد پست‌ها: 20</p>
+</div>
+<div class="container">
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T09:07:38+00:00</span>
+    <span class="post-views">👁 35.1K</span>
+  </div>
+  <div class="post-text">خب دیگه<br>کم کم بریم سراغ چندتا کانفیگ ناب و زیبا</div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T09:10:39+00:00</span>
+    <span class="post-views">👁 40.3K</span>
+  </div>
+  <div class="post-text">🚨<br>💣<br>🔑<br>یه کانفیگ نپسترنت با پینگ فوق العاده خفن تقدیم به شما، بفرستید برای رفقاتون<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T09:18:27+00:00</span>
+    <span class="post-views">👁 34K</span>
+  </div>
+  <div class="post-text">بخاطر قدردانی از استقبال بی‌نظیرتون<br>بریم برای یه غول دیگه</div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T09:20:07+00:00</span>
+    <span class="post-views">👁 41.1K</span>
+  </div>
+  <div class="post-text">🚨<br>💣<br>🔑<br>اینم از دومین فایل نپسترنتمون، سرعتش خیلی عالیه، بفرستید برای هرکسی که میشناسید<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T09:30:45+00:00</span>
+    <span class="post-views">👁 40.9K</span>
+  </div>
+  <div class="post-text">🚨<br>💣<br>🔑<br>فایل نصبی برنامه Npv Tunnel برای دوستانی که ندارن<br>🛒<br>لینک دانلود مستقیم از گوگل پلی<br>🛒<br>لینک دانلود مستقیم از اپ استور<br>کسایی که آیفون دارن فقط با اپ استور میتونن نصب کنند<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://play.google.com/store/apps/details?id=com.napsternetlabs.napsternetv" target="_blank">🔗 https://play.google.com/store/apps/details?id=com.napsternetlabs.napsternetv</a><br>
+    <a href="https://apps.apple.com/us/app/npv-tunnel/id1629465476" target="_blank">🔗 https://apps.apple.com/us/app/npv-tunnel/id1629465476</a><br>
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T09:49:52+00:00</span>
+    <span class="post-views">👁 37.2K</span>
+  </div>
+  <div class="post-text">خب خب<br>یدونه دیگه با متد متفاوت</div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T09:51:17+00:00</span>
+    <span class="post-views">👁 37.4K</span>
+  </div>
+  <div class="post-text">🚨<br>💣<br>🔑<br>یه فایل نپسترنت ناب برای شما عزیزان، وصل بشید و لذت ببرید<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T10:03:05+00:00</span>
+    <span class="post-views">👁 32.8K</span>
+  </div>
+  <div class="post-text">قطع شدن خیلیا<br>الان درستش میکنیم<br>برگشتشون با شما</div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T10:04:30+00:00</span>
+    <span class="post-views">👁 36.2K</span>
+  </div>
+  <div class="post-text">🚨<br>💣<br>🔑<br>کانفیگ نپسترنت با سرعت موشک، بفرستید برای همه رفقاتون وصل بشن<br>پسوردش:<br>@bistodo<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T10:09:52+00:00</span>
+    <span class="post-views">👁 38.9K</span>
+  </div>
+  <div class="post-text">یکم دل به کار بدین هرکدومو برای یه نفر بفرستید که وصل بشه کم کم همه برمیگردن<br>تا جایی که در توانمون باشه مثل گذشته از کانفیگا پشتیبانی میکنیم<br>بریم برای یه بمب دیگه<br>💣</div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-14T10:12:17+00:00</span>
+    <span class="post-views">👁 47.1K</span>
+  </div>
+  <div class="post-text">🚨<br>💣<br>🔑<br>موشک بازی همچنان ادامه داره، اینم یه سرور ناب دیگه تقدیم به شما، بفرستید برای هرکسیییییی که میشناسین همه از روبیکا نجات پیدا کنن<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-15T14:07:06+00:00</span>
+    <span class="post-views">👁 40.7K</span>
+  </div>
+  <div class="post-text">کانفیگ نپسترنت جدید<br>پسورد:<br>@bistodo<br>برای اتصال چند لحظه صبر کنید.<br>دانلود برنامه Npv Tunnel<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo/102373" target="_blank">🔗 https://t.me/bistodo/102373</a><br>
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-15T14:09:38+00:00</span>
+    <span class="post-views">👁 46.3K</span>
+  </div>
+  <div class="post-text">کانفیگ نپسترنت پرسرعت جدید<br>پسورد:<br>@bistodo<br>دانلود برنامه Npv Tunnel<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo/102373" target="_blank">🔗 https://t.me/bistodo/102373</a><br>
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-15T14:11:06+00:00</span>
+    <span class="post-views">👁 45.1K</span>
+  </div>
+  <div class="post-text">bistodo<br>❤️<br>.npvt</div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-15T14:16:58+00:00</span>
+    <span class="post-views">👁 50.6K</span>
+  </div>
+  <div class="post-text">کانفیگ نپسترنت پرسرعت جدید<br>پسورد:<br>@bistodo<br>دانلود برنامه Npv Tunnel<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo/102373" target="_blank">🔗 https://t.me/bistodo/102373</a><br>
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-15T14:20:54+00:00</span>
+    <span class="post-views">👁 54K</span>
+  </div>
+  <div class="post-text">کانفیگ نپسترنت پرسرعت جدید<br>پسورد:<br>@bistodo<br>دانلود برنامه Npv Tunnel<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo/102373" target="_blank">🔗 https://t.me/bistodo/102373</a><br>
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-15T14:31:28+00:00</span>
+    <span class="post-views">👁 60.4K</span>
+  </div>
+  <div class="post-text">🚨<br>💣<br>🔑<br>کانفیگ نپسترنت داغ داغ همین الان از تنور درومده، با سرعت موشک، بفرستید برای همه رفقاتون وصل بشن<br>پسوردش:<br>@bistodo<br>⚽️<br>@bistodo</div>
+  <div class="post-links">
+    <a href="https://t.me/bistodo" target="_blank">🔗 https://t.me/bistodo</a><br>
+  </div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-26T15:55:37+00:00</span>
+    <span class="post-views">👁 34K</span>
+  </div>
+  <div class="post-text">سلام رفقای بیست و دویی<br>یکی از رفقامون، کیارش که هر روز تو چنل پست میزد دیروز جراحی مغزی کرده و بعد از اتمام عمل،۳۶ ساعته به هوش نیومده و تو کماست، ازتون میخوام از ته دلتون انرژی های مثبتتون و دعاهای نیک خودتون را بفرستید، امیدوارم که به هوش بیاد و دوباره کنار هم باشیم<br>❤️</div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-26T19:34:05+00:00</span>
+    <span class="post-views">👁 29.9K</span>
+  </div>
+  <div class="post-text">سلام رفقای بیست و دویی یکی از رفقامون، کیارش که هر روز تو چنل پست میزد دیروز جراحی مغزی کرده و بعد از اتمام عمل،۳۶ ساعته به هوش نیومده و تو کماست، ازتون میخوام از ته دلتون انرژی های مثبتتون و دعاهای نیک خودتون را بفرستید، امیدوارم که به هوش بیاد و دوباره کنار…</div>
+</div>
+<div class="post-card">
+  <div class="post-header">
+    <span class="post-date">2026-04-27T15:36:16+00:00</span>
+    <span class="post-views">👁 25.5K</span>
+  </div>
+  <div class="post-text">چون نگرانتون کردم، از شرایط حاد و هوشیاری پایین اومده بیرون، به لطف انرژی و دعاهاتون امیدواریم تا فردا به هوش بیاد، ممنون بابت دعاهاتون</div>
+</div>
+
+</div>
+<div class="footer">
+    <p>ساخته شده با GitHub Actions | قابل اجرا روی KSWEB</p>
+</div>
+</body>
+</html>
