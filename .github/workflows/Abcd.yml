@@ -1,119 +1,92 @@
-name: Fetch Any Page with FlareSolverr
+name: Test Clean IPs for Instagram
 
 on:
   workflow_dispatch:
-    inputs:
-      url:
-        description: 'آدرس کامل صفحه (مثلاً صفحه چپتر یا هر صفحه دیگر)'
-        required: true
-        default: 'https://kingofshojo.com/'
 
 permissions:
   contents: write
 
 jobs:
-  fetch:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: pip install -q requests
-
-      - name: Wait for FlareSolverr
+      - name: Test all IPs
         run: |
-          for i in $(seq 1 30); do
-            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
-            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
-              echo "FlareSolverr ready"
-              break
+          # لیست IP های تمیز کلادفلر
+          cat << 'EOF' > ips.txt
+          162.159.192.1
+          162.159.193.1
+          162.159.195.1
+          162.159.204.1
+          188.114.96.1
+          188.114.97.1
+          EOF
+          
+          # اضافه کردن IP های SuperDNS (اونا هم IP کلادفلر هستن)
+          cat << 'EOF' >> ips.txt
+          64.6.64.6
+          64.6.65.6
+          77.88.8.8
+          77.88.8.1
+          156.154.70.1
+          199.85.127.10
+          8.20.247.20
+          208.67.222.222
+          208.67.220.220
+          223.5.5.5
+          217.218.26.77
+          93.118.122.110
+          8.26.56.26
+          216.146.36.36
+          195.46.39.39
+          4.2.2.2
+          198.101.242.72
+          5.160.12.98
+          80.80.80.80
+          EOF
+          
+          echo "🧪 Testing $(wc -l < ips.txt) IPs..."
+          
+          > results.txt
+          
+          while IFS= read -r ip; do
+            [ -z "$ip" ] && continue
+            echo "Testing: $ip"
+            
+            # تست ۱: Ping
+            ping -c 2 -W 3 "$ip" > /dev/null 2>&1 && ping_status="✅" || ping_status="❌"
+            
+            # تست ۲: Instagram
+            insta_http=$(curl -s -o /dev/null -w "%{http_code}" -m 10 --resolve "instagram.com:443:$ip" https://instagram.com 2>/dev/null || echo "000")
+            
+            # تست ۳: Cloudflare
+            cf_http=$(curl -s -o /dev/null -w "%{http_code}" -m 5 --resolve "cloudflare.com:443:$ip" https://cloudflare.com 2>/dev/null || echo "000")
+            
+            # تست ۴: Latency
+            latency=$(ping -c 1 -W 2 "$ip" 2>/dev/null | grep 'time=' | awk -F'time=' '{print $2}' | awk '{print $1}' || echo "N/A")
+            
+            echo "$ip | Ping:$ping_status | Instagram:$insta_http | Cloudflare:$cf_http | Latency:${latency}ms" >> results.txt
+            
+            # اگه اینستاگرام باز شد
+            if [ "$insta_http" = "200" ] || [ "$insta_http" = "301" ] || [ "$insta_http" = "302" ]; then
+              echo "🎯 WORKING FOR INSTAGRAM: $ip" >> results.txt
             fi
-            sleep 2
-          done
-
-      - name: Fetch page
-        env:
-          TARGET_URL: ${{ inputs.url }}
-        run: |
-          python3 << 'PYEOF'
-          import requests, time, os, re
-          from datetime import datetime
-
-          target = os.environ["TARGET_URL"]
-
-          url = "http://localhost:8191/v1"
-          headers = {"Content-Type": "application/json"}
-          payload = {
-              "cmd": "request.get",
-              "url": target,
-              "maxTimeout": 180000
-          }
-
-          print(f"Fetching: {target}")
-          start = time.time()
-
-          try:
-              resp = requests.post(url, headers=headers, json=payload, timeout=240)
-              elapsed = round(time.time() - start, 1)
-              data = resp.json()
-
-              print(f"Time: {elapsed}s")
-              print(f"FlareSolverr status: {data.get('status')}")
-              print(f"Message: {data.get('message')}")
-
-              sol = data.get("solution", {})
-              http_status = sol.get("status")
-              html = sol.get("response", "")
-              cookies = sol.get("cookies", [])
-
-              print(f"HTTP status: {http_status}")
-
-              # نام فایل بر اساس URL
-              safe_name = re.sub(r'[^a-zA-Z0-9\u0600-\u06FF_\-\.]', '_', target)
-              if len(safe_name) > 100:
-                  safe_name = safe_name[:100]
-
-              html_filename = f"page_{safe_name}.html"
-              txt_filename = f"result_{safe_name}.txt"
-
-              with open(html_filename, "w", encoding="utf-8") as f:
-                  f.write(html if html else "")
-
-              with open(txt_filename, "w", encoding="utf-8") as f:
-                  f.write(f"URL: {target}\n")
-                  f.write(f"Date: {datetime.now()}\n")
-                  f.write(f"Time: {elapsed}s\n")
-                  f.write(f"FlareSolverr status: {data.get('status')}\n")
-                  f.write(f"Message: {data.get('message')}\n")
-                  f.write(f"HTTP status: {http_status}\n")
-                  f.write(f"Cookies: {cookies}\n\n")
-                  f.write("=== HTML (first 3000 chars) ===\n")
-                  f.write(html[:3000] if html else "EMPTY")
-
-              if http_status == 200 and html:
-                  print("✅ SUCCESS")
-              elif http_status == 403:
-                  print("❌ Blocked by Cloudflare (403)")
-              else:
-                  print(f"⚠️ HTTP {http_status}")
-
-          except Exception as e:
-              print(f"Error: {e}")
-          PYEOF
+            
+          done < ips.txt
+          
+          echo ""
+          echo "=== RESULTS ==="
+          cat results.txt
 
       - name: Commit results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add page_*.html result_*.txt 2>/dev/null || true
-          git commit -m "Fetched ${{ inputs.url }} | $(date '+%H:%M:%S')" || echo "Nothing to commit"
+          git add results.txt ips.txt
+          git commit -m "📊 IP test results | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
