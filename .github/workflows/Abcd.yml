@@ -1,4 +1,4 @@
-name: Download Random File from apkclub
+name: Build Bistodo Channel Viewer
 
 on:
   workflow_dispatch:
@@ -7,81 +7,301 @@ permissions:
   contents: write
 
 jobs:
-  download:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch random file from t.me/s/apkclub
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4
+
+      - name: Scrape posts from @bistodo
         run: |
-          echo "📡 Fetching t.me/s/apkclub..."
-          PAGE=$(curl -sL -k \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-            "https://t.me/s/apkclub")
+          python3 << 'PYEOF'
+          import os, json, requests, re, hashlib
+          from bs4 import BeautifulSoup
+          from datetime import datetime
+          from pathlib import Path
+          from urllib.parse import urljoin
 
-          # Extract all post links
-          POSTS=$(echo "$PAGE" | grep -oP 'https://t\.me/apkclub/\d+' | sort -u)
-          POST_COUNT=$(echo "$POSTS" | wc -l)
+          channel = "bistodo"
+          target_posts = 50
+          url = f"https://t.me/s/{channel}"
 
-          echo "Found $POST_COUNT posts"
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          }
 
-          if [ "$POST_COUNT" -eq 0 ]; then
-            echo "❌ No posts found"
-            exit 1
-          fi
+          print(f"📡 Fetching {url} ...")
+          resp = requests.get(url, headers=headers, timeout=30)
+          if resp.status_code != 200:
+              print(f"Error: HTTP {resp.status_code}")
+              exit(1)
 
-          # Select random post
-          RANDOM_INDEX=$(( (RANDOM % POST_COUNT) + 1 ))
-          RANDOM_POST=$(echo "$POSTS" | sed -n "${RANDOM_INDEX}p")
-          echo "🎲 Random post: $RANDOM_POST"
+          soup = BeautifulSoup(resp.text, 'html.parser')
+          all_messages = soup.find_all('div', class_='tgme_widget_message_wrap')
 
-          # Get post page
-          POST_PAGE=$(curl -sL -k \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-            "$RANDOM_POST")
+          # Limit to 50
+          latest = all_messages[:target_posts]
 
-          # Extract direct file URL (any common format)
-          CDN_URL=$(echo "$POST_PAGE" | grep -oP 'https://[^"]+\.(apk|zip|rar|pdf|7z|tar\.gz|epub|mobi|cbr|cbz)[^"]*' | head -1)
+          print(f"Found {len(all_messages)} total messages, processing {len(latest)} ...")
 
-          if [ -z "$CDN_URL" ]; then
-            echo "❌ No file URL found in post"
-            exit 1
-          fi
+          # Create output directory
+          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+          output_dir = f"sites/telegram/{channel}/{timestamp}"
+          Path(output_dir).mkdir(parents=True, exist_ok=True)
+          Path(f"{output_dir}/media").mkdir(exist_ok=True)
 
-          echo "🔗 Download URL: ${CDN_URL:0:100}..."
+          posts_data = []
 
-          # Extract filename from URL
-          FILENAME=$(echo "$CDN_URL" | grep -oP '[^/]+(?=\?|$)' | head -1)
-          if [ -z "$FILENAME" ]; then
-            FILENAME="downloaded_file"
-          fi
+          for idx, msg in enumerate(latest):
+              msg_id = msg.get('data-post', f'post-{idx}')
+              
+              # Post text
+              text_div = msg.find('div', class_='tgme_widget_message_text')
+              raw_text = text_div.get_text('\n', strip=True) if text_div else ""
+              
+              # Date
+              date_tag = msg.find('time', class_='time')
+              date_str = date_tag.get('datetime', '') if date_tag else ''
+              
+              # Views
+              views_tag = msg.find('span', class_='tgme_widget_message_views')
+              views = views_tag.get_text(strip=True) if views_tag else ''
+              
+              # Extract links
+              links = []
+              if text_div:
+                  for a in text_div.find_all('a', href=True):
+                      links.append(a['href'])
+              
+              # Extract photo
+              photos = []
+              photo_wrap = msg.find('a', class_='tgme_widget_message_photo_wrap')
+              if photo_wrap:
+                  style = photo_wrap.get('style', '')
+                  bg_match = re.search(r"background-image:url\('([^']+)'\)", style)
+                  if bg_match:
+                      img_url = bg_match.group(1)
+                      # Download image
+                      try:
+                          img_resp = requests.get(img_url, headers=headers, timeout=20)
+                          if img_resp.status_code == 200:
+                              img_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
+                              ext = img_url.split('.')[-1].split('?')[0] or 'jpg'
+                              img_filename = f"img_{img_hash}.{ext}"
+                              img_path = f"{output_dir}/media/{img_filename}"
+                              with open(img_path, "wb") as f:
+                                  f.write(img_resp.content)
+                              photos.append(f"media/{img_filename}")
+                              print(f"  📸 Downloaded image: {img_filename}")
+                      except Exception as e:
+                          print(f"  Image error: {e}")
+              
+              # Extract video
+              videos = []
+              video_tag = msg.find('video')
+              if not video_tag:
+                  video_tag = msg.find('a', class_='tgme_widget_message_video_player')
+              
+              if video_tag:
+                  video_src = video_tag.get('src', '')
+                  if not video_src and video_tag.name == 'a':
+                      # Try data-video attribute
+                      video_src = video_tag.get('data-video', '')
+                  if video_src:
+                      try:
+                          vid_resp = requests.get(video_src, headers=headers, timeout=60, stream=True)
+                          if vid_resp.status_code == 200:
+                              vid_hash = hashlib.md5(video_src.encode()).hexdigest()[:10]
+                              vid_filename = f"vid_{vid_hash}.mp4"
+                              vid_path = f"{output_dir}/media/{vid_filename}"
+                              with open(vid_path, "wb") as f:
+                                  for chunk in vid_resp.iter_content(chunk_size=8192):
+                                      f.write(chunk)
+                              videos.append(f"media/{vid_filename}")
+                              print(f"  🎬 Downloaded video: {vid_filename}")
+                      except Exception as e:
+                          print(f"  Video error: {e}")
+              
+              posts_data.append({
+                  "id": msg_id,
+                  "date": date_str,
+                  "views": views,
+                  "text": raw_text,
+                  "links": links,
+                  "photos": photos,
+                  "videos": videos,
+              })
+              
+              print(f"  Processed post {idx+1}/{len(latest)}")
 
-          echo "📥 Downloading $FILENAME..."
+          # Save JSON
+          with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
+              json.dump(posts_data, f, ensure_ascii=False, indent=2)
 
-          curl -k -L -o "$FILENAME" \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-            --connect-timeout 30 --max-time 300 \
-            "$CDN_URL"
+          # Generate HTML
+          posts_html = ""
+          for post in posts_data:
+              posts_html += '<div class="post-card">\n'
+              
+              # Header
+              posts_html += '  <div class="post-header">\n'
+              posts_html += f'    <span class="post-date">{post["date"]}</span>\n'
+              posts_html += f'    <span class="post-views">👁 {post["views"]}</span>\n'
+              posts_html += '  </div>\n'
+              
+              # Text
+              if post["text"]:
+                  text_html = post["text"].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br>')
+                  posts_html += f'  <div class="post-text">{text_html}</div>\n'
+              
+              # Photos
+              for photo in post["photos"]:
+                  posts_html += f'  <div class="post-media"><img src="{photo}" alt="Photo" loading="lazy"></div>\n'
+              
+              # Videos
+              for video in post["videos"]:
+                  posts_html += f'  <div class="post-media"><video controls preload="none"><source src="{video}" type="video/mp4"></video></div>\n'
+              
+              # Links
+              if post["links"]:
+                  posts_html += '  <div class="post-links">\n'
+                  for link in post["links"]:
+                      safe_link = link.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+                      posts_html += f'    <a href="{safe_link}" target="_blank">🔗 {safe_link[:80]}{"..." if len(link)>80 else ""}</a><br>\n'
+                  posts_html += '  </div>\n'
+              
+              posts_html += '</div>\n'
 
-          if [ -f "$FILENAME" ]; then
-            SIZE=$(stat -c%s "$FILENAME")
-            SIZE_MB=$((SIZE / 1024 / 1024))
-            echo "✅ File downloaded: $FILENAME ($SIZE bytes, ~${SIZE_MB} MB)"
-            if [ "$SIZE_MB" -gt 20 ]; then
-              echo "🎉 Success! File >20MB downloaded from t.me/s"
-            fi
-          else
-            echo "❌ Download failed"
-            exit 1
-          fi
+          html_content = f'''<!DOCTYPE html>
+          <html lang="fa" dir="rtl">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>@{channel} - Telegram Viewer</title>
+          <style>
+          * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+          body {{
+              font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+              background: #0f0f0f;
+              color: #e0e0e0;
+              line-height: 1.8;
+          }}
+          .container {{
+              max-width: 800px;
+              margin: 0 auto;
+              padding: 20px 15px;
+          }}
+          .header {{
+              background: linear-gradient(135deg, #1a1a2e, #16213e);
+              color: white;
+              padding: 30px 20px;
+              text-align: center;
+              margin-bottom: 30px;
+              border-bottom: 3px solid #e94560;
+              position: sticky;
+              top: 0;
+              z-index: 10;
+          }}
+          .header h1 {{
+              font-size: 2em;
+              margin-bottom: 5px;
+          }}
+          .header p {{
+              opacity: 0.8;
+              font-size: 0.9em;
+          }}
+          .post-card {{
+              background: #1a1a1a;
+              border: 1px solid #2a2a2a;
+              border-radius: 12px;
+              padding: 20px;
+              margin-bottom: 20px;
+              transition: transform 0.2s, box-shadow 0.2s;
+          }}
+          .post-card:hover {{
+              transform: translateY(-2px);
+              box-shadow: 0 8px 25px rgba(0,0,0,0.5);
+          }}
+          .post-header {{
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 15px;
+              padding-bottom: 10px;
+              border-bottom: 1px solid #333;
+              font-size: 0.85em;
+              color: #999;
+          }}
+          .post-date {{
+              color: #e94560;
+              font-weight: bold;
+          }}
+          .post-text {{
+              margin-bottom: 15px;
+              font-size: 1.05em;
+              color: #d0d0d0;
+          }}
+          .post-media {{
+              margin-bottom: 15px;
+              border-radius: 8px;
+              overflow: hidden;
+          }}
+          .post-media img, .post-media video {{
+              width: 100%;
+              height: auto;
+              display: block;
+              border-radius: 8px;
+          }}
+          .post-links {{
+              margin-top: 10px;
+              font-size: 0.9em;
+          }}
+          .post-links a {{
+              color: #4fc3f7;
+              text-decoration: none;
+              word-break: break-all;
+          }}
+          .footer {{
+              text-align: center;
+              padding: 20px;
+              color: #666;
+              font-size: 0.8em;
+              border-top: 1px solid #2a2a2a;
+              margin-top: 30px;
+          }}
+          </style>
+          </head>
+          <body>
+          <div class="header">
+              <h1>📡 @{channel}</h1>
+              <p>تولید شده: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} | تعداد پست‌ها: {len(posts_data)}</p>
+          </div>
+          <div class="container">
+          {posts_html}
+          </div>
+          <div class="footer">
+              <p>ساخته شده با GitHub Actions | قابل اجرا روی KSWEB</p>
+          </div>
+          </body>
+          </html>'''
 
-      - name: Commit and push file
+          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
+              f.write(html_content)
+
+          print(f"✅ Done! Saved to {output_dir}")
+          print(f"📊 {len(posts_data)} posts, with media in media/")
+          PYEOF
+
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add *.apk *.zip *.rar *.pdf *.7z *.tar.gz *.epub *.mobi *.cbr *.cbz downloaded_file 2>/dev/null || true
-          git commit -m "📦 Random file from @apkclub | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git add sites/telegram/bistodo/
+          git commit -m "📡 @bistodo channel viewer | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
