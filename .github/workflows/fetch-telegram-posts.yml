@@ -70,11 +70,11 @@ jobs:
 
           print(f"Found {len(all_messages)} total messages, processing {len(latest)} ...")
 
-          # Create output directory
+          # Create output directories
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
           output_dir = f"sites/telegram/{channel}/{timestamp}"
-          Path(output_dir).mkdir(parents=True, exist_ok=True)
-          Path(f"{output_dir}/media").mkdir(exist_ok=True)
+          media_dir = f"{output_dir}/media"
+          Path(media_dir).mkdir(parents=True, exist_ok=True)
 
           posts_data = []
 
@@ -113,14 +113,14 @@ jobs:
                               img_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
                               ext = img_url.split('.')[-1].split('?')[0] or 'jpg'
                               img_filename = f"img_{img_hash}.{ext}"
-                              img_path = f"{output_dir}/media/{img_filename}"
+                              img_path = f"{media_dir}/{img_filename}"
                               with open(img_path, "wb") as f:
                                   f.write(img_resp.content)
                               photos.append(f"media/{img_filename}")
-                              print(f"  📸 Downloaded: {img_filename}")
+                              print(f"  📸 Downloaded image: {img_filename}")
                       except Exception as e:
                           print(f"  Image error: {e}")
-              
+
               # Videos
               videos = []
               video_tag = msg.find('video')
@@ -137,15 +137,15 @@ jobs:
                           if vid_resp.status_code == 200:
                               vid_hash = hashlib.md5(video_src.encode()).hexdigest()[:10]
                               vid_filename = f"vid_{vid_hash}.mp4"
-                              vid_path = f"{output_dir}/media/{vid_filename}"
+                              vid_path = f"{media_dir}/{vid_filename}"
                               with open(vid_path, "wb") as f:
                                   for chunk in vid_resp.iter_content(chunk_size=8192):
                                       f.write(chunk)
                               videos.append(f"media/{vid_filename}")
-                              print(f"  🎬 Downloaded: {vid_filename}")
+                              print(f"  🎬 Downloaded video: {vid_filename}")
                       except Exception as e:
                           print(f"  Video error: {e}")
-              
+
               posts_data.append({
                   "id": msg_id,
                   "date": date_str,
@@ -158,7 +158,7 @@ jobs:
               
               print(f"  Processed post {idx+1}/{len(latest)}")
 
-          # Save JSON
+          # Save detailed JSON in dated folder
           with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
               json.dump({
                   "channel": channel,
@@ -168,7 +168,7 @@ jobs:
                   "fetched_at": datetime.now().isoformat()
               }, f, ensure_ascii=False, indent=2)
 
-          # Also save to cache location for get_posts.php
+          # Save cache JSON for fast access
           cache_dir = "sites/telegram"
           Path(cache_dir).mkdir(parents=True, exist_ok=True)
           cache_file = f"{cache_dir}/{channel}.json"
@@ -181,8 +181,8 @@ jobs:
                   "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
               }, f, ensure_ascii=False, indent=2)
 
-          print(f"✅ Done! Saved to {output_dir}")
-          print(f"📊 {len(posts_data)} posts with media in media/")
+          print(f"\n✅ Done! Saved to {output_dir}")
+          print(f"📊 {len(posts_data)} posts with {sum(len(p['photos']) for p in posts_data)} photos and {sum(len(p['videos']) for p in posts_data)} videos")
           PYEOF
 
       - name: Commit and push
@@ -190,5 +190,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sites/telegram/
-          git commit -m "📡 @${{ github.event.inputs.channel }} posts | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git commit -m "📡 @${{ github.event.inputs.channel }} posts with media | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
