@@ -1,120 +1,182 @@
-name: Open manhwaus with Chrome Headless
+name: Manga Chapter Downloader (Any Site with FlareSolverr)
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: 'لینک manhwaus (یا هر سایت دیگه)'
+      chapter_url:
+        description: 'لینک صفحه چپتر (مثلاً https://www.mgeko.cc/reader/...)'
         required: true
-        default: 'https://manhwaus.org'
+        default: 'https://www.mgeko.cc/reader/en/im-the-king-of-wealth-in-the-three-realms-chapter-11-eng-li/'
 
 permissions:
   contents: write
 
 jobs:
-  fetch:
+  download:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Chrome
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4
+
+      - name: Wait for FlareSolverr
         run: |
-          wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt-get install -y /tmp/chrome.deb 2>/dev/null
-          google-chrome --version
-
-      - name: Fetch page with Chrome Headless
-        env:
-          TARGET_URL: ${{ github.event.inputs.url }}
-        run: |
-          # استخراج دامنه برای اسم پوشه
-          DOMAIN=$(echo "$TARGET_URL" | sed 's|https\?://||' | cut -d/ -f1)
-          TIMESTAMP=$(date '+%Y-%m-%d_%H-%M')
-          OUTPUT_DIR="sites/${DOMAIN}/${TIMESTAMP}"
-          mkdir -p "$OUTPUT_DIR"
-
-          echo "🌐 Fetching: $TARGET_URL"
-          echo "📁 Saving to: $OUTPUT_DIR"
-
-          # باز کردن صفحه با Chrome Headless
-          google-chrome \
-            --headless \
-            --no-sandbox \
-            --disable-dev-shm-usage \
-            --disable-gpu \
-            --disable-extensions \
-            --disable-background-networking \
-            --disable-sync \
-            --no-first-run \
-            --disable-features=TranslateUI \
-            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
-            --timeout=30000 \
-            --virtual-time-budget=15000 \
-            --dump-dom \
-            "$TARGET_URL" > "${OUTPUT_DIR}/index.html" 2>/dev/null
-
-          if [ -f "${OUTPUT_DIR}/index.html" ]; then
-            SIZE=$(stat -c%s "${OUTPUT_DIR}/index.html" 2>/dev/null || echo 0)
-            SIZE_KB=$((SIZE / 1024))
-            
-            echo ""
-            echo "========================================="
-            echo "✅ HTML saved!"
-            echo "📁 ${OUTPUT_DIR}/index.html"
-            echo "📊 Size: ${SIZE} bytes (${SIZE_KB} KB)"
-            
-            # Check if Cloudflare blocked us
-            if grep -q "Just a moment\|cf-browser-verification\|challenge-platform" "${OUTPUT_DIR}/index.html"; then
-              echo "⚠️ Cloudflare detected! Page may be blocked."
-            elif grep -q "<html" "${OUTPUT_DIR}/index.html" && [ $SIZE -gt 500 ]; then
-              echo "✅ Page seems to be loaded successfully!"
-            else
-              echo "⚠️ Page loaded but content might be incomplete."
+          echo "⏳ Waiting for FlareSolverr..."
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
+            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
+              echo "✅ FlareSolverr ready (status: $status)"
+              break
             fi
-            echo "========================================="
-          else
-            echo "❌ Failed to save HTML"
-            exit 1
-          fi
+            sleep 2
+          done
 
-          # Also take a screenshot (optional)
-          echo ""
-          echo "📸 Taking screenshot..."
-          google-chrome \
-            --headless \
-            --no-sandbox \
-            --disable-dev-shm-usage \
-            --disable-gpu \
-            --window-size=1280,720 \
-            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
-            --timeout=30000 \
-            --screenshot="${OUTPUT_DIR}/screenshot.png" \
-            "$TARGET_URL" 2>/dev/null
+      - name: Fetch chapter page via FlareSolverr
+        env:
+          CHAPTER_URL: ${{ github.event.inputs.chapter_url }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, requests, re, hashlib
+          from bs4 import BeautifulSoup
+          from datetime import datetime
+          from urllib.parse import urljoin, urlparse
 
-          if [ -f "${OUTPUT_DIR}/screenshot.png" ]; then
-            SCREENSHOT_SIZE=$(stat -c%s "${OUTPUT_DIR}/screenshot.png" 2>/dev/null || echo 0)
-            echo "✅ Screenshot saved (${SCREENSHOT_SIZE} bytes)"
-          else
-            echo "⚠️ Screenshot failed (non-critical)"
-          fi
+          chapter_url = os.environ["CHAPTER_URL"]
+          domain = urlparse(chapter_url).netloc
 
-          # Save metadata
-          cat > "${OUTPUT_DIR}/info.json" << EOF
-          {
-            "url": "$TARGET_URL",
-            "domain": "$DOMAIN",
-            "timestamp": "$TIMESTAMP",
-            "html_size_bytes": $SIZE
+          # FlareSolverr endpoint
+          fs_url = "http://localhost:8191/v1"
+          payload = {
+              "cmd": "request.get",
+              "url": chapter_url,
+              "maxTimeout": 120000
           }
-          EOF
+
+          print(f"📡 Fetching {chapter_url} via FlareSolverr...")
+          resp = requests.post(fs_url, json=payload, timeout=150)
+          data = resp.json()
+
+          html = data.get("solution", {}).get("response", "")
+          if not html:
+              print("❌ No HTML received from FlareSolverr")
+              exit(1)
+
+          soup = BeautifulSoup(html, 'html.parser')
+
+          # --- Extract manga title and chapter number ---
+          title = "Unknown Manga"
+          chapter_num = "0"
+          # Try to extract from URL pattern: .../manga-slug-chapter-XX-eng-li/
+          m = re.search(r'/([^/]+)-chapter-(\d+)', chapter_url)
+          if m:
+              title_slug = m.group(1).replace('-', ' ').title()
+              chapter_num = m.group(2)
+              title = title_slug
+          else:
+              # fallback: use domain and a random id
+              title = domain.replace('.', '_')
+              chapter_num = "1"
+
+          # --- Find all manga page images ---
+          images = []
+          for img in soup.find_all('img'):
+              src = img.get('src') or img.get('data-src') or img.get('data-lazy-src') or ''
+              if not src:
+                  continue
+              # Convert relative URLs to absolute
+              full_url = urljoin(chapter_url, src)
+              # For mgeko / typical manga sites, images usually contain certain keywords
+              if any(kw in full_url.lower() for kw in ['imgsrv', 'manga', 'chapter', 'media', 'page']):
+                  images.append(full_url)
+              # Also include common image extensions if they look like manga pages
+              elif re.search(r'\.(jpg|jpeg|png|webp)(\?|$)', full_url, re.I) and 'avatar' not in full_url:
+                  images.append(full_url)
+
+          # Remove duplicates while preserving order
+          seen = set()
+          unique_images = []
+          for img in images:
+              if img not in seen:
+                  seen.add(img)
+                  unique_images.append(img)
+
+          print(f"🖼️ Found {len(unique_images)} manga images")
+
+          # --- Prepare output directory ---
+          safe_title = re.sub(r'[^a-zA-Z0-9\u0600-\u06FF_\- ]', '', title).strip()[:50]
+          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+          output_dir = f"sites/manga/{safe_title}/chapter_{chapter_num}/{timestamp}"
+          img_dir = f"{output_dir}/images"
+          os.makedirs(img_dir, exist_ok=True)
+
+          # --- Download images ---
+          downloaded = []
+          for i, img_url in enumerate(unique_images, 1):
+              try:
+                  img_resp = requests.get(img_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+                  if img_resp.status_code == 200:
+                      ext = os.path.splitext(img_url.split('?')[0])[1] or '.jpg'
+                      fname = f"{i:03d}{ext}"
+                      fpath = os.path.join(img_dir, fname)
+                      with open(fpath, 'wb') as f:
+                          f.write(img_resp.content)
+                      downloaded.append(fname)
+                      print(f"  [{i}/{len(unique_images)}] ✅ {fname} ({len(img_resp.content)//1024}KB)")
+                  else:
+                      print(f"  [{i}/{len(unique_images)}] ❌ HTTP {img_resp.status_code}")
+              except Exception as e:
+                  print(f"  [{i}/{len(unique_images)}] ❌ {e}")
+
+          # --- Generate simple HTML viewer ---
+          viewer_html = f"""<!DOCTYPE html>
+          <html lang="fa" dir="rtl">
+          <head><meta charset="UTF-8"><title>{title} - Chapter {chapter_num}</title>
+          <style>
+              body {{ background:#1a1a1a; color:#eee; text-align:center; font-family: Tahoma; }}
+              img {{ display:block; max-width:100%; margin:0 auto; }}
+          </style></head>
+          <body>
+          <h2>{title} - فصل {chapter_num}</h2>
+          <p>تعداد صفحات: {len(downloaded)} | تاریخ: {timestamp}</p>
+          {''.join(f'<img src="images/{img}" alt="page {i}">' for i,img in enumerate(downloaded,1))}
+          </body></html>"""
+
+          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
+              f.write(viewer_html)
+
+          # --- Save metadata ---
+          with open(f"{output_dir}/info.json", "w", encoding="utf-8") as f:
+              json.dump({
+                  "title": title,
+                  "chapter": chapter_num,
+                  "url": chapter_url,
+                  "timestamp": timestamp,
+                  "images_count": len(downloaded),
+                  "images": downloaded
+              }, f, indent=2, ensure_ascii=False)
+
+          # --- Save original HTML (optional) ---
+          with open(f"{output_dir}/original.html", "w", encoding="utf-8") as f:
+              f.write(html)
+
+          print(f"\n✅ Done! Saved to {output_dir}")
+          print(f"📦 {len(downloaded)} images downloaded")
+          PYEOF
 
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sites/
-          git commit -m "🌐 ${{ github.event.inputs.url }} with Chrome Headless | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git add sites/manga/
+          git commit -m "📖 Manga chapter ${{ github.event.inputs.chapter_url }} | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
