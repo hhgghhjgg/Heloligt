@@ -76,6 +76,12 @@ jobs:
           media_dir = f"{output_dir}/media"
           Path(media_dir).mkdir(parents=True, exist_ok=True)
 
+          # 🔑 مسیر base برای عکس‌ها و video ها (توی raw.githubusercontent.com)
+          owner = "hhgghhjgg"
+          repo = "Heloligt"
+          branch = "main"
+          MEDIA_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/media/"
+
           posts_data = []
 
           for idx, msg in enumerate(latest):
@@ -116,7 +122,8 @@ jobs:
                               img_path = f"{media_dir}/{img_filename}"
                               with open(img_path, "wb") as f:
                                   f.write(img_resp.content)
-                              photos.append(f"media/{img_filename}")
+                              # ⭐ فقط اسم فایل رو ذخیره کن (نه مسیر کامل)
+                              photos.append(img_filename)
                               print(f"  📸 Downloaded image: {img_filename}")
                       except Exception as e:
                           print(f"  Image error: {e}")
@@ -141,7 +148,7 @@ jobs:
                               with open(vid_path, "wb") as f:
                                   for chunk in vid_resp.iter_content(chunk_size=8192):
                                       f.write(chunk)
-                              videos.append(f"media/{vid_filename}")
+                              videos.append(vid_filename)
                               print(f"  🎬 Downloaded video: {vid_filename}")
                       except Exception as e:
                           print(f"  Video error: {e}")
@@ -165,7 +172,8 @@ jobs:
                   "title": channel_title,
                   "posts_count": len(posts_data),
                   "posts": posts_data,
-                  "fetched_at": datetime.now().isoformat()
+                  "fetched_at": datetime.now().isoformat(),
+                  "_media_base": MEDIA_BASE_RAW  # 🔑 این خط رو اضافه کن
               }, f, ensure_ascii=False, indent=2)
 
           # Save cache JSON for fast access
@@ -178,11 +186,13 @@ jobs:
                   "title": channel_title,
                   "posts_count": len(posts_data),
                   "posts": posts_data,
-                  "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                  "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                  "_media_base": MEDIA_BASE_RAW  # 🔑 این خط رو هم اضافه کن
               }, f, ensure_ascii=False, indent=2)
 
           print(f"\n✅ Done! Saved to {output_dir}")
           print(f"📊 {len(posts_data)} posts with {sum(len(p['photos']) for p in posts_data)} photos and {sum(len(p['videos']) for p in posts_data)} videos")
+          print(f"📁 Media base: {MEDIA_BASE_RAW}")
           PYEOF
 
       - name: Commit and push
