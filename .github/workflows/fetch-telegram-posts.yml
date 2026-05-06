@@ -10,7 +10,7 @@ on:
       count:
         description: 'تعداد پست‌های آخر'
         required: false
-        default: '20'
+        default: '60'
 
 permissions:
   contents: write
@@ -37,38 +37,67 @@ jobs:
           from bs4 import BeautifulSoup
           from datetime import datetime
           from pathlib import Path
-          from urllib.parse import urljoin
 
           channel = os.environ["CHANNEL"]
-          count = int(os.environ["COUNT"])
-          url = f"https://t.me/s/{channel}"
+          target_count = int(os.environ["COUNT"])
 
           headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
               "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
               "Accept-Language": "en-US,en;q=0.5",
           }
 
-          print(f"📡 Fetching {url} ...")
-          resp = requests.get(url, headers=headers, timeout=30)
-          if resp.status_code != 200:
-              print(f"Error: HTTP {resp.status_code}")
-              exit(1)
+          all_messages = []
+          before_id = None
+          channel_title = f'@{channel}'
 
-          soup = BeautifulSoup(resp.text, 'html.parser')
+          # حلقه برای گرفتن صفحات بیشتر
+          while len(all_messages) < target_count:
+              if before_id:
+                  url = f"https://t.me/s/{channel}?before={before_id}"
+              else:
+                  url = f"https://t.me/s/{channel}"
 
-          # Get channel title
-          title_tag = soup.find('meta', property='og:title')
-          channel_title = title_tag['content'] if title_tag else f'@{channel}'
-          channel_title = re.sub(r'\s*\[ALL CHAPTERS\]', '', channel_title)
-          channel_title = re.sub(r'^Telegram:\s*(Contact\s*)?', '', channel_title)
-          channel_title = channel_title.replace('@', '').strip()
+              print(f"📡 Fetching: {url}")
+              resp = requests.get(url, headers=headers, timeout=30)
+              if resp.status_code != 200:
+                  print(f"Error: HTTP {resp.status_code}")
+                  break
 
-          # Get all messages
-          all_messages = soup.find_all('div', class_='tgme_widget_message_wrap')
-          latest = all_messages[:count]
+              soup = BeautifulSoup(resp.text, 'html.parser')
 
-          print(f"Found {len(all_messages)} total messages, processing {len(latest)} ...")
+              # Get channel title (once)
+              if not before_id:
+                  title_tag = soup.find('meta', property='og:title')
+                  if title_tag:
+                      channel_title = title_tag['content']
+                      channel_title = re.sub(r'\s*\[ALL CHAPTERS\]', '', channel_title)
+                      channel_title = re.sub(r'^Telegram:\s*(Contact\s*)?', '', channel_title)
+                      channel_title = channel_title.replace('@', '').strip()
+
+              messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+              if not messages:
+                  print("No more messages found.")
+                  break
+
+              for msg in messages:
+                  if len(all_messages) >= target_count:
+                      break
+                  all_messages.append(msg)
+
+              # گرفتن ID آخرین پست برای صفحه بعدی
+              last_msg = messages[-1]
+              msg_data = last_msg.get('data-post', '')
+              if msg_data:
+                  before_id = msg_data.split('/')[-1]
+              else:
+                  break
+
+              print(f"  Collected {len(all_messages)}/{target_count} messages so far...")
+
+          # محدود به تعداد درخواستی
+          latest = all_messages[:target_count]
+          print(f"\n📊 Total: {len(latest)} messages")
 
           # Create output directories
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -76,7 +105,6 @@ jobs:
           media_dir = f"{output_dir}/media"
           Path(media_dir).mkdir(parents=True, exist_ok=True)
 
-          # 🔑 مسیر base برای عکس‌ها و video ها (توی raw.githubusercontent.com)
           owner = "hhgghhjgg"
           repo = "Heloligt"
           branch = "main"
@@ -86,29 +114,19 @@ jobs:
 
           for idx, msg in enumerate(latest):
               msg_id = msg.get('data-post', f'post-{idx}')
-              
-              # Text
               text_div = msg.find('div', class_='tgme_widget_message_text')
               raw_text = text_div.get_text('\n', strip=True) if text_div else ""
-              
-              # Date
               date_tag = msg.find('time', class_='time')
               date_str = date_tag.get('datetime', '') if date_tag else ''
-              
-              # Views
               views_tag = msg.find('span', class_='tgme_widget_message_views')
               views = views_tag.get_text(strip=True) if views_tag else ''
-              
-              # Links
               links = []
               if text_div:
                   for a in text_div.find_all('a', href=True):
                       links.append(a['href'])
-              
-              # Photos
+
               photos = []
-              photo_wrap = msg.find('a', class_='tgme_widget_message_photo_wrap')
-              if photo_wrap:
+              for photo_wrap in msg.find_all('a', class_='tgme_widget_message_photo_wrap'):
                   style = photo_wrap.get('style', '')
                   bg_match = re.search(r"background-image:url\('([^']+)'\)", style)
                   if bg_match:
@@ -119,24 +137,17 @@ jobs:
                               img_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
                               ext = img_url.split('.')[-1].split('?')[0] or 'jpg'
                               img_filename = f"img_{img_hash}.{ext}"
-                              img_path = f"{media_dir}/{img_filename}"
-                              with open(img_path, "wb") as f:
+                              with open(f"{media_dir}/{img_filename}", "wb") as f:
                                   f.write(img_resp.content)
-                              # ⭐ فقط اسم فایل رو ذخیره کن (نه مسیر کامل)
                               photos.append(img_filename)
-                              print(f"  📸 Downloaded image: {img_filename}")
+                              print(f"  📸 {img_filename}")
                       except Exception as e:
                           print(f"  Image error: {e}")
 
-              # Videos
               videos = []
-              video_tag = msg.find('video')
-              if not video_tag:
-                  video_tag = msg.find('a', class_='tgme_widget_message_video_player')
-              
-              if video_tag:
+              for video_tag in msg.find_all('video'):
                   video_src = video_tag.get('src', '')
-                  if not video_src and video_tag.name == 'a':
+                  if not video_src:
                       video_src = video_tag.get('data-video', '')
                   if video_src:
                       try:
@@ -144,54 +155,41 @@ jobs:
                           if vid_resp.status_code == 200:
                               vid_hash = hashlib.md5(video_src.encode()).hexdigest()[:10]
                               vid_filename = f"vid_{vid_hash}.mp4"
-                              vid_path = f"{media_dir}/{vid_filename}"
-                              with open(vid_path, "wb") as f:
+                              with open(f"{media_dir}/{vid_filename}", "wb") as f:
                                   for chunk in vid_resp.iter_content(chunk_size=8192):
                                       f.write(chunk)
                               videos.append(vid_filename)
-                              print(f"  🎬 Downloaded video: {vid_filename}")
+                              print(f"  🎬 {vid_filename}")
                       except Exception as e:
                           print(f"  Video error: {e}")
 
               posts_data.append({
-                  "id": msg_id,
-                  "date": date_str,
-                  "text": raw_text,
-                  "views": views,
-                  "links": links,
-                  "photos": photos,
-                  "videos": videos,
+                  "id": msg_id, "date": date_str, "text": raw_text, "views": views,
+                  "links": links, "photos": photos, "videos": videos,
               })
-              
-              print(f"  Processed post {idx+1}/{len(latest)}")
+              print(f"  Post {idx+1}/{len(latest)}")
 
-          # Save detailed JSON in dated folder
+          # Save JSON in dated folder
           with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
               json.dump({
-                  "channel": channel,
-                  "title": channel_title,
-                  "posts_count": len(posts_data),
-                  "posts": posts_data,
+                  "channel": channel, "title": channel_title,
+                  "posts_count": len(posts_data), "posts": posts_data,
                   "fetched_at": datetime.now().isoformat(),
-                  "_media_base": MEDIA_BASE_RAW  # 🔑 این خط رو اضافه کن
+                  "_media_base": MEDIA_BASE_RAW
               }, f, ensure_ascii=False, indent=2)
 
-          # Save cache JSON for fast access
+          # Save cache JSON
           cache_dir = "sites/telegram"
           Path(cache_dir).mkdir(parents=True, exist_ok=True)
-          cache_file = f"{cache_dir}/{channel}.json"
-          with open(cache_file, "w", encoding="utf-8") as f:
+          with open(f"{cache_dir}/{channel}.json", "w", encoding="utf-8") as f:
               json.dump({
-                  "channel": channel,
-                  "title": channel_title,
-                  "posts_count": len(posts_data),
-                  "posts": posts_data,
+                  "channel": channel, "title": channel_title,
+                  "posts_count": len(posts_data), "posts": posts_data,
                   "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                  "_media_base": MEDIA_BASE_RAW  # 🔑 این خط رو هم اضافه کن
+                  "_media_base": MEDIA_BASE_RAW
               }, f, ensure_ascii=False, indent=2)
 
-          print(f"\n✅ Done! Saved to {output_dir}")
-          print(f"📊 {len(posts_data)} posts with {sum(len(p['photos']) for p in posts_data)} photos and {sum(len(p['videos']) for p in posts_data)} videos")
+          print(f"\n✅ Done! {len(posts_data)} posts saved")
           print(f"📁 Media base: {MEDIA_BASE_RAW}")
           PYEOF
 
@@ -200,5 +198,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sites/telegram/
-          git commit -m "📡 @${{ github.event.inputs.channel }} posts with media | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git commit -m "📡 @${{ github.event.inputs.channel }} (${{ github.event.inputs.count }} posts) | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
