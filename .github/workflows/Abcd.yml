@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'لینک صفحه Reader فصل'
+        description: 'لینک صفحه Reader فصل (هر سایتی)'
         required: true
         default: 'https://manhwaclan.com/manga/the-chairman-of-pharmaceutical-company-is-a-poison-king/chapter-1/'
 
@@ -20,30 +20,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-            libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-            libgbm1 libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \
-            libwayland-client0 libwayland-server0 libwayland-egl1
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
 
       - name: Install Python dependencies
         run: |
-          pip install -q requests beautifulsoup4 playwright x-driver
+          pip install -q playwright beautifulsoup4 requests
+          pip install -q xdriver
 
       - name: Install Playwright browsers
         run: |
-          python -m playwright install chromium
-          x_driver activate
+          xdriver activate
+          python3 -m playwright install chromium
 
-      - name: Fetch Chapter via XDriver + Playwright
+      - name: Fetch Chapter with XDriver
         env:
           CHAPTER_URL: ${{ github.event.inputs.url }}
         run: |
           python3 << 'PYEOF'
-          import os, json, re, hashlib, time
+          import os, json, requests, re, hashlib
           from bs4 import BeautifulSoup
           from datetime import datetime
           from urllib.parse import urljoin, urlparse
@@ -56,8 +53,7 @@ jobs:
           output_dir = f"sites/{domain}/{timestamp}"
           Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-          print(f"📡 Fetching {chapter_url}")
-          print(f"💾 Output: {output_dir}")
+          print(f"📡 Fetching with XDriver: {chapter_url}")
 
           html = ""
           with sync_playwright() as p:
@@ -66,50 +62,46 @@ jobs:
                   user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
               )
               page = context.new_page()
-              page.goto(chapter_url, wait_until="networkidle", timeout=60000)
               
-              # Wait for page to render
-              time.sleep(3)
-              
-              html = page.content()
-              browser.close()
+              try:
+                  page.goto(chapter_url, wait_until="networkidle", timeout=60000)
+                  page.wait_for_timeout(3000)
+                  html = page.content()
+                  print("✅ Page loaded successfully")
+              except Exception as e:
+                  print(f"❌ Error: {e}")
+                  html = page.content()
+              finally:
+                  browser.close()
 
-          if not html:
-              print("❌ No HTML captured")
+          if not html or len(html) < 500:
+              print("❌ HTML empty or too short")
               exit(1)
 
-          # Save HTML
           with open(f"{output_dir}/page.html", "w", encoding="utf-8") as f:
               f.write(html)
+          print("✅ HTML saved")
 
-          # Parse with BeautifulSoup
           soup = BeautifulSoup(html, 'html.parser')
           images = []
 
-          # === 10 Extraction Methods ===
-
-          # 1. Standard img tags with various src attributes
+          # ۱۰ روش استخراج
           for img in soup.find_all('img'):
               for attr in ['src', 'data-src', 'data-lazy-src', 'data-original', 'data-url', 'data-image', 'data-img']:
                   src = img.get(attr, '')
                   if src and not src.startswith('data:'):
                       images.append(urljoin(chapter_url, src))
 
-          # 2. srcset attribute
           for img in soup.find_all('img', srcset=True):
-              srcset = img.get('srcset', '')
-              for part in srcset.split(','):
+              for part in img['srcset'].split(','):
                   url_part = part.strip().split(' ')[0]
-                  if url_part and not url_part.startswith('data:'):
+                  if url_part:
                       images.append(urljoin(chapter_url, url_part))
 
-          # 3. Inline CSS background-image
           for tag in soup.find_all(['div', 'span', 'a', 'li', 'section', 'article'], style=True):
-              style = tag.get('style', '')
-              for url in re.findall(r'url\(["\']?([^)"\']+)["\']?\)', style):
+              for url in re.findall(r'url\(["\']?([^)"\']+)["\']?\)', tag['style']):
                   images.append(urljoin(chapter_url, url))
 
-          # 4. figure > img (manhwaclan structure)
           for figure in soup.find_all('figure'):
               for img in figure.find_all('img'):
                   for attr in ['src', 'data-src', 'data-lazy-src']:
@@ -117,11 +109,9 @@ jobs:
                       if src and not src.startswith('data:'):
                           images.append(urljoin(chapter_url, src))
 
-          # 5. picture element
           for picture in soup.find_all('picture'):
               for source in picture.find_all('source', srcset=True):
-                  srcset = source.get('srcset', '')
-                  for part in srcset.split(','):
+                  for part in source['srcset'].split(','):
                       url_part = part.strip().split(' ')[0]
                       if url_part:
                           images.append(urljoin(chapter_url, url_part))
@@ -130,7 +120,6 @@ jobs:
                   if src and not src.startswith('data:'):
                       images.append(urljoin(chapter_url, src))
 
-          # 6. Content containers
           for container in soup.find_all(['div', 'section', 'article'], class_=re.compile(r'read|content|chapter|page|entry|post|main|body|text|comic|manga', re.I)):
               for img in container.find_all('img'):
                   for attr in ['src', 'data-src', 'data-lazy-src', 'data-original']:
@@ -138,11 +127,9 @@ jobs:
                       if src and not src.startswith('data:'):
                           images.append(urljoin(chapter_url, src))
               for div in container.find_all(['div', 'span'], style=True):
-                  style = div.get('style', '')
-                  for url in re.findall(r'url\(["\']?([^)"\']+)["\']?\)', style):
+                  for url in re.findall(r'url\(["\']?([^)"\']+)["\']?\)', div['style']):
                       images.append(urljoin(chapter_url, url))
 
-          # 7. noscript fallback
           for noscript in soup.find_all('noscript'):
               inner = BeautifulSoup(str(noscript), 'html.parser')
               for img in inner.find_all('img'):
@@ -150,26 +137,23 @@ jobs:
                   if src and not src.startswith('data:'):
                       images.append(urljoin(chapter_url, src))
 
-          # 8. Direct image links
           for a in soup.find_all('a', href=True):
-              href = a.get('href', '')
+              href = a['href']
               if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']):
                   images.append(urljoin(chapter_url, href))
 
-          # 9. SVG image tags
           for svg_img in soup.find_all('image', href=True):
-              href = svg_img.get('href', '')
+              href = svg_img['href']
               if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
                   images.append(urljoin(chapter_url, href))
 
-          # 10. Open Graph / Twitter image meta tags
           for meta in soup.find_all('meta'):
               if meta.get('property') in ['og:image', 'twitter:image']:
                   content = meta.get('content', '')
                   if content:
                       images.append(urljoin(chapter_url, content))
 
-          # Deduplicate and filter
+          # فیلتر
           seen = set()
           unique_images = []
           for u in images:
@@ -177,7 +161,7 @@ jobs:
               if u_clean not in seen:
                   ext = u_clean.lower().split('.')[-1] if '.' in u_clean else ''
                   if ext in ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp']:
-                      if not any(skip in u_clean.lower() for skip in ['icon', 'logo', 'avatar', 'favicon', 'thumb-50', 'thumb-100', '50x50', '100x100', '32x32', '16x16']):
+                      if not any(skip in u_clean.lower() for skip in ['icon', 'logo', 'avatar', 'favicon', 'thumb-50', 'thumb-100', '50x50', '100x100', '32x32', '16x16', '125x180']):
                           seen.add(u_clean)
                           unique_images.append(u)
 
@@ -187,45 +171,30 @@ jobs:
               print("❌ No images found")
               exit(1)
 
-          with open(f"{output_dir}/images.json", "w", encoding="utf-8") as f:
-              json.dump(unique_images, f, indent=2)
+          # دانلود
+          CLEAN_IP = "162.159.192.1"
+          BACKUP_IP = "162.159.193.1"
 
-          # Download images using Playwright (same browser session for cookies/referer)
-          print("📥 Downloading images...")
-          with sync_playwright() as p:
-              browser = p.chromium.launch(headless=True)
-              context = browser.new_context(
-                  user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
-              )
-              page = context.new_page()
-              page.goto(chapter_url, wait_until="networkidle", timeout=60000)
-              time.sleep(2)
+          for i, img_url in enumerate(unique_images, 1):
+              filename = f"{i:03d}.jpg"
+              filepath = f"{output_dir}/{filename}"
+              img_domain = urlparse(img_url).netloc
+              print(f"📥 [{i}/{len(unique_images)}] {img_url[:80]}...")
 
-              for i, img_url in enumerate(unique_images, 1):
-                  filename = f"{i:03d}.jpg"
-                  filepath = f"{output_dir}/{filename}"
-                  print(f"  [{i}/{len(unique_images)}] {img_url[:80]}...")
-                  try:
-                      response = page.evaluate("""
-                          async ([url]) => {
-                              const response = await fetch(url, {
-                                  headers: { 'Referer': arguments[1] }
-                              });
-                              if (!response.ok) return null;
-                              const buffer = await response.arrayBuffer();
-                              return Array.from(new Uint8Array(buffer));
-                          }
-                      """, [img_url, chapter_url])
-                      if response:
-                          with open(filepath, "wb") as f:
-                              f.write(bytes(response))
-                          size_kb = os.path.getsize(filepath) // 1024
-                          print(f"    ✅ {size_kb}KB")
-                      else:
-                          print(f"    ❌ Failed")
-                  except Exception as e:
-                      print(f"    ❌ Error: {e}")
-              browser.close()
+              cmd = f'curl -sL --resolve "{img_domain}:443:{CLEAN_IP}" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -H "Referer: {chapter_url}" -o "{filepath}" "{img_url}"'
+              ret = os.system(cmd)
+
+              if ret == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 500:
+                  size_kb = os.path.getsize(filepath) // 1024
+                  print(f"  ✅ {size_kb}KB")
+              else:
+                  cmd2 = f'curl -sL --resolve "{img_domain}:443:{BACKUP_IP}" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -H "Referer: {chapter_url}" -o "{filepath}" "{img_url}"'
+                  ret2 = os.system(cmd2)
+                  if ret2 == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 500:
+                      size_kb = os.path.getsize(filepath) // 1024
+                      print(f"  ✅ {size_kb}KB (backup)")
+                  else:
+                      print(f"  ❌ Failed")
 
           print(f"✅ Done! {output_dir}")
           PYEOF
@@ -235,5 +204,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sites/
-          git commit -m "📥 Universal Manga Downloader with XDriver | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git commit -m "📥 Universal XDriver download: ${{ github.event.inputs.url }}" || echo "Nothing to commit"
           git pull --rebase && git push || true
