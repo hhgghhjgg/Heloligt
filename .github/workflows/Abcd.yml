@@ -20,7 +20,6 @@ jobs:
           echo "🧪 Testing manhwaus.org with Clean Cloudflare IPs..."
           echo ""
           
-          # لیست IP های تمیزی که پیدا کردیم
           cat << 'EOF' > clean_ips.txt
           162.159.192.1
           162.159.193.1
@@ -37,38 +36,25 @@ jobs:
             
             echo "🔹 Testing: $IP"
             
-            # تست ۱: Ping
-            ping -c 1 -W 2 "$IP" > /dev/null 2>&1 && PING="✅" || PING="❌"
-            
-            # تست ۲: manhwaus
             HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+              -k \
               --resolve "manhwaus.org:443:$IP" \
               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
               --connect-timeout 10 --max-time 20 \
               "https://manhwaus.org" 2>/dev/null || echo "000")
             
-            # تست ۳: duration
-            START=$(date +%s%N)
-            curl -s -o /dev/null \
-              --resolve "manhwaus.org:443:$IP" \
-              --connect-timeout 10 --max-time 20 \
-              "https://manhwaus.org" 2>/dev/null
-            END=$(date +%s%N)
-            DURATION=$(( (END - START) / 1000000 ))
-            
-            # نمایش نتیجه
             if [ "$HTTP" = "200" ]; then
-              echo "  ✅ manhwaus باز شد! (HTTP $HTTP, ${DURATION}ms)"
-              echo "$IP | Ping:$PING | HTTP:$HTTP | Time:${DURATION}ms | ✅ SUCCESS" >> results.txt
+              echo "  ✅ manhwaus باز شد! (HTTP $HTTP)"
+              echo "$IP | HTTP:$HTTP | ✅ SUCCESS" >> results.txt
             elif [ "$HTTP" = "403" ]; then
-              echo "  ❌ هنوز بسته‌ست (HTTP 403)"
-              echo "$IP | Ping:$PING | HTTP:$HTTP | Time:${DURATION}ms | ❌ BLOCKED" >> results.txt
+              echo "  ❌ بسته‌ست (HTTP 403)"
+              echo "$IP | HTTP:$HTTP | ❌ BLOCKED" >> results.txt
             elif [ "$HTTP" = "000" ]; then
               echo "  ⚠️ وصل نشد"
-              echo "$IP | Ping:$PING | HTTP:$HTTP | Time:${DURATION}ms | ⚠️ NO CONNECTION" >> results.txt
+              echo "$IP | HTTP:$HTTP | ⚠️ NO CONNECTION" >> results.txt
             else
               echo "  ⚠️ HTTP $HTTP"
-              echo "$IP | Ping:$PING | HTTP:$HTTP | Time:${DURATION}ms | ⚠️ OTHER" >> results.txt
+              echo "$IP | HTTP:$HTTP | ⚠️" >> results.txt
             fi
             
           done < clean_ips.txt
@@ -82,5 +68,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add results.txt clean_ips.txt 2>/dev/null || true
-          git commit -m "🧪 manhwaus test with Clean IPs | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git commit -m "🧪 manhwaus test with Clean IPs v2 | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
