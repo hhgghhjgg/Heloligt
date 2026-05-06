@@ -1,166 +1,64 @@
-name: Check HF Token Space Creation Permission
+name: Create Hugging Face Space
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: write
+    inputs:
+      space_name:
+        description: 'اسم اسپیس'
+        required: true
+        type: string
+      sdk:
+        description: 'نوع SDK'
+        required: true
+        type: choice
+        options:
+          - gradio
+          - streamlit
+          - static
+          - docker
+        default: 'gradio'
+      hardware:
+        description: 'سخت‌افزار'
+        required: true
+        type: choice
+        options:
+          - cpu-basic
+          - cpu-upgrade
+          - t4-small
+          - t4-medium
+        default: 'cpu-basic'
+      private:
+        description: 'خصوصی؟'
+        required: true
+        type: boolean
+        default: false
 
 jobs:
-  check:
+  create-space:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: pip install -q requests huggingface_hub
-
-      - name: Test Token Permissions
-        env:
-          HF_TOKEN: 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
+      - name: دریافت username
+        id: whoami
         run: |
-          python3 << 'PYEOF'
-          import os, json, requests, uuid
-          from datetime import datetime
+          USERNAME=$(curl -s -H "Authorization: Bearer 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" https://huggingface.co/api/whoami-v2 | jq -r '.name')
+          echo "username=$USERNAME" >> $GITHUB_OUTPUT
+          echo "نام کاربری: $USERNAME"
 
-          token = os.environ["HF_TOKEN"]
-          headers = {"Authorization": f"Bearer {token}"}
-          results = {}
-
-          # =============================================
-          # تست ۱: بررسی اطلاعات کاربر (whoami-v2)
-          # =============================================
-          print("=" * 60)
-          print("📌 تست ۱: اطلاعات کاربر و سازمان‌ها")
-          print("=" * 60)
-          r = requests.get("https://huggingface.co/api/whoami-v2", headers=headers)
-          user_info = r.json() if r.ok else {"error": r.text}
-          print(json.dumps(user_info, indent=2, ensure_ascii=False))
-
-          username = user_info.get("name", "unknown")
-          orgs = [org["name"] for org in user_info.get("orgs", [])]
-          print(f"\n✅ نام کاربری: {username}")
-          print(f"✅ سازمان‌ها: {orgs if orgs else 'ندارد'}")
-
-          # =============================================
-          # تست ۲: بررسی scopes توکن از طریق مشاهده token info
-          # =============================================
-          print("\n" + "=" * 60)
-          print("📌 تست ۲: دسترسی خواندن (Read)")
-          print("=" * 60)
-          r = requests.get("https://huggingface.co/api/models/gpt2", headers=headers)
-          results["read"] = r.ok
-          print(f"  {'✅' if r.ok else '❌'} خواندن مدل‌ها: HTTP {r.status_code}")
-
-          # =============================================
-          # تست ۳: دسترسی نوشتن - ساخت یه Space موقت
-          # =============================================
-          print("\n" + "=" * 60)
-          print("📌 تست ۳: دسترسی نوشتن و ساخت Space")
-          print("=" * 60)
-          
-          test_space_name = f"token-test-{uuid.uuid4().hex[:8]}"
-          print(f"  در حال ساخت Space: {username}/{test_space_name}")
-
-          create_payload = {
-              "name": test_space_name,
+      - name: ساخت اسپیس
+        run: |
+          curl -X POST "https://huggingface.co/api/repos/create" \
+            -H "Authorization: Bearer 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" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "${{ github.event.inputs.space_name }}",
               "type": "space",
-              "sdk": "gradio",
-              "private": True,
-          }
-          r = requests.post(
-              "https://huggingface.co/api/repos/create",
-              headers={**headers, "Content-Type": "application/json"},
-              json=create_payload,
-          )
-          create_response = r.json() if r.text else {}
-          results["create_space"] = r.ok
-          
-          if r.ok:
-              print(f"  ✅ Space با موفقیت ساخته شد!")
-              print(f"  🔗 URL: https://huggingface.co/spaces/{username}/{test_space_name}")
-              results["space_url"] = f"https://huggingface.co/spaces/{username}/{test_space_name}"
-              
-              # پاکسازی: حذف Space تستی
-              print(f"\n  🧹 در حال پاکسازی Space تستی...")
-              r_del = requests.delete(
-                  f"https://huggingface.co/api/repos/delete",
-                  headers={**headers, "Content-Type": "application/json"},
-                  json={"name": f"{username}/{test_space_name}", "type": "space"},
-              )
-              if r_del.ok:
-                  print(f"  ✅ Space تستی با موفقیت حذف شد")
-              else:
-                  print(f"  ⚠️ حذف نشد: HTTP {r_del.status_code}")
-          else:
-              error_msg = create_response.get("error", create_response.get("message", str(create_response)))
-              print(f"  ❌ ساخت Space ناموفق: HTTP {r.status_code}")
-              print(f"  📝 پیام خطا: {error_msg}")
+              "sdk": "${{ github.event.inputs.sdk }}",
+              "hardware": "${{ github.event.inputs.hardware }}",
+              "private": ${{ github.event.inputs.private }},
+              "namespace": "${{ steps.whoami.outputs.username }}"
+            }'
 
-              # تحلیل خطا
-              if r.status_code == 401:
-                  print("\n  🔍 تحلیل: توکن نامعتبر است")
-              elif r.status_code == 403:
-                  print("\n  🔍 تحلیل: توکن Read-only است و اجازه نوشتن ندارد")
-                  print("     → باید یه توکن با دسترسی Write بسازی")
-              elif r.status_code == 429:
-                  print("\n  🔍 تحلیل: Rate limit - می‌تونیم بعداً دوباره تست کنیم")
-
-          # =============================================
-          # تست ۴: Inference API
-          # =============================================
-          print("\n" + "=" * 60)
-          print("📌 تست ۴: Inference API")
-          print("=" * 60)
-          r = requests.post(
-              "https://api-inference.huggingface.co/models/gpt2",
-              headers=headers,
-              json={"inputs": "Hello"}
-          )
-          results["inference_api"] = r.ok or r.status_code == 503
-          print(f"  {'✅' if results['inference_api'] else '❌'} Inference API: HTTP {r.status_code}")
-
-          # =============================================
-          # خلاصه نهایی
-          # =============================================
-          print("\n" + "=" * 60)
-          print("📊 خلاصه نهایی")
-          print("=" * 60)
-          print(f"  🔑 نام کاربری: {username}")
-          print(f"  📖 قابلیت خواندن: {'✅ بله' if results.get('read') else '❌ خیر'}")
-          print(f"  ✏️ قابلیت نوشتن (ساخت Space): {'✅ بله' if results.get('create_space') else '❌ خیر'}")
-          print(f"  🧠 Inference API: {'✅ بله' if results.get('inference_api') else '❌ خیر'}")
-          
-          if results.get("create_space"):
-              print(f"\n  🎉 تبریک! توکن تو دسترسی Write داره.")
-              print(f"  می‌تونی Space بسازی، فایل آپلود کنی و مدل‌های خودت رو مدیریت کنی.")
-          else:
-              print(f"\n  ⚠️ توکن تو فقط Read-only هست.")
-              print(f"  برای ساخت Space باید یه توکن با دسترسی Write بسازی.")
-              print(f"  → برو به https://huggingface.co/settings/tokens")
-              print(f"  → نوع Token رو بذار 'Write' یا 'Fine-grained'")
-
-          # ذخیره نتیجه
-          result_file = "token_check_result.json"
-          with open(result_file, "w", encoding="utf-8") as f:
-              json.dump({
-                  "timestamp": datetime.now().isoformat(),
-                  "username": username,
-                  "orgs": orgs,
-                  "permissions": results,
-                  "space_url": results.get("space_url", None)
-              }, f, indent=2, ensure_ascii=False)
-          
-          print(f"\n📄 نتایج در {result_file} ذخیره شد")
-          PYEOF
-
-      - name: Commit and push results
+      - name: نتیجه
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add token_check_result.json
-          git commit -m "🔑 Token permission check | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
-          git pull --rebase && git push || true
+          echo "✅ اسپیس ساخته شد:"
+          echo "https://huggingface.co/spaces/${{ steps.whoami.outputs.username }}/${{ github.event.inputs.space_name }}"
