@@ -1,0 +1,194 @@
+name: Fetch Telegram Posts for Personal Viewer
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'نام کاربری کانال (بدون @)'
+        required: true
+        default: 'badsoccer'
+      count:
+        description: 'تعداد پست‌های آخر'
+        required: false
+        default: '20'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4
+
+      - name: Fetch posts from Telegram
+        env:
+          CHANNEL: ${{ github.event.inputs.channel }}
+          COUNT: ${{ github.event.inputs.count }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, requests, re, hashlib
+          from bs4 import BeautifulSoup
+          from datetime import datetime
+          from pathlib import Path
+          from urllib.parse import urljoin
+
+          channel = os.environ["CHANNEL"]
+          count = int(os.environ["COUNT"])
+          url = f"https://t.me/s/{channel}"
+
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.5",
+          }
+
+          print(f"📡 Fetching {url} ...")
+          resp = requests.get(url, headers=headers, timeout=30)
+          if resp.status_code != 200:
+              print(f"Error: HTTP {resp.status_code}")
+              exit(1)
+
+          soup = BeautifulSoup(resp.text, 'html.parser')
+
+          # Get channel title
+          title_tag = soup.find('meta', property='og:title')
+          channel_title = title_tag['content'] if title_tag else f'@{channel}'
+          channel_title = re.sub(r'\s*\[ALL CHAPTERS\]', '', channel_title)
+          channel_title = re.sub(r'^Telegram:\s*(Contact\s*)?', '', channel_title)
+          channel_title = channel_title.replace('@', '').strip()
+
+          # Get all messages
+          all_messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+          latest = all_messages[:count]
+
+          print(f"Found {len(all_messages)} total messages, processing {len(latest)} ...")
+
+          # Create output directory
+          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+          output_dir = f"sites/telegram/{channel}/{timestamp}"
+          Path(output_dir).mkdir(parents=True, exist_ok=True)
+          Path(f"{output_dir}/media").mkdir(exist_ok=True)
+
+          posts_data = []
+
+          for idx, msg in enumerate(latest):
+              msg_id = msg.get('data-post', f'post-{idx}')
+              
+              # Text
+              text_div = msg.find('div', class_='tgme_widget_message_text')
+              raw_text = text_div.get_text('\n', strip=True) if text_div else ""
+              
+              # Date
+              date_tag = msg.find('time', class_='time')
+              date_str = date_tag.get('datetime', '') if date_tag else ''
+              
+              # Views
+              views_tag = msg.find('span', class_='tgme_widget_message_views')
+              views = views_tag.get_text(strip=True) if views_tag else ''
+              
+              # Links
+              links = []
+              if text_div:
+                  for a in text_div.find_all('a', href=True):
+                      links.append(a['href'])
+              
+              # Photos
+              photos = []
+              photo_wrap = msg.find('a', class_='tgme_widget_message_photo_wrap')
+              if photo_wrap:
+                  style = photo_wrap.get('style', '')
+                  bg_match = re.search(r"background-image:url\('([^']+)'\)", style)
+                  if bg_match:
+                      img_url = bg_match.group(1)
+                      try:
+                          img_resp = requests.get(img_url, headers=headers, timeout=20)
+                          if img_resp.status_code == 200:
+                              img_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
+                              ext = img_url.split('.')[-1].split('?')[0] or 'jpg'
+                              img_filename = f"img_{img_hash}.{ext}"
+                              img_path = f"{output_dir}/media/{img_filename}"
+                              with open(img_path, "wb") as f:
+                                  f.write(img_resp.content)
+                              photos.append(f"media/{img_filename}")
+                              print(f"  📸 Downloaded: {img_filename}")
+                      except Exception as e:
+                          print(f"  Image error: {e}")
+              
+              # Videos
+              videos = []
+              video_tag = msg.find('video')
+              if not video_tag:
+                  video_tag = msg.find('a', class_='tgme_widget_message_video_player')
+              
+              if video_tag:
+                  video_src = video_tag.get('src', '')
+                  if not video_src and video_tag.name == 'a':
+                      video_src = video_tag.get('data-video', '')
+                  if video_src:
+                      try:
+                          vid_resp = requests.get(video_src, headers=headers, timeout=60, stream=True)
+                          if vid_resp.status_code == 200:
+                              vid_hash = hashlib.md5(video_src.encode()).hexdigest()[:10]
+                              vid_filename = f"vid_{vid_hash}.mp4"
+                              vid_path = f"{output_dir}/media/{vid_filename}"
+                              with open(vid_path, "wb") as f:
+                                  for chunk in vid_resp.iter_content(chunk_size=8192):
+                                      f.write(chunk)
+                              videos.append(f"media/{vid_filename}")
+                              print(f"  🎬 Downloaded: {vid_filename}")
+                      except Exception as e:
+                          print(f"  Video error: {e}")
+              
+              posts_data.append({
+                  "id": msg_id,
+                  "date": date_str,
+                  "text": raw_text,
+                  "views": views,
+                  "links": links,
+                  "photos": photos,
+                  "videos": videos,
+              })
+              
+              print(f"  Processed post {idx+1}/{len(latest)}")
+
+          # Save JSON
+          with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
+              json.dump({
+                  "channel": channel,
+                  "title": channel_title,
+                  "posts_count": len(posts_data),
+                  "posts": posts_data,
+                  "fetched_at": datetime.now().isoformat()
+              }, f, ensure_ascii=False, indent=2)
+
+          # Also save to cache location for get_posts.php
+          cache_dir = "sites/telegram"
+          Path(cache_dir).mkdir(parents=True, exist_ok=True)
+          cache_file = f"{cache_dir}/{channel}.json"
+          with open(cache_file, "w", encoding="utf-8") as f:
+              json.dump({
+                  "channel": channel,
+                  "title": channel_title,
+                  "posts_count": len(posts_data),
+                  "posts": posts_data,
+                  "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+              }, f, ensure_ascii=False, indent=2)
+
+          print(f"✅ Done! Saved to {output_dir}")
+          print(f"📊 {len(posts_data)} posts with media in media/")
+          PYEOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sites/telegram/
+          git commit -m "📡 @${{ github.event.inputs.channel }} posts | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
