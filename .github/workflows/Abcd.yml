@@ -3,30 +3,84 @@ name: Test manhwaus with Clean IP
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
-      - name: Test manhwaus with Clean Cloudflare IP
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Test manhwaus with all Clean IPs
         run: |
-          CLEAN_IP="162.159.192.1"
+          echo "🧪 Testing manhwaus.org with Clean Cloudflare IPs..."
+          echo ""
           
-          echo "📡 Testing manhwaus.org with Clean IP: $CLEAN_IP"
+          # لیست IP های تمیزی که پیدا کردیم
+          cat << 'EOF' > clean_ips.txt
+          162.159.192.1
+          162.159.193.1
+          162.159.195.1
+          162.159.204.1
+          188.114.96.1
+          188.114.97.1
+          EOF
           
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-            --resolve "manhwaus.org:443:$CLEAN_IP" \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            --connect-timeout 15 --max-time 30 \
-            "https://manhwaus.org" 2>&1)
+          > results.txt
           
-          echo "HTTP Status: $RESPONSE"
+          while IFS= read -r IP; do
+            [ -z "$IP" ] && continue
+            
+            echo "🔹 Testing: $IP"
+            
+            # تست ۱: Ping
+            ping -c 1 -W 2 "$IP" > /dev/null 2>&1 && PING="✅" || PING="❌"
+            
+            # تست ۲: manhwaus
+            HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+              --resolve "manhwaus.org:443:$IP" \
+              -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              --connect-timeout 10 --max-time 20 \
+              "https://manhwaus.org" 2>/dev/null || echo "000")
+            
+            # تست ۳: duration
+            START=$(date +%s%N)
+            curl -s -o /dev/null \
+              --resolve "manhwaus.org:443:$IP" \
+              --connect-timeout 10 --max-time 20 \
+              "https://manhwaus.org" 2>/dev/null
+            END=$(date +%s%N)
+            DURATION=$(( (END - START) / 1000000 ))
+            
+            # نمایش نتیجه
+            if [ "$HTTP" = "200" ]; then
+              echo "  ✅ manhwaus باز شد! (HTTP $HTTP, ${DURATION}ms)"
+              echo "$IP | Ping:$PING | HTTP:$HTTP | Time:${DURATION}ms | ✅ SUCCESS" >> results.txt
+            elif [ "$HTTP" = "403" ]; then
+              echo "  ❌ هنوز بسته‌ست (HTTP 403)"
+              echo "$IP | Ping:$PING | HTTP:$HTTP | Time:${DURATION}ms | ❌ BLOCKED" >> results.txt
+            elif [ "$HTTP" = "000" ]; then
+              echo "  ⚠️ وصل نشد"
+              echo "$IP | Ping:$PING | HTTP:$HTTP | Time:${DURATION}ms | ⚠️ NO CONNECTION" >> results.txt
+            else
+              echo "  ⚠️ HTTP $HTTP"
+              echo "$IP | Ping:$PING | HTTP:$HTTP | Time:${DURATION}ms | ⚠️ OTHER" >> results.txt
+            fi
+            
+          done < clean_ips.txt
           
-          if [ "$RESPONSE" = "200" ]; then
-            echo "✅ manhwaus باز شد!"
-          elif [ "$RESPONSE" = "403" ]; then
-            echo "❌ هنوز بسته‌ست"
-          else
-            echo "⚠️ کد: $RESPONSE"
-          fi
+          echo ""
+          echo "===== RESULTS ====="
+          cat results.txt
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results.txt clean_ips.txt 2>/dev/null || true
+          git commit -m "🧪 manhwaus test with Clean IPs | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
