@@ -1,10 +1,10 @@
-name: Download Manga Chapter from mgeko with Clean IP
+name: Download Manga Chapter with FlareSolverr + Clean IP
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'لینک صفحه چپتر (مثلاً https://www.mgeko.cc/reader/...)'
+        description: 'آدرس صفحه Reader فصل (مثلاً mgeko.cc)'
         required: true
         default: 'https://www.mgeko.cc/reader/en/im-the-king-of-wealth-in-the-three-realms-chapter-11-eng-li/'
 
@@ -16,6 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,186 +29,116 @@ jobs:
       - name: Install dependencies
         run: pip install -q requests beautifulsoup4
 
-      - name: Fetch chapter and download images
+      - name: Wait for FlareSolverr
+        run: |
+          echo "⏳ Waiting for FlareSolverr..."
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
+            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
+              echo "✅ FlareSolverr ready (status: $status)"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Fetch chapter page via FlareSolverr
         env:
           CHAPTER_URL: ${{ github.event.inputs.url }}
         run: |
           python3 << 'PYEOF'
-          import os, requests, re, hashlib, json
+          import os, json, requests, re, hashlib
           from bs4 import BeautifulSoup
           from datetime import datetime
           from urllib.parse import urljoin, urlparse
+          from pathlib import Path
 
           chapter_url = os.environ["CHAPTER_URL"]
           domain = urlparse(chapter_url).netloc
-
-          # استخراج اسم مانهوا و شماره چپتر
-          slug_match = re.search(r'/([^/]+)-chapter-(\d+)', chapter_url)
-          if slug_match:
-              manga_slug = slug_match.group(1)
-              chapter_num = slug_match.group(2)
-          else:
-              manga_slug = re.sub(r'[^a-zA-Z0-9]', '_', domain)
-              chapter_num = "unknown"
-
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-          output_dir = f"sites/{domain}/{manga_slug}/chapter_{chapter_num}/{timestamp}"
-          os.makedirs(output_dir, exist_ok=True)
+          output_dir = f"sites/{domain}/{timestamp}"
+          Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-          # لیست IP های تمیز برای تست
-          clean_ips = [
-              "162.159.192.1",
-              "162.159.193.1",
-              "162.159.195.1",
-              "162.159.204.1",
-              "188.114.96.1",
-              "188.114.97.1",
-          ]
-
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
-              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-              "Accept-Language": "en-US,en;q=0.5",
+          # ============== مرحله ۱: دریافت صفحه با FlareSolverr ==============
+          print(f"📡 Fetching via FlareSolverr: {chapter_url}")
+          fs_url = "http://localhost:8191/v1"
+          payload = {
+              "cmd": "request.get",
+              "url": chapter_url,
+              "maxTimeout": 120000
           }
+          resp = requests.post(fs_url, json=payload, timeout=150)
+          data = resp.json()
+          html = data.get("solution", {}).get("response", "")
+          fs_status = data.get("status", "error")
+          fs_message = data.get("message", "")
 
-          html_content = ""
-          used_ip = None
+          print(f"  FlareSolverr status: {fs_status}")
+          print(f"  FlareSolverr message: {fs_message}")
 
-          # تست IP ها
-          for ip in clean_ips:
-              try:
-                  print(f"🔹 Trying IP: {ip}")
-                  resp = requests.get(
-                      chapter_url,
-                      headers=headers,
-                      timeout=30,
-                      # استفاده از IP تمیز
-                      # (requests مستقیماً --resolve نداره، ولی میتونیم از DNS override استفاده کنیم)
-                  )
-                  # برای استفاده از IP تمیز با requests:
-                  # از اونجایی که requests --resolve نداره،
-                  # اول با socket.gethostbyname تست می‌کنیم
-                  # و اگه جواب داد، از همون IP استفاده می‌کنیم
-                  
-                  # روش جایگزین: مستقیماً درخواست بدون IP
-                  # (چون mgeko.cc قبلاً بدون IP تمیز هم باز شده)
-                  if resp.status_code == 200:
-                      html_content = resp.text
-                      used_ip = ip
-                      print(f"  ✅ Success with IP: {ip}")
-                      break
-                  else:
-                      print(f"  HTTP {resp.status_code}")
-              except Exception as e:
-                  print(f"  ❌ {str(e)[:50]}")
-
-          # اگه هیچ IP ای جواب نداد، بدون IP تمیز امتحان کن
-          if not html_content:
-              print("⚠️ No Clean IP worked. Trying without IP...")
-              try:
-                  resp = requests.get(chapter_url, headers=headers, timeout=30)
-                  if resp.status_code == 200:
-                      html_content = resp.text
-                      used_ip = "direct"
-                      print("  ✅ Success without Clean IP")
-              except Exception as e:
-                  print(f"  ❌ {str(e)[:50]}")
-
-          if not html_content:
-              print("❌ Could not fetch chapter page")
-              with open(f"{output_dir}/error.txt", "w") as f:
-                  f.write("Failed to fetch chapter")
+          if not html:
+              print("❌ HTML دریافت نشد!")
               exit(1)
 
-          # Save original HTML
-          with open(f"{output_dir}/chapter.html", "w", encoding="utf-8") as f:
-              f.write(html_content)
+          # ذخیره HTML اصلی
+          html_path = f"{output_dir}/page.html"
+          with open(html_path, "w", encoding="utf-8") as f:
+              f.write(html)
+          print(f"✅ HTML ذخیره شد: {html_path}")
 
-          # Parse images
-          soup = BeautifulSoup(html_content, 'html.parser')
+          # ============== مرحله ۲: استخراج لینک تصاویر ==============
+          soup = BeautifulSoup(html, 'html.parser')
           images = []
-          
-          # پیدا کردن همه تگ‌های img
           for img in soup.find_all('img'):
               src = img.get('src') or img.get('data-src') or img.get('data-lazy-src') or ''
-              if src and ('imgsrv4.com' in src or 'mgeko.cc' in src or 'media' in src.lower() or 'manga' in src.lower()):
+              if not src:
+                  continue
+              # فیلتر تصاویر مانگا (معمولاً روی imgsrv4.com یا دامنه‌های مشابه)
+              if any(kw in src.lower() for kw in ['imgsrv', 'mgeko.cc/media', 'manga', 'chapter', 'reader']):
                   full_url = urljoin(chapter_url, src)
                   images.append(full_url)
 
           # حذف تکراری‌ها
           images = list(dict.fromkeys(images))
-          print(f"\n📸 Found {len(images)} images")
+          print(f"📊 {len(images)} تصویر پیدا شد")
 
-          # دانلود عکس‌ها
-          downloaded = []
+          if len(images) == 0:
+              print("❌ هیچ تصویری پیدا نشد")
+              exit(1)
+
+          # ذخیره لیست تصاویر
+          with open(f"{output_dir}/images.json", "w", encoding="utf-8") as f:
+              json.dump(images, f, indent=2)
+
+          # ============== مرحله ۳: دانلود تصاویر با IP تمیز ==============
+          CLEAN_IP = "162.159.192.1"
+
           for i, img_url in enumerate(images, 1):
               filename = f"{i:03d}.jpg"
               filepath = f"{output_dir}/{filename}"
-              
-              try:
-                  img_resp = requests.get(img_url, headers=headers, timeout=30)
-                  if img_resp.status_code == 200:
-                      with open(filepath, "wb") as f:
-                          f.write(img_resp.content)
-                      size_kb = len(img_resp.content) // 1024
-                      downloaded.append(filename)
-                      print(f"  [{i}/{len(images)}] ✅ {filename} ({size_kb} KB)")
+              img_domain = urlparse(img_url).netloc
+
+              print(f"📥 [{i}/{len(images)}] {img_url[:80]}...")
+
+              # استفاده از curl با IP تمیز
+              cmd = f'curl -sL --resolve "{img_domain}:443:{CLEAN_IP}" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -H "Referer: {chapter_url}" -o "{filepath}" "{img_url}"'
+              ret = os.system(cmd)
+
+              if ret == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 100:
+                  size_kb = os.path.getsize(filepath) // 1024
+                  print(f"  ✅ ذخیره شد ({size_kb} KB)")
+              else:
+                  # تلاش دوباره با IP پشتیبان
+                  BACKUP_IP = "162.159.193.1"
+                  print(f"  ⚠️ تلاش مجدد با IP پشتیبان...")
+                  cmd2 = f'curl -sL --resolve "{img_domain}:443:{BACKUP_IP}" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -H "Referer: {chapter_url}" -o "{filepath}" "{img_url}"'
+                  ret2 = os.system(cmd2)
+                  if ret2 == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 100:
+                      size_kb = os.path.getsize(filepath) // 1024
+                      print(f"  ✅ ذخیره شد با IP پشتیبان ({size_kb} KB)")
                   else:
-                      print(f"  [{i}/{len(images)}] ❌ HTTP {img_resp.status_code}")
-              except Exception as e:
-                  print(f"  [{i}/{len(images)}] ❌ {str(e)[:30]}")
+                      print(f"  ❌ دانلود ناموفق")
 
-          # Generate viewer HTML
-          viewer_html = f"""<!DOCTYPE html>
-          <html lang="fa" dir="rtl">
-          <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>{manga_slug} - Chapter {chapter_num}</title>
-          <style>
-          * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-          body {{ background: #0f0f0f; color: #e0e0e0; font-family: 'Segoe UI', Tahoma; text-align: center; }}
-          .header {{ background: #1a1a2e; padding: 15px; position: sticky; top: 0; z-index: 10; border-bottom: 2px solid #e94560; }}
-          .header h1 {{ font-size: 1.2em; color: #e94560; }}
-          .header p {{ font-size: 0.8em; color: #999; }}
-          .images {{ max-width: 800px; margin: 0 auto; }}
-          .images img {{ width: 100%; display: block; }}
-          .footer {{ padding: 20px; color: #666; font-size: 0.8em; }}
-          .nav {{ display: flex; justify-content: center; gap: 20px; margin: 15px 0; }}
-          .nav a {{ color: #4fc3f7; text-decoration: none; padding: 10px 20px; background: #1a1a2e; border-radius: 5px; }}
-          </style>
-          </head>
-          <body>
-          <div class="header">
-              <h1>📖 {manga_slug} - Chapter {chapter_num}</h1>
-              <p>IP Used: {used_ip} | Downloaded: {len(downloaded)} images | {timestamp}</p>
-          </div>
-          <div class="images">
-              {"".join(f'<img src="{img}" alt="Page {i}" loading="lazy">' for i, img in enumerate(downloaded, 1))}
-          </div>
-          <div class="footer">
-              <p>Generated by Magic Browser | GitHub Actions</p>
-          </div>
-          </body>
-          </html>"""
-
-          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
-              f.write(viewer_html)
-
-          # Save metadata
-          with open(f"{output_dir}/info.json", "w", encoding="utf-8") as f:
-              json.dump({
-                  "url": chapter_url,
-                  "domain": domain,
-                  "manga": manga_slug,
-                  "chapter": chapter_num,
-                  "timestamp": timestamp,
-                  "ip_used": used_ip,
-                  "images_count": len(downloaded),
-                  "images": downloaded
-              }, f, indent=2)
-
-          print(f"\n✅ Done! Saved to {output_dir}")
+          print(f"✅ عملیات تمام شد! فایل‌ها در {output_dir}")
           PYEOF
 
       - name: Commit and push
@@ -210,5 +146,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sites/
-          git commit -m "📖 Chapter download + HTML viewer | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git commit -m "📥 Manga chapter: ${{ github.event.inputs.url }}" || echo "Nothing to commit"
           git pull --rebase && git push || true
