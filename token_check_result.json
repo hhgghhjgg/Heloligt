@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-05-06T08:10:29.562462",
+  "username": "unknown",
+  "orgs": [],
+  "permissions": {
+    "read": false,
+    "create_space": false,
+    "inference_api": false
+  },
+  "space_url": null
+}
