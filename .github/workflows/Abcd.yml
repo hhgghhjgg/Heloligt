@@ -1,46 +1,120 @@
-name: Install XDriver and Test
+name: Open manhwaus with Chrome Headless
 
 on:
   workflow_dispatch:
+    inputs:
+      url:
+        description: 'لینک manhwaus (یا هر سایت دیگه)'
+        required: true
+        default: 'https://manhwaus.org'
+
+permissions:
+  contents: write
 
 jobs:
-  test:
+  fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
-      - name: Install XDriver + Chrome
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Chrome
         run: |
-          # Chrome رو نصب کن
           wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get install -y /tmp/chrome.deb 2>/dev/null
           google-chrome --version
 
-      - name: Test XDriver
+      - name: Fetch page with Chrome Headless
+        env:
+          TARGET_URL: ${{ github.event.inputs.url }}
         run: |
-          python3 << 'PYEOF'
-          # XDriver نیاز به نصب نداره، یه اسکریپت Python ساده‌ست
-          # که Chrome رو با تنظیمات stealth راه میندازه
-          
-          import subprocess, sys
-          
-          print("Chrome installed:", subprocess.run(["which", "google-chrome"], capture_output=True).stdout.decode())
-          
-          # Check if we can run chrome headless
-          try:
-              result = subprocess.run([
-                  "google-chrome",
-                  "--headless",
-                  "--no-sandbox",
-                  "--disable-dev-shm-usage",
-                  "--dump-dom",
-                  "https://example.com"
-              ], capture_output=True, timeout=30)
-              
-              if "Example Domain" in result.stdout.decode():
-                  print("✅ Chrome works in headless mode!")
-              else:
-                  print("⚠️ Chrome ran but got unexpected output")
-          except Exception as e:
-              print(f"❌ Chrome headless error: {e}")
-          PYEOF
+          # استخراج دامنه برای اسم پوشه
+          DOMAIN=$(echo "$TARGET_URL" | sed 's|https\?://||' | cut -d/ -f1)
+          TIMESTAMP=$(date '+%Y-%m-%d_%H-%M')
+          OUTPUT_DIR="sites/${DOMAIN}/${TIMESTAMP}"
+          mkdir -p "$OUTPUT_DIR"
+
+          echo "🌐 Fetching: $TARGET_URL"
+          echo "📁 Saving to: $OUTPUT_DIR"
+
+          # باز کردن صفحه با Chrome Headless
+          google-chrome \
+            --headless \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --disable-gpu \
+            --disable-extensions \
+            --disable-background-networking \
+            --disable-sync \
+            --no-first-run \
+            --disable-features=TranslateUI \
+            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
+            --timeout=30000 \
+            --virtual-time-budget=15000 \
+            --dump-dom \
+            "$TARGET_URL" > "${OUTPUT_DIR}/index.html" 2>/dev/null
+
+          if [ -f "${OUTPUT_DIR}/index.html" ]; then
+            SIZE=$(stat -c%s "${OUTPUT_DIR}/index.html" 2>/dev/null || echo 0)
+            SIZE_KB=$((SIZE / 1024))
+            
+            echo ""
+            echo "========================================="
+            echo "✅ HTML saved!"
+            echo "📁 ${OUTPUT_DIR}/index.html"
+            echo "📊 Size: ${SIZE} bytes (${SIZE_KB} KB)"
+            
+            # Check if Cloudflare blocked us
+            if grep -q "Just a moment\|cf-browser-verification\|challenge-platform" "${OUTPUT_DIR}/index.html"; then
+              echo "⚠️ Cloudflare detected! Page may be blocked."
+            elif grep -q "<html" "${OUTPUT_DIR}/index.html" && [ $SIZE -gt 500 ]; then
+              echo "✅ Page seems to be loaded successfully!"
+            else
+              echo "⚠️ Page loaded but content might be incomplete."
+            fi
+            echo "========================================="
+          else
+            echo "❌ Failed to save HTML"
+            exit 1
+          fi
+
+          # Also take a screenshot (optional)
+          echo ""
+          echo "📸 Taking screenshot..."
+          google-chrome \
+            --headless \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --disable-gpu \
+            --window-size=1280,720 \
+            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
+            --timeout=30000 \
+            --screenshot="${OUTPUT_DIR}/screenshot.png" \
+            "$TARGET_URL" 2>/dev/null
+
+          if [ -f "${OUTPUT_DIR}/screenshot.png" ]; then
+            SCREENSHOT_SIZE=$(stat -c%s "${OUTPUT_DIR}/screenshot.png" 2>/dev/null || echo 0)
+            echo "✅ Screenshot saved (${SCREENSHOT_SIZE} bytes)"
+          else
+            echo "⚠️ Screenshot failed (non-critical)"
+          fi
+
+          # Save metadata
+          cat > "${OUTPUT_DIR}/info.json" << EOF
+          {
+            "url": "$TARGET_URL",
+            "domain": "$DOMAIN",
+            "timestamp": "$TIMESTAMP",
+            "html_size_bytes": $SIZE
+          }
+          EOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sites/
+          git commit -m "🌐 ${{ github.event.inputs.url }} with Chrome Headless | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
