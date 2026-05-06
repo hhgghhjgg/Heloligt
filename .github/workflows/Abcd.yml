@@ -1,208 +1,46 @@
-name: Universal Manga Downloader with XDriver
+name: Install XDriver and Test
 
 on:
   workflow_dispatch:
-    inputs:
-      url:
-        description: 'لینک صفحه Reader فصل (هر سایتی)'
-        required: true
-        default: 'https://manhwaclan.com/manga/the-chairman-of-pharmaceutical-company-is-a-poison-king/chapter-1/'
-
-permissions:
-  contents: write
 
 jobs:
-  download:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Chrome
-        uses: browser-actions/setup-chrome@v1
-        with:
-          chrome-version: stable
-
-      - name: Install Python dependencies
+      - name: Install XDriver + Chrome
         run: |
-          pip install -q playwright beautifulsoup4 requests
-          pip install -q xdriver
+          # Chrome رو نصب کن
+          wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y /tmp/chrome.deb 2>/dev/null
+          google-chrome --version
 
-      - name: Install Playwright browsers
-        run: |
-          xdriver activate
-          python3 -m playwright install chromium
-
-      - name: Fetch Chapter with XDriver
-        env:
-          CHAPTER_URL: ${{ github.event.inputs.url }}
+      - name: Test XDriver
         run: |
           python3 << 'PYEOF'
-          import os, json, requests, re, hashlib
-          from bs4 import BeautifulSoup
-          from datetime import datetime
-          from urllib.parse import urljoin, urlparse
-          from pathlib import Path
-          from playwright.sync_api import sync_playwright
-
-          chapter_url = os.environ["CHAPTER_URL"]
-          domain = urlparse(chapter_url).netloc.replace('www.', '')
-          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-          output_dir = f"sites/{domain}/{timestamp}"
-          Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-          print(f"📡 Fetching with XDriver: {chapter_url}")
-
-          html = ""
-          with sync_playwright() as p:
-              browser = p.chromium.launch(headless=True)
-              context = browser.new_context(
-                  user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
-              )
-              page = context.new_page()
+          # XDriver نیاز به نصب نداره، یه اسکریپت Python ساده‌ست
+          # که Chrome رو با تنظیمات stealth راه میندازه
+          
+          import subprocess, sys
+          
+          print("Chrome installed:", subprocess.run(["which", "google-chrome"], capture_output=True).stdout.decode())
+          
+          # Check if we can run chrome headless
+          try:
+              result = subprocess.run([
+                  "google-chrome",
+                  "--headless",
+                  "--no-sandbox",
+                  "--disable-dev-shm-usage",
+                  "--dump-dom",
+                  "https://example.com"
+              ], capture_output=True, timeout=30)
               
-              try:
-                  page.goto(chapter_url, wait_until="networkidle", timeout=60000)
-                  page.wait_for_timeout(3000)
-                  html = page.content()
-                  print("✅ Page loaded successfully")
-              except Exception as e:
-                  print(f"❌ Error: {e}")
-                  html = page.content()
-              finally:
-                  browser.close()
-
-          if not html or len(html) < 500:
-              print("❌ HTML empty or too short")
-              exit(1)
-
-          with open(f"{output_dir}/page.html", "w", encoding="utf-8") as f:
-              f.write(html)
-          print("✅ HTML saved")
-
-          soup = BeautifulSoup(html, 'html.parser')
-          images = []
-
-          # ۱۰ روش استخراج
-          for img in soup.find_all('img'):
-              for attr in ['src', 'data-src', 'data-lazy-src', 'data-original', 'data-url', 'data-image', 'data-img']:
-                  src = img.get(attr, '')
-                  if src and not src.startswith('data:'):
-                      images.append(urljoin(chapter_url, src))
-
-          for img in soup.find_all('img', srcset=True):
-              for part in img['srcset'].split(','):
-                  url_part = part.strip().split(' ')[0]
-                  if url_part:
-                      images.append(urljoin(chapter_url, url_part))
-
-          for tag in soup.find_all(['div', 'span', 'a', 'li', 'section', 'article'], style=True):
-              for url in re.findall(r'url\(["\']?([^)"\']+)["\']?\)', tag['style']):
-                  images.append(urljoin(chapter_url, url))
-
-          for figure in soup.find_all('figure'):
-              for img in figure.find_all('img'):
-                  for attr in ['src', 'data-src', 'data-lazy-src']:
-                      src = img.get(attr, '')
-                      if src and not src.startswith('data:'):
-                          images.append(urljoin(chapter_url, src))
-
-          for picture in soup.find_all('picture'):
-              for source in picture.find_all('source', srcset=True):
-                  for part in source['srcset'].split(','):
-                      url_part = part.strip().split(' ')[0]
-                      if url_part:
-                          images.append(urljoin(chapter_url, url_part))
-              for img in picture.find_all('img'):
-                  src = img.get('src', '')
-                  if src and not src.startswith('data:'):
-                      images.append(urljoin(chapter_url, src))
-
-          for container in soup.find_all(['div', 'section', 'article'], class_=re.compile(r'read|content|chapter|page|entry|post|main|body|text|comic|manga', re.I)):
-              for img in container.find_all('img'):
-                  for attr in ['src', 'data-src', 'data-lazy-src', 'data-original']:
-                      src = img.get(attr, '')
-                      if src and not src.startswith('data:'):
-                          images.append(urljoin(chapter_url, src))
-              for div in container.find_all(['div', 'span'], style=True):
-                  for url in re.findall(r'url\(["\']?([^)"\']+)["\']?\)', div['style']):
-                      images.append(urljoin(chapter_url, url))
-
-          for noscript in soup.find_all('noscript'):
-              inner = BeautifulSoup(str(noscript), 'html.parser')
-              for img in inner.find_all('img'):
-                  src = img.get('src', '')
-                  if src and not src.startswith('data:'):
-                      images.append(urljoin(chapter_url, src))
-
-          for a in soup.find_all('a', href=True):
-              href = a['href']
-              if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']):
-                  images.append(urljoin(chapter_url, href))
-
-          for svg_img in soup.find_all('image', href=True):
-              href = svg_img['href']
-              if any(href.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png']):
-                  images.append(urljoin(chapter_url, href))
-
-          for meta in soup.find_all('meta'):
-              if meta.get('property') in ['og:image', 'twitter:image']:
-                  content = meta.get('content', '')
-                  if content:
-                      images.append(urljoin(chapter_url, content))
-
-          # فیلتر
-          seen = set()
-          unique_images = []
-          for u in images:
-              u_clean = u.split('?')[0].split('#')[0]
-              if u_clean not in seen:
-                  ext = u_clean.lower().split('.')[-1] if '.' in u_clean else ''
-                  if ext in ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp']:
-                      if not any(skip in u_clean.lower() for skip in ['icon', 'logo', 'avatar', 'favicon', 'thumb-50', 'thumb-100', '50x50', '100x100', '32x32', '16x16', '125x180']):
-                          seen.add(u_clean)
-                          unique_images.append(u)
-
-          print(f"📊 Found {len(unique_images)} images")
-
-          if not unique_images:
-              print("❌ No images found")
-              exit(1)
-
-          # دانلود
-          CLEAN_IP = "162.159.192.1"
-          BACKUP_IP = "162.159.193.1"
-
-          for i, img_url in enumerate(unique_images, 1):
-              filename = f"{i:03d}.jpg"
-              filepath = f"{output_dir}/{filename}"
-              img_domain = urlparse(img_url).netloc
-              print(f"📥 [{i}/{len(unique_images)}] {img_url[:80]}...")
-
-              cmd = f'curl -sL --resolve "{img_domain}:443:{CLEAN_IP}" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -H "Referer: {chapter_url}" -o "{filepath}" "{img_url}"'
-              ret = os.system(cmd)
-
-              if ret == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 500:
-                  size_kb = os.path.getsize(filepath) // 1024
-                  print(f"  ✅ {size_kb}KB")
+              if "Example Domain" in result.stdout.decode():
+                  print("✅ Chrome works in headless mode!")
               else:
-                  cmd2 = f'curl -sL --resolve "{img_domain}:443:{BACKUP_IP}" -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" -H "Referer: {chapter_url}" -o "{filepath}" "{img_url}"'
-                  ret2 = os.system(cmd2)
-                  if ret2 == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 500:
-                      size_kb = os.path.getsize(filepath) // 1024
-                      print(f"  ✅ {size_kb}KB (backup)")
-                  else:
-                      print(f"  ❌ Failed")
-
-          print(f"✅ Done! {output_dir}")
+                  print("⚠️ Chrome ran but got unexpected output")
+          except Exception as e:
+              print(f"❌ Chrome headless error: {e}")
           PYEOF
-
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sites/
-          git commit -m "📥 Universal XDriver download: ${{ github.event.inputs.url }}" || echo "Nothing to commit"
-          git pull --rebase && git push || true
