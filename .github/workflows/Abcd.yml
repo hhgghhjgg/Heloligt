@@ -1,4 +1,4 @@
-name: Build Bistodo Channel Viewer
+name: Check HF Token Space Creation Permission
 
 on:
   workflow_dispatch:
@@ -7,301 +7,160 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: pip install -q requests beautifulsoup4
+        run: pip install -q requests huggingface_hub
 
-      - name: Scrape posts from @bistodo
+      - name: Test Token Permissions
+        env:
+          HF_TOKEN: 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
         run: |
           python3 << 'PYEOF'
-          import os, json, requests, re, hashlib
-          from bs4 import BeautifulSoup
+          import os, json, requests, uuid
           from datetime import datetime
-          from pathlib import Path
-          from urllib.parse import urljoin
 
-          channel = "bistodo"
-          target_posts = 50
-          url = f"https://t.me/s/{channel}"
+          token = os.environ["HF_TOKEN"]
+          headers = {"Authorization": f"Bearer {token}"}
+          results = {}
 
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
-              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          # =============================================
+          # تست ۱: بررسی اطلاعات کاربر (whoami-v2)
+          # =============================================
+          print("=" * 60)
+          print("📌 تست ۱: اطلاعات کاربر و سازمان‌ها")
+          print("=" * 60)
+          r = requests.get("https://huggingface.co/api/whoami-v2", headers=headers)
+          user_info = r.json() if r.ok else {"error": r.text}
+          print(json.dumps(user_info, indent=2, ensure_ascii=False))
+
+          username = user_info.get("name", "unknown")
+          orgs = [org["name"] for org in user_info.get("orgs", [])]
+          print(f"\n✅ نام کاربری: {username}")
+          print(f"✅ سازمان‌ها: {orgs if orgs else 'ندارد'}")
+
+          # =============================================
+          # تست ۲: بررسی scopes توکن از طریق مشاهده token info
+          # =============================================
+          print("\n" + "=" * 60)
+          print("📌 تست ۲: دسترسی خواندن (Read)")
+          print("=" * 60)
+          r = requests.get("https://huggingface.co/api/models/gpt2", headers=headers)
+          results["read"] = r.ok
+          print(f"  {'✅' if r.ok else '❌'} خواندن مدل‌ها: HTTP {r.status_code}")
+
+          # =============================================
+          # تست ۳: دسترسی نوشتن - ساخت یه Space موقت
+          # =============================================
+          print("\n" + "=" * 60)
+          print("📌 تست ۳: دسترسی نوشتن و ساخت Space")
+          print("=" * 60)
+          
+          test_space_name = f"token-test-{uuid.uuid4().hex[:8]}"
+          print(f"  در حال ساخت Space: {username}/{test_space_name}")
+
+          create_payload = {
+              "name": test_space_name,
+              "type": "space",
+              "sdk": "gradio",
+              "private": True,
           }
+          r = requests.post(
+              "https://huggingface.co/api/repos/create",
+              headers={**headers, "Content-Type": "application/json"},
+              json=create_payload,
+          )
+          create_response = r.json() if r.text else {}
+          results["create_space"] = r.ok
+          
+          if r.ok:
+              print(f"  ✅ Space با موفقیت ساخته شد!")
+              print(f"  🔗 URL: https://huggingface.co/spaces/{username}/{test_space_name}")
+              results["space_url"] = f"https://huggingface.co/spaces/{username}/{test_space_name}"
+              
+              # پاکسازی: حذف Space تستی
+              print(f"\n  🧹 در حال پاکسازی Space تستی...")
+              r_del = requests.delete(
+                  f"https://huggingface.co/api/repos/delete",
+                  headers={**headers, "Content-Type": "application/json"},
+                  json={"name": f"{username}/{test_space_name}", "type": "space"},
+              )
+              if r_del.ok:
+                  print(f"  ✅ Space تستی با موفقیت حذف شد")
+              else:
+                  print(f"  ⚠️ حذف نشد: HTTP {r_del.status_code}")
+          else:
+              error_msg = create_response.get("error", create_response.get("message", str(create_response)))
+              print(f"  ❌ ساخت Space ناموفق: HTTP {r.status_code}")
+              print(f"  📝 پیام خطا: {error_msg}")
 
-          print(f"📡 Fetching {url} ...")
-          resp = requests.get(url, headers=headers, timeout=30)
-          if resp.status_code != 200:
-              print(f"Error: HTTP {resp.status_code}")
-              exit(1)
+              # تحلیل خطا
+              if r.status_code == 401:
+                  print("\n  🔍 تحلیل: توکن نامعتبر است")
+              elif r.status_code == 403:
+                  print("\n  🔍 تحلیل: توکن Read-only است و اجازه نوشتن ندارد")
+                  print("     → باید یه توکن با دسترسی Write بسازی")
+              elif r.status_code == 429:
+                  print("\n  🔍 تحلیل: Rate limit - می‌تونیم بعداً دوباره تست کنیم")
 
-          soup = BeautifulSoup(resp.text, 'html.parser')
-          all_messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+          # =============================================
+          # تست ۴: Inference API
+          # =============================================
+          print("\n" + "=" * 60)
+          print("📌 تست ۴: Inference API")
+          print("=" * 60)
+          r = requests.post(
+              "https://api-inference.huggingface.co/models/gpt2",
+              headers=headers,
+              json={"inputs": "Hello"}
+          )
+          results["inference_api"] = r.ok or r.status_code == 503
+          print(f"  {'✅' if results['inference_api'] else '❌'} Inference API: HTTP {r.status_code}")
 
-          # Limit to 50
-          latest = all_messages[:target_posts]
+          # =============================================
+          # خلاصه نهایی
+          # =============================================
+          print("\n" + "=" * 60)
+          print("📊 خلاصه نهایی")
+          print("=" * 60)
+          print(f"  🔑 نام کاربری: {username}")
+          print(f"  📖 قابلیت خواندن: {'✅ بله' if results.get('read') else '❌ خیر'}")
+          print(f"  ✏️ قابلیت نوشتن (ساخت Space): {'✅ بله' if results.get('create_space') else '❌ خیر'}")
+          print(f"  🧠 Inference API: {'✅ بله' if results.get('inference_api') else '❌ خیر'}")
+          
+          if results.get("create_space"):
+              print(f"\n  🎉 تبریک! توکن تو دسترسی Write داره.")
+              print(f"  می‌تونی Space بسازی، فایل آپلود کنی و مدل‌های خودت رو مدیریت کنی.")
+          else:
+              print(f"\n  ⚠️ توکن تو فقط Read-only هست.")
+              print(f"  برای ساخت Space باید یه توکن با دسترسی Write بسازی.")
+              print(f"  → برو به https://huggingface.co/settings/tokens")
+              print(f"  → نوع Token رو بذار 'Write' یا 'Fine-grained'")
 
-          print(f"Found {len(all_messages)} total messages, processing {len(latest)} ...")
-
-          # Create output directory
-          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-          output_dir = f"sites/telegram/{channel}/{timestamp}"
-          Path(output_dir).mkdir(parents=True, exist_ok=True)
-          Path(f"{output_dir}/media").mkdir(exist_ok=True)
-
-          posts_data = []
-
-          for idx, msg in enumerate(latest):
-              msg_id = msg.get('data-post', f'post-{idx}')
-              
-              # Post text
-              text_div = msg.find('div', class_='tgme_widget_message_text')
-              raw_text = text_div.get_text('\n', strip=True) if text_div else ""
-              
-              # Date
-              date_tag = msg.find('time', class_='time')
-              date_str = date_tag.get('datetime', '') if date_tag else ''
-              
-              # Views
-              views_tag = msg.find('span', class_='tgme_widget_message_views')
-              views = views_tag.get_text(strip=True) if views_tag else ''
-              
-              # Extract links
-              links = []
-              if text_div:
-                  for a in text_div.find_all('a', href=True):
-                      links.append(a['href'])
-              
-              # Extract photo
-              photos = []
-              photo_wrap = msg.find('a', class_='tgme_widget_message_photo_wrap')
-              if photo_wrap:
-                  style = photo_wrap.get('style', '')
-                  bg_match = re.search(r"background-image:url\('([^']+)'\)", style)
-                  if bg_match:
-                      img_url = bg_match.group(1)
-                      # Download image
-                      try:
-                          img_resp = requests.get(img_url, headers=headers, timeout=20)
-                          if img_resp.status_code == 200:
-                              img_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
-                              ext = img_url.split('.')[-1].split('?')[0] or 'jpg'
-                              img_filename = f"img_{img_hash}.{ext}"
-                              img_path = f"{output_dir}/media/{img_filename}"
-                              with open(img_path, "wb") as f:
-                                  f.write(img_resp.content)
-                              photos.append(f"media/{img_filename}")
-                              print(f"  📸 Downloaded image: {img_filename}")
-                      except Exception as e:
-                          print(f"  Image error: {e}")
-              
-              # Extract video
-              videos = []
-              video_tag = msg.find('video')
-              if not video_tag:
-                  video_tag = msg.find('a', class_='tgme_widget_message_video_player')
-              
-              if video_tag:
-                  video_src = video_tag.get('src', '')
-                  if not video_src and video_tag.name == 'a':
-                      # Try data-video attribute
-                      video_src = video_tag.get('data-video', '')
-                  if video_src:
-                      try:
-                          vid_resp = requests.get(video_src, headers=headers, timeout=60, stream=True)
-                          if vid_resp.status_code == 200:
-                              vid_hash = hashlib.md5(video_src.encode()).hexdigest()[:10]
-                              vid_filename = f"vid_{vid_hash}.mp4"
-                              vid_path = f"{output_dir}/media/{vid_filename}"
-                              with open(vid_path, "wb") as f:
-                                  for chunk in vid_resp.iter_content(chunk_size=8192):
-                                      f.write(chunk)
-                              videos.append(f"media/{vid_filename}")
-                              print(f"  🎬 Downloaded video: {vid_filename}")
-                      except Exception as e:
-                          print(f"  Video error: {e}")
-              
-              posts_data.append({
-                  "id": msg_id,
-                  "date": date_str,
-                  "views": views,
-                  "text": raw_text,
-                  "links": links,
-                  "photos": photos,
-                  "videos": videos,
-              })
-              
-              print(f"  Processed post {idx+1}/{len(latest)}")
-
-          # Save JSON
-          with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
-              json.dump(posts_data, f, ensure_ascii=False, indent=2)
-
-          # Generate HTML
-          posts_html = ""
-          for post in posts_data:
-              posts_html += '<div class="post-card">\n'
-              
-              # Header
-              posts_html += '  <div class="post-header">\n'
-              posts_html += f'    <span class="post-date">{post["date"]}</span>\n'
-              posts_html += f'    <span class="post-views">👁 {post["views"]}</span>\n'
-              posts_html += '  </div>\n'
-              
-              # Text
-              if post["text"]:
-                  text_html = post["text"].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br>')
-                  posts_html += f'  <div class="post-text">{text_html}</div>\n'
-              
-              # Photos
-              for photo in post["photos"]:
-                  posts_html += f'  <div class="post-media"><img src="{photo}" alt="Photo" loading="lazy"></div>\n'
-              
-              # Videos
-              for video in post["videos"]:
-                  posts_html += f'  <div class="post-media"><video controls preload="none"><source src="{video}" type="video/mp4"></video></div>\n'
-              
-              # Links
-              if post["links"]:
-                  posts_html += '  <div class="post-links">\n'
-                  for link in post["links"]:
-                      safe_link = link.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
-                      posts_html += f'    <a href="{safe_link}" target="_blank">🔗 {safe_link[:80]}{"..." if len(link)>80 else ""}</a><br>\n'
-                  posts_html += '  </div>\n'
-              
-              posts_html += '</div>\n'
-
-          html_content = f'''<!DOCTYPE html>
-          <html lang="fa" dir="rtl">
-          <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>@{channel} - Telegram Viewer</title>
-          <style>
-          * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-          body {{
-              font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-              background: #0f0f0f;
-              color: #e0e0e0;
-              line-height: 1.8;
-          }}
-          .container {{
-              max-width: 800px;
-              margin: 0 auto;
-              padding: 20px 15px;
-          }}
-          .header {{
-              background: linear-gradient(135deg, #1a1a2e, #16213e);
-              color: white;
-              padding: 30px 20px;
-              text-align: center;
-              margin-bottom: 30px;
-              border-bottom: 3px solid #e94560;
-              position: sticky;
-              top: 0;
-              z-index: 10;
-          }}
-          .header h1 {{
-              font-size: 2em;
-              margin-bottom: 5px;
-          }}
-          .header p {{
-              opacity: 0.8;
-              font-size: 0.9em;
-          }}
-          .post-card {{
-              background: #1a1a1a;
-              border: 1px solid #2a2a2a;
-              border-radius: 12px;
-              padding: 20px;
-              margin-bottom: 20px;
-              transition: transform 0.2s, box-shadow 0.2s;
-          }}
-          .post-card:hover {{
-              transform: translateY(-2px);
-              box-shadow: 0 8px 25px rgba(0,0,0,0.5);
-          }}
-          .post-header {{
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              margin-bottom: 15px;
-              padding-bottom: 10px;
-              border-bottom: 1px solid #333;
-              font-size: 0.85em;
-              color: #999;
-          }}
-          .post-date {{
-              color: #e94560;
-              font-weight: bold;
-          }}
-          .post-text {{
-              margin-bottom: 15px;
-              font-size: 1.05em;
-              color: #d0d0d0;
-          }}
-          .post-media {{
-              margin-bottom: 15px;
-              border-radius: 8px;
-              overflow: hidden;
-          }}
-          .post-media img, .post-media video {{
-              width: 100%;
-              height: auto;
-              display: block;
-              border-radius: 8px;
-          }}
-          .post-links {{
-              margin-top: 10px;
-              font-size: 0.9em;
-          }}
-          .post-links a {{
-              color: #4fc3f7;
-              text-decoration: none;
-              word-break: break-all;
-          }}
-          .footer {{
-              text-align: center;
-              padding: 20px;
-              color: #666;
-              font-size: 0.8em;
-              border-top: 1px solid #2a2a2a;
-              margin-top: 30px;
-          }}
-          </style>
-          </head>
-          <body>
-          <div class="header">
-              <h1>📡 @{channel}</h1>
-              <p>تولید شده: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")} | تعداد پست‌ها: {len(posts_data)}</p>
-          </div>
-          <div class="container">
-          {posts_html}
-          </div>
-          <div class="footer">
-              <p>ساخته شده با GitHub Actions | قابل اجرا روی KSWEB</p>
-          </div>
-          </body>
-          </html>'''
-
-          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
-              f.write(html_content)
-
-          print(f"✅ Done! Saved to {output_dir}")
-          print(f"📊 {len(posts_data)} posts, with media in media/")
+          # ذخیره نتیجه
+          result_file = "token_check_result.json"
+          with open(result_file, "w", encoding="utf-8") as f:
+              json.dump({
+                  "timestamp": datetime.now().isoformat(),
+                  "username": username,
+                  "orgs": orgs,
+                  "permissions": results,
+                  "space_url": results.get("space_url", None)
+              }, f, indent=2, ensure_ascii=False)
+          
+          print(f"\n📄 نتایج در {result_file} ذخیره شد")
           PYEOF
 
-      - name: Commit and push
+      - name: Commit and push results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sites/telegram/bistodo/
-          git commit -m "📡 @bistodo channel viewer | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git add token_check_result.json
+          git commit -m "🔑 Token permission check | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
