@@ -37,16 +37,22 @@ jobs:
   create-space:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: دریافت username
         id: whoami
         run: |
-          USERNAME=$(curl -s -H "Authorization: Bearer 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" https://huggingface.co/api/whoami-v2 | jq -r '.name')
+          RESPONSE=$(curl -s -H "Authorization: Bearer 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" https://huggingface.co/api/whoami-v2)
+          echo "پاسخ API: $RESPONSE"
+          USERNAME=$(echo "$RESPONSE" | jq -r '.name')
           echo "username=$USERNAME" >> $GITHUB_OUTPUT
           echo "نام کاربری: $USERNAME"
 
-      - name: ساخت اسپیس
+      - name: ساخت اسپیس و ذخیره نتیجه
+        id: create
         run: |
-          curl -X POST "https://huggingface.co/api/repos/create" \
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST "https://huggingface.co/api/repos/create" \
             -H "Authorization: Bearer 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" \
             -H "Content-Type: application/json" \
             -d '{
@@ -56,9 +62,69 @@ jobs:
               "hardware": "${{ github.event.inputs.hardware }}",
               "private": ${{ github.event.inputs.private }},
               "namespace": "${{ steps.whoami.outputs.username }}"
-            }'
+            }')
 
-      - name: نتیجه
+          HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
+          BODY=$(echo "$RESPONSE" | sed '/HTTP_CODE:/d')
+
+          echo "HTTP Code: $HTTP_CODE"
+          echo "Response Body: $BODY"
+
+          mkdir -p .github/results
+
+          SPACE_URL="https://huggingface.co/spaces/${{ steps.whoami.outputs.username }}/${{ github.event.inputs.space_name }}"
+
+          cat > .github/results/space-result.md << EOF
+          # 🚀 نتیجه ساخت Hugging Face Space
+
+          **تاریخ:** $(date '+%Y-%m-%d %H:%M:%S')
+
+          ## 📋 مشخصات اسپیس
+
+          | پارامتر | مقدار |
+          |---------|-------|
+          | نام اسپیس | \`${{ github.event.inputs.space_name }}\` |
+          | نام کاربری | \`${{ steps.whoami.outputs.username }}\` |
+          | SDK | \`${{ github.event.inputs.sdk }}\` |
+          | سخت‌افزار | \`${{ github.event.inputs.hardware }}\` |
+          | خصوصی | \`${{ github.event.inputs.private }}\` |
+          | لینک اسپیس | [$SPACE_URL]($SPACE_URL) |
+
+          ## 📤 پاسخ API
+
+          - **کد وضعیت:** \`$HTTP_CODE\`
+
+          \`\`\`json
+          $BODY
+          \`\`\`
+
+          ---
+          *ساخته شده توسط GitHub Actions*
+          EOF
+
+          echo "file=space-result.md" >> $GITHUB_OUTPUT
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ خطا: ساخت اسپیس با مشکل مواجه شد (کد $HTTP_CODE)"
+            exit 1
+          fi
+
+          echo "✅ اسپیس با موفقیت ساخته شد: $SPACE_URL"
+
+      - name: کامیت و push فایل نتیجه
+        if: always()
         run: |
-          echo "✅ اسپیس ساخته شد:"
-          echo "https://huggingface.co/spaces/${{ steps.whoami.outputs.username }}/${{ github.event.inputs.space_name }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/results/space-result.md
+          git commit -m "📝 ثبت نتیجه ساخت اسپیس: ${{ github.event.inputs.space_name }}" || echo "بدون تغییر"
+          git push
+
+      - name: نمایش نتیجه
+        if: always()
+        run: |
+          echo "=============================="
+          echo "📄 محتوای فایل نتیجه:"
+          echo "=============================="
+          cat .github/results/space-result.md
+          echo "=============================="
