@@ -1,4 +1,4 @@
-name: VLESS XHTTP Proxy on GitHub
+name: VLESS XHTTP Simple
 
 on:
   workflow_dispatch:
@@ -6,48 +6,38 @@ on:
 jobs:
   vless:
     runs-on: ubuntu-latest
-    timeout-minutes: 340  # ≈ 5.5 hours
+    timeout-minutes: 340
 
     steps:
-      - name: Setup Xray (VLESS + XHTTP + Reality)
+      - name: Setup Xray (VLESS + XHTTP)
         run: |
           # 1. Download Xray-core
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip xray.zip -d xray
           chmod +x xray/xray
           
-          # 2. Generate random UUID & Reality key pair
+          # 2. Generate UUID
           UUID=$(cat /proc/sys/kernel/random/uuid)
-          PRIVATE_KEY=$(xray/xray x25519 | grep "Private key" | awk '{print $3}')
-          PUBLIC_KEY=$(xray/xray x25519 -i "$PRIVATE_KEY" | grep "Public key" | awk '{print $3}')
-          
           echo "UUID: $UUID"
-          echo "Private key: $PRIVATE_KEY"
-          echo "Public key: $PUBLIC_KEY"
           
-          # 3. Create Xray config (VLESS + XHTTP + Reality with GitHub SNI)
+          # 3. Create config
           cat > xray/config.json << 'XRAYEOF'
           {
             "log": { "loglevel": "warning" },
             "inbounds": [{
-              "port": 443,
+              "port": 8080,
               "listen": "0.0.0.0",
               "protocol": "vless",
               "settings": {
                 "clients": [{
-                  "id": "PLACEHOLDER_UUID",
-                  "flow": "xtls-rprx-vision"
+                  "id": "PLACEHOLDER_UUID"
                 }],
                 "decryption": "none"
               },
               "streamSettings": {
                 "network": "xhttp",
-                "security": "reality",
-                "realitySettings": {
-                  "dest": "github.com:443",
-                  "serverNames": ["github.com"],
-                  "privateKey": "PLACEHOLDER_PRIVATE_KEY",
-                  "shortIds": ["6ba85179e30d4fc2"]
+                "xhttpSettings": {
+                  "path": "/"
                 }
               }
             }],
@@ -58,34 +48,11 @@ jobs:
           }
           XRAYEOF
           
-          # 4. Replace placeholders
           sed -i "s/PLACEHOLDER_UUID/$UUID/g" xray/config.json
-          sed -i "s|PLACEHOLDER_PRIVATE_KEY|$PRIVATE_KEY|g" xray/config.json
           
-          # 5. Start Xray
+          # 4. Start Xray
           cd xray && ./xray run -config config.json &
+          sleep 2
           
-          # 6. Display config
-          PUBLIC_IP=$(curl -s https://api.ipify.org)
-          echo ""
-          echo "=============================================="
-          echo "  VLESS + XHTTP + Reality (GitHub SNI)"
-          echo "=============================================="
-          echo ""
-          echo "Protocol: vless"
-          echo "Address: ${PUBLIC_IP}"
-          echo "Port: 443"
-          echo "UUID: ${UUID}"
-          echo "Flow: xtls-rprx-vision"
-          echo "Security: reality"
-          echo "Public Key: ${PUBLIC_KEY}"
-          echo "Short ID: 6ba85179e30d4fc2"
-          echo "SNI: github.com"
-          echo ""
-          echo "=== Import Link ==="
-          echo "vless://${UUID}@${PUBLIC_IP}:443?type=xhttp&security=reality&flow=xtls-rprx-vision&pbk=${PUBLIC_KEY}&sid=6ba85179e30d4fc2&sni=github.com#GitHub-XHTTP"
-          echo ""
-          echo "=============================================="
-
-      - name: Keep Alive (5.5 hours)
-        run: sleep 19800
+          # 5. Show config
+          PUBLIC_IP=$(curl -s https://api.ipify
