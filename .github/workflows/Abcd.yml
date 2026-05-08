@@ -25,19 +25,15 @@ jobs:
           pip install --upgrade pip
           pip install llm llm-github-models
 
-      - name: Set GitHub Token
-        run: |
-          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
-          llm keys set github-models
-
       - name: Ask AI
         env:
           PROMPT: ${{ github.event.inputs.prompt }}
           MODEL: ${{ github.event.inputs.model }}
-          GITHUB_TOKEN: ${{ github.event.inputs.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "📝 سوال: $PROMPT"
           echo "🤖 مدل: $MODEL"
           echo "---"
-          llm prompt -m "github/${MODEL}" "$PROMPT"
+          llm prompt -m "github/${MODEL}" --key "$GITHUB_TOKEN" "$PROMPT" 2>&1 || \
+          llm prompt -m "github/${MODEL}" -o key "$GITHUB_TOKEN" "$PROMPT"
           echo "---"
