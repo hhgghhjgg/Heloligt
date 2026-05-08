@@ -1,4 +1,4 @@
-name: VLESS Proxy on GitHub Actions
+name: VLESS XHTTP Proxy on GitHub
 
 on:
   workflow_dispatch:
@@ -6,38 +6,49 @@ on:
 jobs:
   vless:
     runs-on: ubuntu-latest
-    timeout-minutes: 340  # تقریباً ۵.۵ ساعت
+    timeout-minutes: 340  # ≈ 5.5 hours
 
     steps:
-      - name: Setup XRay (VLESS + WebSocket + TLS)
+      - name: Setup Xray (VLESS + XHTTP + Reality)
         run: |
-          # ۱. دانلود XRay-core
+          # 1. Download Xray-core
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip xray.zip -d xray
           chmod +x xray/xray
           
-          # ۲. تولید UUID تصادفی
+          # 2. Generate random UUID & Reality key pair
           UUID=$(cat /proc/sys/kernel/random/uuid)
-          echo "UUID: $UUID"
+          PRIVATE_KEY=$(xray/xray x25519 | grep "Private key" | awk '{print $3}')
+          PUBLIC_KEY=$(xray/xray x25519 -i "$PRIVATE_KEY" | grep "Public key" | awk '{print $3}')
           
-          # ۳. ساخت فایل کانفیگ XRay
+          echo "UUID: $UUID"
+          echo "Private key: $PRIVATE_KEY"
+          echo "Public key: $PUBLIC_KEY"
+          
+          # 3. Create Xray config (VLESS + XHTTP + Reality with GitHub SNI)
           cat > xray/config.json << 'XRAYEOF'
           {
             "log": { "loglevel": "warning" },
             "inbounds": [{
-              "port": 8080,
+              "port": 443,
               "listen": "0.0.0.0",
               "protocol": "vless",
               "settings": {
                 "clients": [{
                   "id": "PLACEHOLDER_UUID",
-                  "flow": ""
+                  "flow": "xtls-rprx-vision"
                 }],
                 "decryption": "none"
               },
               "streamSettings": {
-                "network": "ws",
-                "wsSettings": { "path": "/ws" }
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": {
+                  "dest": "github.com:443",
+                  "serverNames": ["github.com"],
+                  "privateKey": "PLACEHOLDER_PRIVATE_KEY",
+                  "shortIds": ["6ba85179e30d4fc2"]
+                }
               }
             }],
             "outbounds": [{
@@ -47,36 +58,34 @@ jobs:
           }
           XRAYEOF
           
-          # ۴. جایگزینی UUID
+          # 4. Replace placeholders
           sed -i "s/PLACEHOLDER_UUID/$UUID/g" xray/config.json
+          sed -i "s|PLACEHOLDER_PRIVATE_KEY|$PRIVATE_KEY|g" xray/config.json
           
-          # ۵. راه‌اندازی XRay در پس‌زمینه
+          # 5. Start Xray
           cd xray && ./xray run -config config.json &
           
-          # ۶. نمایش کانفیگ خروجی
+          # 6. Display config
           PUBLIC_IP=$(curl -s https://api.ipify.org)
           echo ""
           echo "=============================================="
-          echo "  کانفیگ VLESS شما:"
+          echo "  VLESS + XHTTP + Reality (GitHub SNI)"
           echo "=============================================="
           echo ""
-          echo "پروتکل: vless"
-          echo "آدرس: ${PUBLIC_IP}"
-          echo "پورت: 8080"
+          echo "Protocol: vless"
+          echo "Address: ${PUBLIC_IP}"
+          echo "Port: 443"
           echo "UUID: ${UUID}"
-          echo "نوع: ws"
-          echo "مسیر: /ws"
-          echo "TLS: none"
+          echo "Flow: xtls-rprx-vision"
+          echo "Security: reality"
+          echo "Public Key: ${PUBLIC_KEY}"
+          echo "Short ID: 6ba85179e30d4fc2"
+          echo "SNI: github.com"
           echo ""
-          echo "لینک کانفیگ:"
-          echo "vless://${UUID}@${PUBLIC_IP}:8080?type=ws&path=%2Fws#GitHub-VLESS"
+          echo "=== Import Link ==="
+          echo "vless://${UUID}@${PUBLIC_IP}:443?type=xhttp&security=reality&flow=xtls-rprx-vision&pbk=${PUBLIC_KEY}&sid=6ba85179e30d4fc2&sni=github.com#GitHub-XHTTP"
           echo ""
-          echo "=============================================="
-          echo "  برای تست با Curl (از یه ترمینال دیگه):"
-          echo "  curl -x socks5://${PUBLIC_IP}:1080 https://api.ipify.org"
           echo "=============================================="
 
-      - name: Keep Alive (۵.۵ ساعت)
-        run: |
-          # این مرحله رانر رو تا ۵.۵ ساعت زنده نگه میداره
-          sleep 19800  # ۵.۵ ساعت = ۱۹۸۰۰ ثانیه
+      - name: Keep Alive (5.5 hours)
+        run: sleep 19800
