@@ -18,7 +18,7 @@ permissions:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -37,12 +37,13 @@ jobs:
           from bs4 import BeautifulSoup
           from datetime import datetime
           from pathlib import Path
+          from urllib.parse import urljoin
 
           channel = os.environ["CHANNEL"]
           target_count = int(os.environ["COUNT"])
 
           headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
               "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
               "Accept-Language": "en-US,en;q=0.5",
           }
@@ -103,12 +104,15 @@ jobs:
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
           output_dir = f"sites/telegram/{channel}/{timestamp}"
           media_dir = f"{output_dir}/media"
+          files_dir = f"{output_dir}/files"
           Path(media_dir).mkdir(parents=True, exist_ok=True)
+          Path(files_dir).mkdir(parents=True, exist_ok=True)
 
           owner = "hhgghhjgg"
           repo = "Heloligt"
           branch = "main"
           MEDIA_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/media/"
+          FILES_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/files/"
 
           posts_data = []
 
@@ -125,6 +129,7 @@ jobs:
                   for a in text_div.find_all('a', href=True):
                       links.append(a['href'])
 
+              # --- Photos ---
               photos = []
               for photo_wrap in msg.find_all('a', class_='tgme_widget_message_photo_wrap'):
                   style = photo_wrap.get('style', '')
@@ -144,6 +149,7 @@ jobs:
                       except Exception as e:
                           print(f"  Image error: {e}")
 
+              # --- Videos ---
               videos = []
               for video_tag in msg.find_all('video'):
                   video_src = video_tag.get('src', '')
@@ -163,19 +169,96 @@ jobs:
                       except Exception as e:
                           print(f"  Video error: {e}")
 
+              # --- 🆕 Files (documents) ---
+              files_downloaded = []
+              # الگوی لینک فایل در تلگرام: https://t.me/channel/ID?single / https://cdn4.telesco.pe/file/...
+              for link in links:
+                  # چک کن ببین لینک به فایل ختم میشه
+                  if any(link.lower().endswith(ext) for ext in [
+                      '.npvt', '.pdf', '.zip', '.rar', '.7z', '.tar.gz',
+                      '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                      '.apk', '.exe', '.msi', '.dmg', '.deb', '.rpm',
+                      '.epub', '.mobi', '.azw3', '.fb2', '.djvu',
+                      '.txt', '.csv', '.json', '.xml', '.html',
+                      '.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma',
+                      '.torrent', '.iso', '.img'
+                  ]):
+                      try:
+                          file_resp = requests.get(link, headers=headers, timeout=60, stream=True)
+                          if file_resp.status_code == 200:
+                              # Extract filename from URL or Content-Disposition
+                              cd = file_resp.headers.get('Content-Disposition', '')
+                              fname_match = re.search(r'filename[^;=\n]*=((["\']).*?\2|[^;\n]*)', cd)
+                              if fname_match:
+                                  file_name = fname_match.group(1).strip('"\'')
+                              else:
+                                  file_name = link.split('/')[-1].split('?')[0]
+                              if not file_name or len(file_name) > 120:
+                                  file_hash = hashlib.md5(link.encode()).hexdigest()[:10]
+                                  ext = link.split('.')[-1].split('?')[0] or 'file'
+                                  file_name = f"doc_{file_hash}.{ext}"
+                              file_path = f"{files_dir}/{file_name}"
+                              with open(file_path, "wb") as f:
+                                  for chunk in file_resp.iter_content(chunk_size=8192):
+                                      f.write(chunk)
+                              files_downloaded.append(file_name)
+                              size_kb = os.path.getsize(file_path) // 1024
+                              print(f"  📄 {file_name} ({size_kb}KB)")
+                      except Exception as e:
+                          print(f"  File error: {e}")
+
+              # Also check message for document links (direct .npvt etc)
+              doc_wrap = msg.find('a', class_='tgme_widget_message_document_wrap')
+              if doc_wrap:
+                  doc_url = doc_wrap.get('href', '')
+                  if doc_url:
+                      # Try to get direct download URL
+                      try:
+                          doc_resp = requests.get(doc_url, headers=headers, timeout=30)
+                          doc_soup = BeautifulSoup(doc_resp.text, 'html.parser')
+                          direct_link = doc_soup.find('a', class_='tgme_widget_message_document_link')
+                          if direct_link:
+                              direct_url = direct_link.get('href', '')
+                              if direct_url:
+                                  file_name = direct_url.split('/')[-1].split('?')[0]
+                                  if not file_name or len(file_name) > 120:
+                                      file_hash = hashlib.md5(direct_url.encode()).hexdigest()[:10]
+                                      ext = direct_url.split('.')[-1].split('?')[0] or 'file'
+                                      file_name = f"doc_{file_hash}.{ext}"
+                                  file_path = f"{files_dir}/{file_name}"
+                                  file_resp = requests.get(direct_url, headers=headers, timeout=60, stream=True)
+                                  if file_resp.status_code == 200:
+                                      with open(file_path, "wb") as f:
+                                          for chunk in file_resp.iter_content(chunk_size=8192):
+                                              f.write(chunk)
+                                      files_downloaded.append(file_name)
+                                      size_kb = os.path.getsize(file_path) // 1024
+                                      print(f"  📄 Doc: {file_name} ({size_kb}KB)")
+                      except Exception as e:
+                          print(f"  Doc error: {e}")
+
               posts_data.append({
-                  "id": msg_id, "date": date_str, "text": raw_text, "views": views,
-                  "links": links, "photos": photos, "videos": videos,
+                  "id": msg_id,
+                  "date": date_str,
+                  "text": raw_text,
+                  "views": views,
+                  "links": links,
+                  "photos": photos,
+                  "videos": videos,
+                  "files": files_downloaded,
               })
               print(f"  Post {idx+1}/{len(latest)}")
 
           # Save JSON in dated folder
           with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
               json.dump({
-                  "channel": channel, "title": channel_title,
-                  "posts_count": len(posts_data), "posts": posts_data,
+                  "channel": channel,
+                  "title": channel_title,
+                  "posts_count": len(posts_data),
+                  "posts": posts_data,
                   "fetched_at": datetime.now().isoformat(),
-                  "_media_base": MEDIA_BASE_RAW
+                  "_media_base": MEDIA_BASE_RAW,
+                  "_files_base": FILES_BASE_RAW,
               }, f, ensure_ascii=False, indent=2)
 
           # Save cache JSON
@@ -183,14 +266,18 @@ jobs:
           Path(cache_dir).mkdir(parents=True, exist_ok=True)
           with open(f"{cache_dir}/{channel}.json", "w", encoding="utf-8") as f:
               json.dump({
-                  "channel": channel, "title": channel_title,
-                  "posts_count": len(posts_data), "posts": posts_data,
+                  "channel": channel,
+                  "title": channel_title,
+                  "posts_count": len(posts_data),
+                  "posts": posts_data,
                   "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                  "_media_base": MEDIA_BASE_RAW
+                  "_media_base": MEDIA_BASE_RAW,
+                  "_files_base": FILES_BASE_RAW,
               }, f, ensure_ascii=False, indent=2)
 
           print(f"\n✅ Done! {len(posts_data)} posts saved")
           print(f"📁 Media base: {MEDIA_BASE_RAW}")
+          print(f"📁 Files base: {FILES_BASE_RAW}")
           PYEOF
 
       - name: Commit and push
@@ -198,5 +285,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sites/telegram/
-          git commit -m "📡 @${{ github.event.inputs.channel }} (${{ github.event.inputs.count }} posts) | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git commit -m "📡 @${{ github.event.inputs.channel }} (${{ github.event.inputs.count }} posts with files) | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
