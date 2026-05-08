@@ -143,6 +143,12 @@ jobs:
                   print(f"    ❌ {str(e)[:50]}")
                   return None
 
+          def make_static_url(url):
+              """تبدیل لینک پست به نسخه بدون جاوااسکریپت (s/)"""
+              if 't.me/' in url and '/s/' not in url:
+                  return url.replace('t.me/', 't.me/s/')
+              return url
+
           def extract_doc_download_url(doc_page_url):
               """هشت‌پای حرفه‌ای: همه لینک‌های ممکن رو زیر و رو می‌کنه"""
               try:
@@ -219,7 +225,7 @@ jobs:
                           href = f"https://t.me{href}"
                       links.append(href)
 
-              # عکس‌ها
+              # عکس‌ها - از صفحه اصلی کانال (با /s/) مستقیم برداشته میشن
               photos = []
               for pw in msg.find_all('a', class_='tgme_widget_message_photo_wrap'):
                   style = pw.get('style', '')
@@ -229,7 +235,7 @@ jobs:
                       if fname:
                           photos.append(fname)
 
-              # ویدیوها
+              # ویدیوها - از صفحه اصلی کانال (با /s/) مستقیم برداشته میشن
               videos = []
               for vt in msg.find_all('video'):
                   src = vt.get('src') or vt.get('data-video', '')
@@ -247,24 +253,28 @@ jobs:
                   if doc_url:
                       if doc_url.startswith('/'):
                           doc_url = f"https://t.me{doc_url}"
-                      direct = extract_doc_download_url(doc_url)
+                      # تبدیل به نسخه استاتیک برای باز کردن صفحه فایل
+                      static_url = make_static_url(doc_url)
+                      direct = extract_doc_download_url(static_url)
                       if direct:
                           fname = safe_download(direct, files_dir, timeout=120)
                           if fname: files_downloaded.append(fname)
                       else:
-                          fname = safe_download(doc_url, files_dir, timeout=120)
+                          # اگه نشد، خود لینک استاتیک رو امتحان کن
+                          fname = safe_download(static_url, files_dir, timeout=120)
                           if fname: files_downloaded.append(fname)
 
-              # متد B: لینک‌های عددی
+              # متد B: لینک‌های عددی (مثل t.me/blackRay/10993)
               for link in links:
                   if re.search(r't\.me/[^/]+/\d+$', link):
-                      direct = extract_doc_download_url(link)
+                      static_link = make_static_url(link)
+                      direct = extract_doc_download_url(static_link)
                       if direct:
                           fname = safe_download(direct, files_dir, timeout=120)
                           if fname and fname not in files_downloaded:
                               files_downloaded.append(fname)
 
-              # متد C: لینک‌های مستقیم به فایل
+              # متد C: لینک‌های مستقیم به فایل (از متن)
               for link in links:
                   clean_link = link.split('?')[0].split('/')[-1].lower()
                   if any(clean_link.endswith(ext) for ext in ['.npvt','.pdf','.zip','.rar','.7z','.apk','.epub','.mobi','.doc','.docx','.xls','.xlsx','.mp3','.wav','.torrent','.flac','.m4a','.ogg']):
@@ -275,20 +285,23 @@ jobs:
               # متد D: دکمه‌های inline
               btns = extract_buttons(msg)
               for btn_url in btns:
+                  # چک کن که خودش مستقیم به فایل باشه
                   clean_btn = btn_url.split('?')[0].split('/')[-1].lower()
                   if any(clean_btn.endswith(ext) for ext in ['.npvt','.pdf','.zip','.rar','.7z','.apk','.epub','.mobi','.doc','.docx','.xls','.xlsx','.mp3','.wav','.torrent','.flac']):
                       fname = safe_download(btn_url, files_dir, timeout=120)
                       if fname and fname not in files_downloaded:
                           files_downloaded.append(fname)
                   else:
-                      if 't.me/' in btn_url or 'telesco.pe' in btn_url:
-                          direct = extract_doc_download_url(btn_url)
+                      # اگه لینک تلگرامیه، صفحه‌ش رو چک کن (با نسخه استاتیک)
+                      if 't.me/' in btn_url:
+                          static_btn = make_static_url(btn_url)
+                          direct = extract_doc_download_url(static_btn)
                           if direct:
                               fname = safe_download(direct, files_dir, timeout=120)
                               if fname and fname not in files_downloaded:
                                   files_downloaded.append(fname)
                           else:
-                              fname = safe_download(btn_url, files_dir, timeout=120)
+                              fname = safe_download(static_btn, files_dir, timeout=120)
                               if fname and fname not in files_downloaded:
                                   files_downloaded.append(fname)
 
