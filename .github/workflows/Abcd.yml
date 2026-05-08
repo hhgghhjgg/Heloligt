@@ -1,182 +1,82 @@
-name: Manga Chapter Downloader (Any Site with FlareSolverr)
+name: VLESS Proxy on GitHub Actions
 
 on:
   workflow_dispatch:
-    inputs:
-      chapter_url:
-        description: 'لینک صفحه چپتر (مثلاً https://www.mgeko.cc/reader/...)'
-        required: true
-        default: 'https://www.mgeko.cc/reader/en/im-the-king-of-wealth-in-the-three-realms-chapter-11-eng-li/'
-
-permissions:
-  contents: write
 
 jobs:
-  download:
+  vless:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
+    timeout-minutes: 340  # تقریباً ۵.۵ ساعت
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: pip install -q requests beautifulsoup4
-
-      - name: Wait for FlareSolverr
+      - name: Setup XRay (VLESS + WebSocket + TLS)
         run: |
-          echo "⏳ Waiting for FlareSolverr..."
-          for i in $(seq 1 30); do
-            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
-            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
-              echo "✅ FlareSolverr ready (status: $status)"
-              break
-            fi
-            sleep 2
-          done
-
-      - name: Fetch chapter page via FlareSolverr
-        env:
-          CHAPTER_URL: ${{ github.event.inputs.chapter_url }}
-        run: |
-          python3 << 'PYEOF'
-          import os, json, requests, re, hashlib
-          from bs4 import BeautifulSoup
-          from datetime import datetime
-          from urllib.parse import urljoin, urlparse
-
-          chapter_url = os.environ["CHAPTER_URL"]
-          domain = urlparse(chapter_url).netloc
-
-          # FlareSolverr endpoint
-          fs_url = "http://localhost:8191/v1"
-          payload = {
-              "cmd": "request.get",
-              "url": chapter_url,
-              "maxTimeout": 120000
+          # ۱. دانلود XRay-core
+          curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip xray.zip -d xray
+          chmod +x xray/xray
+          
+          # ۲. تولید UUID تصادفی
+          UUID=$(cat /proc/sys/kernel/random/uuid)
+          echo "UUID: $UUID"
+          
+          # ۳. ساخت فایل کانفیگ XRay
+          cat > xray/config.json << 'XRAYEOF'
+          {
+            "log": { "loglevel": "warning" },
+            "inbounds": [{
+              "port": 8080,
+              "listen": "0.0.0.0",
+              "protocol": "vless",
+              "settings": {
+                "clients": [{
+                  "id": "PLACEHOLDER_UUID",
+                  "flow": ""
+                }],
+                "decryption": "none"
+              },
+              "streamSettings": {
+                "network": "ws",
+                "wsSettings": { "path": "/ws" }
+              }
+            }],
+            "outbounds": [{
+              "protocol": "freedom",
+              "settings": {}
+            }]
           }
+          XRAYEOF
+          
+          # ۴. جایگزینی UUID
+          sed -i "s/PLACEHOLDER_UUID/$UUID/g" xray/config.json
+          
+          # ۵. راه‌اندازی XRay در پس‌زمینه
+          cd xray && ./xray run -config config.json &
+          
+          # ۶. نمایش کانفیگ خروجی
+          PUBLIC_IP=$(curl -s https://api.ipify.org)
+          echo ""
+          echo "=============================================="
+          echo "  کانفیگ VLESS شما:"
+          echo "=============================================="
+          echo ""
+          echo "پروتکل: vless"
+          echo "آدرس: ${PUBLIC_IP}"
+          echo "پورت: 8080"
+          echo "UUID: ${UUID}"
+          echo "نوع: ws"
+          echo "مسیر: /ws"
+          echo "TLS: none"
+          echo ""
+          echo "لینک کانفیگ:"
+          echo "vless://${UUID}@${PUBLIC_IP}:8080?type=ws&path=%2Fws#GitHub-VLESS"
+          echo ""
+          echo "=============================================="
+          echo "  برای تست با Curl (از یه ترمینال دیگه):"
+          echo "  curl -x socks5://${PUBLIC_IP}:1080 https://api.ipify.org"
+          echo "=============================================="
 
-          print(f"📡 Fetching {chapter_url} via FlareSolverr...")
-          resp = requests.post(fs_url, json=payload, timeout=150)
-          data = resp.json()
-
-          html = data.get("solution", {}).get("response", "")
-          if not html:
-              print("❌ No HTML received from FlareSolverr")
-              exit(1)
-
-          soup = BeautifulSoup(html, 'html.parser')
-
-          # --- Extract manga title and chapter number ---
-          title = "Unknown Manga"
-          chapter_num = "0"
-          # Try to extract from URL pattern: .../manga-slug-chapter-XX-eng-li/
-          m = re.search(r'/([^/]+)-chapter-(\d+)', chapter_url)
-          if m:
-              title_slug = m.group(1).replace('-', ' ').title()
-              chapter_num = m.group(2)
-              title = title_slug
-          else:
-              # fallback: use domain and a random id
-              title = domain.replace('.', '_')
-              chapter_num = "1"
-
-          # --- Find all manga page images ---
-          images = []
-          for img in soup.find_all('img'):
-              src = img.get('src') or img.get('data-src') or img.get('data-lazy-src') or ''
-              if not src:
-                  continue
-              # Convert relative URLs to absolute
-              full_url = urljoin(chapter_url, src)
-              # For mgeko / typical manga sites, images usually contain certain keywords
-              if any(kw in full_url.lower() for kw in ['imgsrv', 'manga', 'chapter', 'media', 'page']):
-                  images.append(full_url)
-              # Also include common image extensions if they look like manga pages
-              elif re.search(r'\.(jpg|jpeg|png|webp)(\?|$)', full_url, re.I) and 'avatar' not in full_url:
-                  images.append(full_url)
-
-          # Remove duplicates while preserving order
-          seen = set()
-          unique_images = []
-          for img in images:
-              if img not in seen:
-                  seen.add(img)
-                  unique_images.append(img)
-
-          print(f"🖼️ Found {len(unique_images)} manga images")
-
-          # --- Prepare output directory ---
-          safe_title = re.sub(r'[^a-zA-Z0-9\u0600-\u06FF_\- ]', '', title).strip()[:50]
-          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-          output_dir = f"sites/manga/{safe_title}/chapter_{chapter_num}/{timestamp}"
-          img_dir = f"{output_dir}/images"
-          os.makedirs(img_dir, exist_ok=True)
-
-          # --- Download images ---
-          downloaded = []
-          for i, img_url in enumerate(unique_images, 1):
-              try:
-                  img_resp = requests.get(img_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-                  if img_resp.status_code == 200:
-                      ext = os.path.splitext(img_url.split('?')[0])[1] or '.jpg'
-                      fname = f"{i:03d}{ext}"
-                      fpath = os.path.join(img_dir, fname)
-                      with open(fpath, 'wb') as f:
-                          f.write(img_resp.content)
-                      downloaded.append(fname)
-                      print(f"  [{i}/{len(unique_images)}] ✅ {fname} ({len(img_resp.content)//1024}KB)")
-                  else:
-                      print(f"  [{i}/{len(unique_images)}] ❌ HTTP {img_resp.status_code}")
-              except Exception as e:
-                  print(f"  [{i}/{len(unique_images)}] ❌ {e}")
-
-          # --- Generate simple HTML viewer ---
-          viewer_html = f"""<!DOCTYPE html>
-          <html lang="fa" dir="rtl">
-          <head><meta charset="UTF-8"><title>{title} - Chapter {chapter_num}</title>
-          <style>
-              body {{ background:#1a1a1a; color:#eee; text-align:center; font-family: Tahoma; }}
-              img {{ display:block; max-width:100%; margin:0 auto; }}
-          </style></head>
-          <body>
-          <h2>{title} - فصل {chapter_num}</h2>
-          <p>تعداد صفحات: {len(downloaded)} | تاریخ: {timestamp}</p>
-          {''.join(f'<img src="images/{img}" alt="page {i}">' for i,img in enumerate(downloaded,1))}
-          </body></html>"""
-
-          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
-              f.write(viewer_html)
-
-          # --- Save metadata ---
-          with open(f"{output_dir}/info.json", "w", encoding="utf-8") as f:
-              json.dump({
-                  "title": title,
-                  "chapter": chapter_num,
-                  "url": chapter_url,
-                  "timestamp": timestamp,
-                  "images_count": len(downloaded),
-                  "images": downloaded
-              }, f, indent=2, ensure_ascii=False)
-
-          # --- Save original HTML (optional) ---
-          with open(f"{output_dir}/original.html", "w", encoding="utf-8") as f:
-              f.write(html)
-
-          print(f"\n✅ Done! Saved to {output_dir}")
-          print(f"📦 {len(downloaded)} images downloaded")
-          PYEOF
-
-      - name: Commit and push
+      - name: Keep Alive (۵.۵ ساعت)
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sites/manga/
-          git commit -m "📖 Manga chapter ${{ github.event.inputs.chapter_url }} | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
-          git pull --rebase && git push || true
+          # این مرحله رانر رو تا ۵.۵ ساعت زنده نگه میداره
+          sleep 19800  # ۵.۵ ساعت = ۱۹۸۰۰ ثانیه
