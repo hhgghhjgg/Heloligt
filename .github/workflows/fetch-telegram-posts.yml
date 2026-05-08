@@ -37,7 +37,7 @@ jobs:
           from bs4 import BeautifulSoup
           from datetime import datetime
           from pathlib import Path
-          from urllib.parse import urljoin
+          from urllib.parse import urljoin, unquote
 
           channel = os.environ["CHANNEL"]
           target_count = int(os.environ["COUNT"])
@@ -46,6 +46,7 @@ jobs:
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
               "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
               "Accept-Language": "en-US,en;q=0.5",
+              "Accept-Encoding": "gzip, deflate",
           }
 
           all_messages = []
@@ -67,7 +68,6 @@ jobs:
 
               soup = BeautifulSoup(resp.text, 'html.parser')
 
-              # Get channel title (once)
               if not before_id:
                   title_tag = soup.find('meta', property='og:title')
                   if title_tag:
@@ -86,7 +86,6 @@ jobs:
                       break
                   all_messages.append(msg)
 
-              # گرفتن ID آخرین پست برای صفحه بعدی
               last_msg = messages[-1]
               msg_data = last_msg.get('data-post', '')
               if msg_data:
@@ -96,7 +95,6 @@ jobs:
 
               print(f"  Collected {len(all_messages)}/{target_count} messages so far...")
 
-          # محدود به تعداد درخواستی
           latest = all_messages[:target_count]
           print(f"\n📊 Total: {len(latest)} messages")
 
@@ -114,6 +112,61 @@ jobs:
           MEDIA_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/media/"
           FILES_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/files/"
 
+          def download_file(url, save_dir, custom_name=None, timeout=60):
+              """دانلود هر نوع فایل از URL (عکس، ویدیو، سند، npvt، هرچی)"""
+              try:
+                  resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
+                  if resp.status_code != 200:
+                      return None
+                  
+                  # تشخیص نام فایل
+                  if custom_name:
+                      file_name = custom_name
+                  else:
+                      cd = resp.headers.get('Content-Disposition', '')
+                      fname_match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)', cd)
+                      if fname_match:
+                          file_name = unquote(fname_match.group(1))
+                      else:
+                          file_name = url.split('/')[-1].split('?')[0]
+                          if not file_name or len(file_name) > 100:
+                              file_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                              # حدس زدن پسوند از Content-Type
+                              ct = resp.headers.get('Content-Type', '').lower()
+                              ext_map = {
+                                  'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+                                  'image/webp': '.webp', 'video/mp4': '.mp4', 'video/webm': '.webm',
+                                  'application/pdf': '.pdf', 'application/zip': '.zip',
+                                  'application/x-rar-compressed': '.rar', 'application/x-7z-compressed': '.7z',
+                                  'application/octet-stream': '.bin'
+                              }
+                              ext = '.file'
+                              for k, v in ext_map.items():
+                                  if k in ct:
+                                      ext = v
+                                      break
+                              file_name = f"doc_{file_hash}{ext}"
+                  
+                  # Sanitize filename
+                  file_name = re.sub(r'[\\/*?:"<>|]', '_', file_name)
+                  if len(file_name) > 150:
+                      name, ext = os.path.splitext(file_name)
+                      file_name = name[:100] + ext
+                  
+                  file_path = os.path.join(save_dir, file_name)
+                  total_size = int(resp.headers.get('Content-Length', 0))
+                  
+                  with open(file_path, "wb") as f:
+                      for chunk in resp.iter_content(chunk_size=8192):
+                          f.write(chunk)
+                  
+                  actual_size = os.path.getsize(file_path)
+                  print(f"    ✅ {file_name} ({actual_size//1024}KB)")
+                  return file_name
+              except Exception as e:
+                  print(f"    ❌ Download error: {str(e)[:60]}")
+                  return None
+
           posts_data = []
 
           for idx, msg in enumerate(latest):
@@ -124,10 +177,15 @@ jobs:
               date_str = date_tag.get('datetime', '') if date_tag else ''
               views_tag = msg.find('span', class_='tgme_widget_message_views')
               views = views_tag.get_text(strip=True) if views_tag else ''
+              
               links = []
               if text_div:
                   for a in text_div.find_all('a', href=True):
-                      links.append(a['href'])
+                      href = a['href']
+                      # Fix relative URLs
+                      if href.startswith('/'):
+                          href = f"https://t.me{href}"
+                      links.append(href)
 
               # --- Photos ---
               photos = []
@@ -136,18 +194,9 @@ jobs:
                   bg_match = re.search(r"background-image:url\('([^']+)'\)", style)
                   if bg_match:
                       img_url = bg_match.group(1)
-                      try:
-                          img_resp = requests.get(img_url, headers=headers, timeout=20)
-                          if img_resp.status_code == 200:
-                              img_hash = hashlib.md5(img_url.encode()).hexdigest()[:10]
-                              ext = img_url.split('.')[-1].split('?')[0] or 'jpg'
-                              img_filename = f"img_{img_hash}.{ext}"
-                              with open(f"{media_dir}/{img_filename}", "wb") as f:
-                                  f.write(img_resp.content)
-                              photos.append(img_filename)
-                              print(f"  📸 {img_filename}")
-                      except Exception as e:
-                          print(f"  Image error: {e}")
+                      fname = download_file(img_url, media_dir)
+                      if fname:
+                          photos.append(fname)
 
               # --- Videos ---
               videos = []
@@ -156,86 +205,88 @@ jobs:
                   if not video_src:
                       video_src = video_tag.get('data-video', '')
                   if video_src:
-                      try:
-                          vid_resp = requests.get(video_src, headers=headers, timeout=60, stream=True)
-                          if vid_resp.status_code == 200:
-                              vid_hash = hashlib.md5(video_src.encode()).hexdigest()[:10]
-                              vid_filename = f"vid_{vid_hash}.mp4"
-                              with open(f"{media_dir}/{vid_filename}", "wb") as f:
-                                  for chunk in vid_resp.iter_content(chunk_size=8192):
-                                      f.write(chunk)
-                              videos.append(vid_filename)
-                              print(f"  🎬 {vid_filename}")
-                      except Exception as e:
-                          print(f"  Video error: {e}")
+                      fname = download_file(video_src, media_dir, timeout=120)
+                      if fname:
+                          videos.append(fname)
 
-              # --- 🆕 Files (documents) ---
+              # --- 🆕 ALL FILES (documents, npvt, any attachment) ---
               files_downloaded = []
-              # الگوی لینک فایل در تلگرام: https://t.me/channel/ID?single / https://cdn4.telesco.pe/file/...
-              for link in links:
-                  # چک کن ببین لینک به فایل ختم میشه
-                  if any(link.lower().endswith(ext) for ext in [
-                      '.npvt', '.pdf', '.zip', '.rar', '.7z', '.tar.gz',
-                      '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-                      '.apk', '.exe', '.msi', '.dmg', '.deb', '.rpm',
-                      '.epub', '.mobi', '.azw3', '.fb2', '.djvu',
-                      '.txt', '.csv', '.json', '.xml', '.html',
-                      '.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma',
-                      '.torrent', '.iso', '.img'
-                  ]):
-                      try:
-                          file_resp = requests.get(link, headers=headers, timeout=60, stream=True)
-                          if file_resp.status_code == 200:
-                              # Extract filename from URL or Content-Disposition
-                              cd = file_resp.headers.get('Content-Disposition', '')
-                              fname_match = re.search(r'filename[^;=\n]*=((["\']).*?\2|[^;\n]*)', cd)
-                              if fname_match:
-                                  file_name = fname_match.group(1).strip('"\'')
-                              else:
-                                  file_name = link.split('/')[-1].split('?')[0]
-                              if not file_name or len(file_name) > 120:
-                                  file_hash = hashlib.md5(link.encode()).hexdigest()[:10]
-                                  ext = link.split('.')[-1].split('?')[0] or 'file'
-                                  file_name = f"doc_{file_hash}.{ext}"
-                              file_path = f"{files_dir}/{file_name}"
-                              with open(file_path, "wb") as f:
-                                  for chunk in file_resp.iter_content(chunk_size=8192):
-                                      f.write(chunk)
-                              files_downloaded.append(file_name)
-                              size_kb = os.path.getsize(file_path) // 1024
-                              print(f"  📄 {file_name} ({size_kb}KB)")
-                      except Exception as e:
-                          print(f"  File error: {e}")
 
-              # Also check message for document links (direct .npvt etc)
+              # Method 1: Direct document wrap (the paperclip icon)
               doc_wrap = msg.find('a', class_='tgme_widget_message_document_wrap')
               if doc_wrap:
                   doc_url = doc_wrap.get('href', '')
                   if doc_url:
-                      # Try to get direct download URL
+                      if doc_url.startswith('/'):
+                          doc_url = f"https://t.me{doc_url}"
+                      print(f"  📎 Found document link: {doc_url}")
+                      # Open the document page to get direct download URL
                       try:
                           doc_resp = requests.get(doc_url, headers=headers, timeout=30)
                           doc_soup = BeautifulSoup(doc_resp.text, 'html.parser')
+                          # Find the direct download link
                           direct_link = doc_soup.find('a', class_='tgme_widget_message_document_link')
                           if direct_link:
                               direct_url = direct_link.get('href', '')
                               if direct_url:
-                                  file_name = direct_url.split('/')[-1].split('?')[0]
-                                  if not file_name or len(file_name) > 120:
-                                      file_hash = hashlib.md5(direct_url.encode()).hexdigest()[:10]
-                                      ext = direct_url.split('.')[-1].split('?')[0] or 'file'
-                                      file_name = f"doc_{file_hash}.{ext}"
-                                  file_path = f"{files_dir}/{file_name}"
-                                  file_resp = requests.get(direct_url, headers=headers, timeout=60, stream=True)
-                                  if file_resp.status_code == 200:
-                                      with open(file_path, "wb") as f:
-                                          for chunk in file_resp.iter_content(chunk_size=8192):
-                                              f.write(chunk)
-                                      files_downloaded.append(file_name)
-                                      size_kb = os.path.getsize(file_path) // 1024
-                                      print(f"  📄 Doc: {file_name} ({size_kb}KB)")
+                                  # Get filename from the document info
+                                  doc_title = doc_soup.find('div', class_='tgme_widget_message_document_title')
+                                  doc_name = doc_title.get_text(strip=True) if doc_title else None
+                                  fname = download_file(direct_url, files_dir, custom_name=doc_name, timeout=120)
+                                  if fname:
+                                      files_downloaded.append(fname)
+                          else:
+                              # Maybe the link itself is the direct URL
+                              fname = download_file(doc_url, files_dir, timeout=120)
+                              if fname:
+                                  files_downloaded.append(fname)
                       except Exception as e:
-                          print(f"  Doc error: {e}")
+                          print(f"  Document error: {str(e)[:60]}")
+
+              # Method 2: Check all links in the post for file URLs
+              for link in links:
+                  # Skip telegram internal links (channels, groups, etc.)
+                  if 't.me/' in link and not any(link.endswith(ext) for ext in ['.pdf','.zip','.npvt','.apk','.rar','.7z']):
+                      continue
+                  
+                  # Check if link points to a file
+                  link_lower = link.lower()
+                  is_file = False
+                  # Check by extension
+                  common_extensions = [
+                      '.npvt', '.pdf', '.zip', '.rar', '.7z', '.tar.gz', '.gz', '.bz2',
+                      '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                      '.apk', '.exe', '.msi', '.dmg', '.deb', '.rpm',
+                      '.epub', '.mobi', '.azw3', '.fb2', '.djvu',
+                      '.txt', '.csv', '.json', '.xml', '.html', '.htm',
+                      '.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a',
+                      '.torrent', '.iso', '.img', '.bin', '.dat',
+                      '.py', '.js', '.css', '.php', '.java', '.cpp', '.c', '.h',
+                      '.pptx', '.psd', '.ai', '.svg', '.sketch',
+                  ]
+                  for ext in common_extensions:
+                      if link_lower.endswith(ext) or f'.{ext}?' in link_lower or f'.{ext}&' in link_lower:
+                          is_file = True
+                          break
+                  
+                  # Check by URL pattern (cdn4.telesco.pe etc.)
+                  if not is_file and ('telesco.pe/file/' in link or 'cdn' in link):
+                      is_file = True
+                  
+                  if is_file:
+                      fname = download_file(link, files_dir, timeout=120)
+                      if fname:
+                          files_downloaded.append(fname)
+
+              # Method 3: Look for any <a> with document-like classes
+              for doc_tag in msg.find_all('a', class_=re.compile(r'document|file|attachment')):
+                  doc_url = doc_tag.get('href', '')
+                  if doc_url and doc_url not in links:
+                      if doc_url.startswith('/'):
+                          doc_url = f"https://t.me{doc_url}"
+                      fname = download_file(doc_url, files_dir, timeout=120)
+                      if fname:
+                          files_downloaded.append(fname)
 
               posts_data.append({
                   "id": msg_id,
@@ -247,9 +298,11 @@ jobs:
                   "videos": videos,
                   "files": files_downloaded,
               })
-              print(f"  Post {idx+1}/{len(latest)}")
+              
+              total_media = len(photos) + len(videos) + len(files_downloaded)
+              print(f"  Post {idx+1}/{len(latest)}: {len(photos)}📸 {len(videos)}🎬 {len(files_downloaded)}📄 | Total: {total_media}")
 
-          # Save JSON in dated folder
+          # Save JSON
           with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
               json.dump({
                   "channel": channel,
@@ -275,9 +328,8 @@ jobs:
                   "_files_base": FILES_BASE_RAW,
               }, f, ensure_ascii=False, indent=2)
 
-          print(f"\n✅ Done! {len(posts_data)} posts saved")
-          print(f"📁 Media base: {MEDIA_BASE_RAW}")
-          print(f"📁 Files base: {FILES_BASE_RAW}")
+          total_files = sum(len(p['files']) for p in posts_data)
+          print(f"\n✅ Done! {len(posts_data)} posts | {sum(len(p['photos']) for p in posts_data)}📸 {sum(len(p['videos']) for p in posts_data)}🎬 {total_files}📄")
           PYEOF
 
       - name: Commit and push
@@ -285,5 +337,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sites/telegram/
-          git commit -m "📡 @${{ github.event.inputs.channel }} (${{ github.event.inputs.count }} posts with files) | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git commit -m "📡 @${{ github.event.inputs.channel }} (${{ github.event.inputs.count }} posts) | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
