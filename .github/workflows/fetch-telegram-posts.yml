@@ -24,7 +24,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install Chrome
+        run: |
+          wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y /tmp/chrome.deb 2>/dev/null
+          google-chrome --version
+
+      - name: Install Python dependencies
         run: pip install -q requests beautifulsoup4
 
       - name: Fetch posts from Telegram
@@ -33,7 +39,7 @@ jobs:
           COUNT: ${{ github.event.inputs.count }}
         run: |
           python3 << 'PYEOF'
-          import os, json, requests, re, hashlib
+          import os, json, requests, re, hashlib, subprocess, time
           from bs4 import BeautifulSoup
           from datetime import datetime
           from pathlib import Path
@@ -43,11 +49,76 @@ jobs:
           target_count = int(os.environ["COUNT"])
 
           headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
               "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
               "Accept-Language": "en-US,en;q=0.5",
           }
 
+          # ==========================================
+          # تابع fetch با Chrome Headless
+          # ==========================================
+          def fetch_with_chrome(url, wait_time=8):
+              """باز کردن صفحه با Chrome Headless و برگردوندن HTML کامل (با JavaScript اجرا شده)"""
+              try:
+                  result = subprocess.run([
+                      "google-chrome",
+                      "--headless",
+                      "--no-sandbox",
+                      "--disable-dev-shm-usage",
+                      "--disable-gpu",
+                      "--disable-extensions",
+                      "--disable-background-networking",
+                      "--disable-sync",
+                      "--no-first-run",
+                      "--disable-features=TranslateUI",
+                      f"--user-agent={headers['User-Agent']}",
+                      f"--virtual-time-budget={wait_time * 1000}",
+                      "--dump-dom",
+                      url
+                  ], capture_output=True, text=True, timeout=wait_time + 15)
+                  if result.returncode == 0 and result.stdout:
+                      return result.stdout
+                  return None
+              except Exception as e:
+                  print(f"  ⚠️ Chrome error: {str(e)[:80]}")
+                  return None
+
+          # ==========================================
+          # تابع دانلود فایل
+          # ==========================================
+          def safe_download(url, save_dir, timeout=60):
+              """دانلود هر فایلی از اینترنت"""
+              try:
+                  resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
+                  if resp.status_code != 200:
+                      return None
+                  # تشخیص نام فایل
+                  cd = resp.headers.get('Content-Disposition', '')
+                  m = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)', cd)
+                  if m:
+                      fname = unquote(m.group(1))
+                  else:
+                      fname = url.split('/')[-1].split('?')[0]
+                  if not fname or len(fname) > 120:
+                      ext_match = re.search(r'\.(\w+)(\?|$)', url)
+                      ext = ext_match.group(1) if ext_match else 'file'
+                      file_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                      fname = f"doc_{file_hash}.{ext}"
+                  fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
+                  fpath = os.path.join(save_dir, fname)
+                  with open(fpath, "wb") as f:
+                      for chunk in resp.iter_content(8192):
+                          f.write(chunk)
+                  sz = os.path.getsize(fpath) // 1024
+                  print(f"    ✅ {fname} ({sz}KB)")
+                  return fname
+              except Exception as e:
+                  print(f"    ❌ {str(e)[:50]}")
+                  return None
+
+          # ==========================================
+          # Step 1: Get post list from t.me/s
+          # ==========================================
           all_messages = []
           before_id = None
           channel_title = f'@{channel}'
@@ -96,59 +167,6 @@ jobs:
           MEDIA_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/media/"
           FILES_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/files/"
 
-          def safe_download(url, save_dir, custom_name=None, timeout=60):
-              """دانلود هر فایلی از اینترنت"""
-              try:
-                  resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
-                  if resp.status_code != 200:
-                      return None
-                  if custom_name:
-                      fname = custom_name
-                  else:
-                      cd = resp.headers.get('Content-Disposition', '')
-                      m = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)', cd)
-                      if m:
-                          fname = unquote(m.group(1))
-                      else:
-                          fname = url.split('/')[-1].split('?')[0]
-                  fname = re.sub(r'[\\/*?:"<>|]', '_', fname or 'file')
-                  if len(fname) > 120:
-                      name, ext = os.path.splitext(fname)
-                      fname = name[:80] + ext
-                  fpath = os.path.join(save_dir, fname)
-                  with open(fpath, "wb") as f:
-                      for chunk in resp.iter_content(8192):
-                          f.write(chunk)
-                  sz = os.path.getsize(fpath) // 1024
-                  print(f"    ✅ {fname} ({sz}KB)")
-                  return fname
-              except Exception as e:
-                  print(f"    ❌ {str(e)[:50]}")
-                  return None
-
-          def extract_doc_download_url(doc_page_url):
-              """از صفحه فایل پیوست، لینک دانلود مستقیم رو استخراج کن"""
-              try:
-                  resp = requests.get(doc_page_url, headers=headers, timeout=30)
-                  soup = BeautifulSoup(resp.text, 'html.parser')
-                  # Method 1: Direct download link class
-                  link = soup.find('a', class_='tgme_widget_message_document_link')
-                  if link and link.get('href'):
-                      return link['href']
-                  # Method 2: Any link that looks like a direct file URL
-                  for a in soup.find_all('a', href=True):
-                      href = a['href']
-                      if 'telesco.pe/file/' in href or 'cdn' in href:
-                          return href
-                  # Method 3: Look for video source
-                  video = soup.find('video')
-                  if video and video.get('src'):
-                      return video['src']
-                  return None
-              except Exception as e:
-                  print(f"    ⚠️ Doc page error: {str(e)[:50]}")
-                  return None
-
           posts_data = []
 
           for idx, msg in enumerate(latest):
@@ -160,7 +178,6 @@ jobs:
               views_tag = msg.find('span', class_='tgme_widget_message_views')
               views = views_tag.get_text(strip=True) if views_tag else ''
 
-              # Collect all links
               links = []
               if text_div:
                   for a in text_div.find_all('a', href=True):
@@ -169,7 +186,7 @@ jobs:
                           href = f"https://t.me{href}"
                       links.append(href)
 
-              # --- Photos ---
+              # --- Photos (from t.me/s - simple extraction) ---
               photos = []
               for pw in msg.find_all('a', class_='tgme_widget_message_photo_wrap'):
                   style = pw.get('style', '')
@@ -179,7 +196,7 @@ jobs:
                       if fname:
                           photos.append(fname)
 
-              # --- Videos ---
+              # --- Videos (from t.me/s - simple extraction) ---
               videos = []
               for vt in msg.find_all('video'):
                   src = vt.get('src') or vt.get('data-video', '')
@@ -188,47 +205,75 @@ jobs:
                       if fname:
                           videos.append(fname)
 
-              # --- Documents (Files) ---
+              # --- Documents: Use Chrome Headless to open the message page ---
               files_downloaded = []
 
-              # Method A: Document wrap
-              doc_wrap = msg.find('a', class_='tgme_widget_message_document_wrap')
-              if doc_wrap:
-                  doc_url = doc_wrap.get('href', '')
-                  if doc_url:
-                      if doc_url.startswith('/'):
-                          doc_url = f"https://t.me{doc_url}"
-                      print(f"  📎 Doc: {doc_url}")
-                      direct_url = extract_doc_download_url(doc_url)
-                      if direct_url:
-                          fname = safe_download(direct_url, files_dir, timeout=120)
-                          if fname:
-                              files_downloaded.append(fname)
-                      else:
-                          fname = safe_download(doc_url, files_dir, timeout=120)
-                          if fname:
-                              files_downloaded.append(fname)
+              # Check if this message has a document attachment
+              has_document = msg.find('a', class_='tgme_widget_message_document_wrap')
+              # Also check if any link in the text goes to a single post
+              post_links = [l for l in links if re.search(r't\.me/' + channel + r'/\d+$', l)]
 
-              # Method B: Any link to t.me/channel/ID that might be a file
-              for link in links:
-                  if re.search(r't\.me/[^/]+/\d+$', link):
-                      print(f"  🔗 Checking: {link}")
-                      direct_url = extract_doc_download_url(link)
-                      if direct_url:
-                          fname = safe_download(direct_url, files_dir, timeout=120)
-                          if fname:
-                              files_downloaded.append(fname)
+              if has_document or post_links:
+                  # Build the URL for this specific message
+                  if post_links:
+                      detail_url = post_links[0]
+                  else:
+                      detail_url = f"https://t.me/{channel}/{msg_id.split('/')[-1]}"
 
-              # Method C: Direct file links in post text
+                  print(f"  📎 Opening with Chrome: {detail_url}")
+                  html_detail = fetch_with_chrome(detail_url)
+
+                  if html_detail:
+                      detail_soup = BeautifulSoup(html_detail, 'html.parser')
+
+                      # Extract document download links from the detailed page
+                      for doc_link in detail_soup.find_all('a', class_='tgme_widget_message_document_link'):
+                          direct_url = doc_link.get('href', '')
+                          if direct_url:
+                              # Get filename
+                              doc_title = detail_soup.find('div', class_='tgme_widget_message_document_title')
+                              doc_name = doc_title.get_text(strip=True) if doc_title else None
+                              fname = safe_download(direct_url, files_dir, custom_name=doc_name, timeout=120)
+                              if fname:
+                                  files_downloaded.append(fname)
+
+                      # Also check for direct file URLs in the detailed page
+                      all_detail_links = detail_soup.find_all('a', href=True)
+                      for a in all_detail_links:
+                          href = a['href']
+                          if 'telesco.pe/file/' in href or 'cdn' in href:
+                              if href not in files_downloaded:
+                                  fname = safe_download(href, files_dir, timeout=120)
+                                  if fname:
+                                      files_downloaded.append(fname)
+
+                      # Check for video sources in detailed page
+                      for v in detail_soup.find_all('video'):
+                          src = v.get('src', '')
+                          if src and src not in videos:
+                              fname = safe_download(src, media_dir, timeout=120)
+                              if fname:
+                                  videos.append(fname)
+
+                      # Check for images in detailed page
+                      for img in detail_soup.find_all('img', src=True):
+                          src = img['src']
+                          if 'telesco.pe/file/' in src or 'cdn' in src:
+                              if src not in photos:
+                                  fname = safe_download(src, media_dir)
+                                  if fname:
+                                      photos.append(fname)
+
+              # --- Also check direct file links in post text ---
               for link in links:
-                  if any(link.lower().endswith(ext) for ext in [
+                  link_lower = link.lower()
+                  if any(link_lower.endswith(ext) for ext in [
                       '.npvt', '.pdf', '.zip', '.rar', '.7z', '.apk', '.epub',
                       '.mobi', '.doc', '.docx', '.xls', '.xlsx', '.mp3', '.wav', '.torrent'
                   ]):
-                      if link not in [d for d in files_downloaded]:
-                          fname = safe_download(link, files_dir, timeout=120)
-                          if fname:
-                              files_downloaded.append(fname)
+                      fname = safe_download(link, files_dir, timeout=120)
+                      if fname and fname not in files_downloaded:
+                          files_downloaded.append(fname)
 
               posts_data.append({
                   "id": msg_id, "date": date_str, "text": raw_text,
@@ -237,7 +282,9 @@ jobs:
               })
               print(f"  Post {idx+1}/{len(latest)}: {len(photos)}📸 {len(videos)}🎬 {len(files_downloaded)}📄")
 
+          # ==========================================
           # Save JSON
+          # ==========================================
           with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
               json.dump({
                   "channel": channel, "title": channel_title,
@@ -255,8 +302,10 @@ jobs:
                   "_media_base": MEDIA_BASE_RAW, "_files_base": FILES_BASE_RAW,
               }, f, ensure_ascii=False, indent=2)
 
-          tf = sum(len(p['files']) for p in posts_data)
-          print(f"\n✅ Done! {len(posts_data)} posts | {sum(len(p['photos']) for p in posts_data)}📸 {sum(len(p['videos']) for p in posts_data)}🎬 {tf}📄")
+          total_files = sum(len(p['files']) for p in posts_data)
+          total_photos = sum(len(p['photos']) for p in posts_data)
+          total_videos = sum(len(p['videos']) for p in posts_data)
+          print(f"\n✅ Done! {len(posts_data)} posts | {total_photos}📸 {total_videos}🎬 {total_files}📄")
           PYEOF
 
       - name: Commit and push
