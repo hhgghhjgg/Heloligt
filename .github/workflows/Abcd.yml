@@ -9,50 +9,79 @@ jobs:
     timeout-minutes: 340
 
     steps:
-      - name: Setup Xray (VLESS + XHTTP)
+      - name: Setup Xray VLESS XHTTP
         run: |
-          # 1. Download Xray-core
+          # دانلود Xray-core
           curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip xray.zip -d xray
           chmod +x xray/xray
           
-          # 2. Generate UUID
+          # تولید UUID
           UUID=$(cat /proc/sys/kernel/random/uuid)
           echo "UUID: $UUID"
           
-          # 3. Create config
-          cat > xray/config.json << 'XRAYEOF'
+          # ساخت فایل کانفیگ
+          cat > xray/config.json << 'EOF'
           {
-            "log": { "loglevel": "warning" },
-            "inbounds": [{
-              "port": 8080,
-              "listen": "0.0.0.0",
-              "protocol": "vless",
-              "settings": {
-                "clients": [{
-                  "id": "PLACEHOLDER_UUID"
-                }],
-                "decryption": "none"
-              },
-              "streamSettings": {
-                "network": "xhttp",
-                "xhttpSettings": {
-                  "path": "/"
+            "log": {
+              "loglevel": "warning"
+            },
+            "inbounds": [
+              {
+                "port": 8080,
+                "listen": "0.0.0.0",
+                "protocol": "vless",
+                "settings": {
+                  "clients": [
+                    {
+                      "id": "PLACEHOLDER_UUID"
+                    }
+                  ],
+                  "decryption": "none"
+                },
+                "streamSettings": {
+                  "network": "xhttp",
+                  "xhttpSettings": {
+                    "path": "/"
+                  }
                 }
               }
-            }],
-            "outbounds": [{
-              "protocol": "freedom",
-              "settings": {}
-            }]
+            ],
+            "outbounds": [
+              {
+                "protocol": "freedom",
+                "settings": {}
+              }
+            ]
           }
-          XRAYEOF
+          EOF
           
-          sed -i "s/PLACEHOLDER_UUID/$UUID/g" xray/config.json
+          # جایگزینی UUID
+          sed -i "s/PLACEHOLDER_UUID/${UUID}/g" xray/config.json
           
-          # 4. Start Xray
-          cd xray && ./xray run -config config.json &
+          # اجرای Xray
+          cd xray
+          ./xray run -config config.json &
           sleep 2
           
-          # 5. Show config
-          PUBLIC_IP=$(curl -s https://api.ipify
+          # نمایش کانفیگ
+          PUBLIC_IP=$(curl -s https://api.ipify.org)
+          echo ""
+          echo "=============================================="
+          echo "  VLESS + XHTTP"
+          echo "=============================================="
+          echo ""
+          echo "Protocol: vless"
+          echo "Address: ${PUBLIC_IP}"
+          echo "Port: 8080"
+          echo "UUID: ${UUID}"
+          echo "Network: xhttp"
+          echo "Path: /"
+          echo ""
+          echo "=== Import Link ==="
+          echo "vless://${UUID}@${PUBLIC_IP}:8080?type=xhttp&path=%2F&security=none#GitHub-XHTTP"
+          echo ""
+          echo "=============================================="
+
+      - name: Keep Alive
+        run: sleep 19800
