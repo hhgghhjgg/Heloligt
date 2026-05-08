@@ -18,14 +18,14 @@ permissions:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: pip install -q requests beautifulsoup4
+        run: pip install -q requests beautifulsoup4 fake-useragent
 
       - name: Fetch posts from Telegram
         env:
@@ -37,16 +37,24 @@ jobs:
           from bs4 import BeautifulSoup
           from datetime import datetime
           from pathlib import Path
-          from urllib.parse import unquote
+          from urllib.parse import urljoin, unquote
+          from fake_useragent import UserAgent
 
+          # تنظیمات
           channel = os.environ["CHANNEL"]
           target_count = int(os.environ["COUNT"])
 
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-              "Accept-Language": "en-US,en;q=0.5",
-          }
+          # ساخت User-Agent تصادفی با fake-useragent
+          ua = UserAgent()
 
+          def get_headers():
+              return {
+                  "User-Agent": ua.random,
+                  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                  "Accept-Language": "en-US,en;q=0.5",
+              }
+
+          # جمع‌آوری پست‌ها از t.me/s
           all_messages = []
           before_id = None
           channel_title = f'@{channel}'
@@ -56,7 +64,7 @@ jobs:
               if before_id:
                   url += f"?before={before_id}"
               print(f"📡 Fetching: {url}")
-              resp = requests.get(url, headers=headers, timeout=30)
+              resp = requests.get(url, headers=get_headers(), timeout=30)
               if resp.status_code != 200:
                   break
               soup = BeautifulSoup(resp.text, 'html.parser')
@@ -84,6 +92,7 @@ jobs:
           latest = all_messages[:target_count]
           print(f"\n📊 Processing {len(latest)} messages")
 
+          # ساخت پوشه‌ها
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
           output_dir = f"sites/telegram/{channel}/{timestamp}"
           media_dir = f"{output_dir}/media"
@@ -103,7 +112,7 @@ jobs:
                   if url_hash in downloaded_hashes:
                       return None
                   
-                  resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
+                  resp = requests.get(url, headers=get_headers(), timeout=timeout, stream=True)
                   if resp.status_code != 200:
                       return None
                   
@@ -150,49 +159,49 @@ jobs:
               return url
 
           def extract_doc_download_url(doc_page_url):
-              """هشت‌پای حرفه‌ای: همه لینک‌های ممکن رو زیر و رو می‌کنه"""
+              """با User-Agent تصادفی لینک مستقیم فایل رو پیدا می‌کنه"""
               try:
-                  print(f"    🔎 بررسی صفحه: {doc_page_url}")
-                  resp = requests.get(doc_page_url, headers=headers, timeout=30)
+                  from urllib.parse import urljoin
+                  
+                  # تبدیل به embed mode برای گرفتن محتوای خام
+                  if '/s/' in doc_page_url:
+                      embed_url = doc_page_url.replace('t.me/s/', 't.me/')
+                  else:
+                      embed_url = doc_page_url
+                  if '?' in embed_url:
+                      embed_url += '&embed=1'
+                  else:
+                      embed_url += '?embed=1'
+                  
+                  print(f"    🔎 بررسی: {embed_url}")
+                  resp = requests.get(embed_url, headers=get_headers(), timeout=15)
                   soup = BeautifulSoup(resp.text, 'html.parser')
                   
-                  # ۱. لینک مستقیم دانلود (کلاس رسمی تلگرام)
+                  # متد ۱: لینک استاندارد
                   link = soup.find('a', class_='tgme_widget_message_document_link')
                   if link and link.get('href'):
-                      print(f"    🎯 متد ۱ (کلاس استاندارد): {link['href']}")
+                      print(f"    🎯 متد ۱: {link['href']}")
                       return link['href']
                   
-                  # ۲. تگ ویدیو
+                  # متد ۲: تگ ویدیو
                   video = soup.find('video')
                   if video and video.get('src'):
-                      print(f"    🎯 متد ۲ (تگ ویدیو): {video['src']}")
+                      print(f"    🎯 متد ۲: {video['src']}")
                       return video['src']
                   
-                  # ۳. تمام لینک‌های موجود در صفحه
-                  all_links = soup.find_all('a', href=True)
-                  for a in all_links:
+                  # متد ۳: همه لینک‌های فایل
+                  for a in soup.find_all('a', href=True):
                       href = a['href']
-                      
-                      # پسوندهای فایل
-                      if any(href.lower().endswith(ext) for ext in [
+                      full_url = urljoin(embed_url, href)
+                      if any(full_url.lower().endswith(ext) for ext in [
                           '.npvt', '.pdf', '.zip', '.rar', '.7z', '.apk', '.epub',
-                          '.mobi', '.doc', '.docx', '.xls', '.xlsx', '.mp3', '.wav', 
+                          '.mobi', '.doc', '.docx', '.xls', '.xlsx', '.mp3', '.wav',
                           '.torrent', '.flac', '.m4a', '.ogg', '.mp4', '.mov'
                       ]):
-                          print(f"    🎯 متد ۳ (لینک با پسوند): {href}")
-                          return href
-                      
-                      # لینک‌های تلسکوپ
-                      if 'telesco.pe/file/' in href:
-                          print(f"    🎯 متد ۴ (تلسکوپ): {href}")
-                          return href
+                          print(f"    🎯 متد ۳: {full_url}")
+                          return full_url
                   
-                  # ۴. اگه هیچکدوم نبود، شاید خود صفحه فایل مستقیم باشه
-                  if not all_links:
-                      print(f"    🎯 متد ۵ (دانلود مستقیم صفحه): {doc_page_url}")
-                      return doc_page_url
-
-                  print(f"    ⚠️ هیچ لینکی پیدا نشد!")
+                  print(f"    ⚠️ هیچی پیدا نشد!")
                   return None
               except Exception as e:
                   print(f"    ❌ خطا: {str(e)[:50]}")
@@ -225,7 +234,7 @@ jobs:
                           href = f"https://t.me{href}"
                       links.append(href)
 
-              # عکس‌ها - از صفحه اصلی کانال (با /s/) مستقیم برداشته میشن
+              # عکس‌ها
               photos = []
               for pw in msg.find_all('a', class_='tgme_widget_message_photo_wrap'):
                   style = pw.get('style', '')
@@ -235,7 +244,7 @@ jobs:
                       if fname:
                           photos.append(fname)
 
-              # ویدیوها - از صفحه اصلی کانال (با /s/) مستقیم برداشته میشن
+              # ویدیوها
               videos = []
               for vt in msg.find_all('video'):
                   src = vt.get('src') or vt.get('data-video', '')
@@ -253,18 +262,13 @@ jobs:
                   if doc_url:
                       if doc_url.startswith('/'):
                           doc_url = f"https://t.me{doc_url}"
-                      # تبدیل به نسخه استاتیک برای باز کردن صفحه فایل
                       static_url = make_static_url(doc_url)
                       direct = extract_doc_download_url(static_url)
                       if direct:
                           fname = safe_download(direct, files_dir, timeout=120)
                           if fname: files_downloaded.append(fname)
-                      else:
-                          # اگه نشد، خود لینک استاتیک رو امتحان کن
-                          fname = safe_download(static_url, files_dir, timeout=120)
-                          if fname: files_downloaded.append(fname)
 
-              # متد B: لینک‌های عددی (مثل t.me/blackRay/10993)
+              # متد B: لینک‌های عددی
               for link in links:
                   if re.search(r't\.me/[^/]+/\d+$', link):
                       static_link = make_static_url(link)
@@ -274,7 +278,7 @@ jobs:
                           if fname and fname not in files_downloaded:
                               files_downloaded.append(fname)
 
-              # متد C: لینک‌های مستقیم به فایل (از متن)
+              # متد C: لینک‌های مستقیم به فایل
               for link in links:
                   clean_link = link.split('?')[0].split('/')[-1].lower()
                   if any(clean_link.endswith(ext) for ext in ['.npvt','.pdf','.zip','.rar','.7z','.apk','.epub','.mobi','.doc','.docx','.xls','.xlsx','.mp3','.wav','.torrent','.flac','.m4a','.ogg']):
@@ -285,23 +289,17 @@ jobs:
               # متد D: دکمه‌های inline
               btns = extract_buttons(msg)
               for btn_url in btns:
-                  # چک کن که خودش مستقیم به فایل باشه
                   clean_btn = btn_url.split('?')[0].split('/')[-1].lower()
                   if any(clean_btn.endswith(ext) for ext in ['.npvt','.pdf','.zip','.rar','.7z','.apk','.epub','.mobi','.doc','.docx','.xls','.xlsx','.mp3','.wav','.torrent','.flac']):
                       fname = safe_download(btn_url, files_dir, timeout=120)
                       if fname and fname not in files_downloaded:
                           files_downloaded.append(fname)
                   else:
-                      # اگه لینک تلگرامیه، صفحه‌ش رو چک کن (با نسخه استاتیک)
                       if 't.me/' in btn_url:
                           static_btn = make_static_url(btn_url)
                           direct = extract_doc_download_url(static_btn)
                           if direct:
                               fname = safe_download(direct, files_dir, timeout=120)
-                              if fname and fname not in files_downloaded:
-                                  files_downloaded.append(fname)
-                          else:
-                              fname = safe_download(static_btn, files_dir, timeout=120)
                               if fname and fname not in files_downloaded:
                                   files_downloaded.append(fname)
 
