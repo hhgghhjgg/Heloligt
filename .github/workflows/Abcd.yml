@@ -1,87 +1,43 @@
-name: VLESS XHTTP Simple
+name: GitHub Models AI Assistant
 
 on:
   workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'سوال خود را بنویسید'
+        required: true
+        default: 'یک شعر کوتاه به فارسی بگو'
+      model:
+        description: 'مدل مورد نظر'
+        required: false
+        default: 'gpt-4.1-mini'
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  vless:
+  ask-ai:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
-
     steps:
-      - name: Setup Xray VLESS XHTTP
+      - name: Install LLM and GitHub Models Plugin
         run: |
-          # دانلود Xray-core
-          curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip xray.zip -d xray
-          chmod +x xray/xray
-          
-          # تولید UUID
-          UUID=$(cat /proc/sys/kernel/random/uuid)
-          echo "UUID: $UUID"
-          
-          # ساخت فایل کانفیگ
-          cat > xray/config.json << 'EOF'
-          {
-            "log": {
-              "loglevel": "warning"
-            },
-            "inbounds": [
-              {
-                "port": 8080,
-                "listen": "0.0.0.0",
-                "protocol": "vless",
-                "settings": {
-                  "clients": [
-                    {
-                      "id": "PLACEHOLDER_UUID"
-                    }
-                  ],
-                  "decryption": "none"
-                },
-                "streamSettings": {
-                  "network": "xhttp",
-                  "xhttpSettings": {
-                    "path": "/"
-                  }
-                }
-              }
-            ],
-            "outbounds": [
-              {
-                "protocol": "freedom",
-                "settings": {}
-              }
-            ]
-          }
-          EOF
-          
-          # جایگزینی UUID
-          sed -i "s/PLACEHOLDER_UUID/${UUID}/g" xray/config.json
-          
-          # اجرای Xray
-          cd xray
-          ./xray run -config config.json &
-          sleep 2
-          
-          # نمایش کانفیگ
-          PUBLIC_IP=$(curl -s https://api.ipify.org)
-          echo ""
-          echo "=============================================="
-          echo "  VLESS + XHTTP"
-          echo "=============================================="
-          echo ""
-          echo "Protocol: vless"
-          echo "Address: ${PUBLIC_IP}"
-          echo "Port: 8080"
-          echo "UUID: ${UUID}"
-          echo "Network: xhttp"
-          echo "Path: /"
-          echo ""
-          echo "=== Import Link ==="
-          echo "vless://${UUID}@${PUBLIC_IP}:8080?type=xhttp&path=%2F&security=none#GitHub-XHTTP"
-          echo ""
-          echo "=============================================="
+          pip install --upgrade pip
+          pip install llm llm-github-models
 
-      - name: Keep Alive
-        run: sleep 19800
+      - name: Set GitHub Token
+        run: |
+          export GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          llm keys set github-models
+
+      - name: Ask AI
+        env:
+          PROMPT: ${{ github.event.inputs.prompt }}
+          MODEL: ${{ github.event.inputs.model }}
+          GITHUB_TOKEN: ${{ github.event.inputs.token }}
+        run: |
+          echo "📝 سوال: $PROMPT"
+          echo "🤖 مدل: $MODEL"
+          echo "---"
+          llm prompt -m "github/${MODEL}" "$PROMPT"
+          echo "---"
