@@ -1,4 +1,4 @@
-name: Manhwa OCR + Translate + WAN Inpaint (Vision AI)
+name: Manhwa OCR + Translate + Qwen Alibaba Inpaint
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ permissions:
 jobs:
   translate:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -27,7 +27,6 @@ jobs:
         run: |
           mkdir -p manhwa
           URL="${{ github.event.inputs.image_url }}"
-          # Auto-convert blob to raw
           URL=$(echo "$URL" | sed 's|github.com/.*/blob/|raw.githubusercontent.com/|' | sed 's|/blob/|/|')
           echo "📥 Downloading: $URL"
           curl -L -o manhwa/original.jpg "$URL"
@@ -42,112 +41,84 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 << 'EOF'
-          import requests, base64, os, json
+          import requests, base64, os
 
-          # Read image and encode as base64
           with open("manhwa/original.jpg", "rb") as f:
               img_bytes = f.read()
           img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-          image_url = f"data:image/jpeg;base64,{img_b64}"
 
-          prompt = """You are a manhwa translator. Read all text in the image (even if it's in speech bubbles). Then translate it into fluent Persian (فارسی). Return the output in this exact format:
+          prompt = """Read all text in this manhwa image (even in speech bubbles). Translate it into fluent Persian (فارسی). Return in this exact format:
 
           ORIGINAL:
           [Original text here]
 
           TRANSLATION:
-          [Persian translation here]
-          """
+          [Persian translation here]"""
 
           token = os.environ["GITHUB_TOKEN"]
-          payload = {
-              "model": "gpt-4o-mini",
-              "messages": [
-                  {
-                      "role": "user",
-                      "content": [
-                          {"type": "text", "text": prompt},
-                          {"type": "image_url", "image_url": {"url": image_url}}
-                      ]
-                  }
-              ],
-              "max_tokens": 1500
-          }
-
-          print("🤖 Sending image to GPT-4o-mini for OCR + Translation...")
           resp = requests.post(
               "https://models.inference.ai.azure.com/chat/completions",
-              headers={
-                  "Authorization": f"Bearer {token}",
-                  "Content-Type": "application/json"
-              },
-              json=payload,
-              timeout=60
+              headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+              json={
+                  "model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": [
+                      {"type": "text", "text": prompt},
+                      {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                  ]}],
+                  "max_tokens": 1500
+              }, timeout=60
           )
 
           if resp.status_code == 200:
               answer = resp.json()["choices"][0]["message"]["content"]
-              print("✅ Model output:")
-              print(answer)
-              
-              # Split original and translation
-              if "ORIGINAL:" in answer and "TRANSLATION:" in answer:
-                  original = answer.split("ORIGINAL:")[1].split("TRANSLATION:")[0].strip()
-                  translation = answer.split("TRANSLATION:")[1].strip()
-              else:
-                  original = answer
-                  translation = ""
-              
-              with open("manhwa/text_original.txt", "w", encoding="utf-8") as f:
-                  f.write(original)
-              with open("manhwa/text_translated.txt", "w", encoding="utf-8") as f:
-                  f.write(translation)
-              print("📝 Saved original and translation")
+              print(f"✅ Model output:\n{answer}")
+              original = answer.split("ORIGINAL:")[1].split("TRANSLATION:")[0].strip() if "TRANSLATION:" in answer else answer
+              translation = answer.split("TRANSLATION:")[1].strip() if "TRANSLATION:" in answer else ""
+              with open("manhwa/text_original.txt", "w", encoding="utf-8") as f: f.write(original)
+              with open("manhwa/text_translated.txt", "w", encoding="utf-8") as f: f.write(translation)
           else:
-              print(f"❌ Error: {resp.status_code}")
-              print(resp.text[:500])
+              print(f"❌ Error: {resp.status_code} - {resp.text[:300]}")
               open("manhwa/text_original.txt", "w").write("OCR failed")
               open("manhwa/text_translated.txt", "w").write("Translation failed")
           EOF
 
-      - name: Step 2 - WAN Inpainting
+      - name: Step 2 - Inpainting with Qwen-Image-Edit Space
         run: |
           python3 << 'EOF'
           from gradio_client import Client, file
-          print("🖼️ Calling WAN Inpainting Space...")
-          client = Client("https://instantx-qwen-image-controlnet-inpainting.hf.space/")
+
+          print("🖼️ Calling Qwen-Image-Edit Space...")
+          client = Client("https://qwen-qwen-image-edit-2511.hf.space/")
           result = client.predict(
               image=file("manhwa/original.jpg"),
               prompt="Remove all text and speech bubbles, clean manga panel, high quality inpainting",
               api_name="/predict"
           )
+          
+          import shutil
           if isinstance(result, str):
-              import shutil
               shutil.copy(result, "manhwa/cleaned.jpg")
-              print("✅ Inpainting saved")
           elif isinstance(result, dict) and "image" in result:
-              import shutil
               shutil.copy(result["image"], "manhwa/cleaned.jpg")
-              print("✅ Inpainting saved")
           else:
-              print(f"⚠️ Unexpected WAN result: {type(result)}")
+              print(f"⚠️ Unexpected result: {type(result)}")
+          print("✅ Inpainting Done")
           EOF
 
       - name: Save Results
         run: |
-          TIMESTAMP=$(date +%Y%m%d_%H%M)
-          FOLDER="manhwa-results/${TIMESTAMP}"
+          FOLDER="manhwa-results/$(date +%Y%m%d_%H%M)"
           mkdir -p "$FOLDER"
-          cp manhwa/original.jpg "$FOLDER/01_original.jpg" 2>/dev/null || true
+          cp manhwa/original.jpg "$FOLDER/01_original.jpg"
           cp manhwa/cleaned.jpg "$FOLDER/02_cleaned.jpg" 2>/dev/null || true
-          cp manhwa/text_original.txt "$FOLDER/03_original.txt" 2>/dev/null || true
-          cp manhwa/text_translated.txt "$FOLDER/04_translated.txt" 2>/dev/null || true
-          echo "✅ Results saved to $FOLDER"
+          cp manhwa/text_original.txt "$FOLDER/03_original.txt"
+          cp manhwa/text_translated.txt "$FOLDER/04_translated.txt"
+          echo "✅ Saved to $FOLDER"
 
       - name: Commit
         run: |
           git config user.name "ManhwaBot"
           git config user.email "bot@manhwa"
           git add manhwa-results/
-          git commit -m "📖 Manhwa Vision AI $(date +%Y%m%d_%H%M)" || echo "Nothing to commit"
+          git commit -m "📖 Manhwa Translation $(date +%H:%M)" || echo "Nothing to commit"
           git push || true
