@@ -19,19 +19,52 @@ jobs:
       - name: Install LLM
         run: pip install -q llm llm-github-models
 
-      - name: Ask AI
+      - name: Fix DNS Resolution
+        run: |
+          echo "=== Before Fix ==="
+          ping -c 1 models.inference.ai.azure.com 2>/dev/null || echo "Ping failed"
+          
+          echo "=== Fix DNS ==="
+          sudo resolvectl dns eth0 8.8.8.8 1.1.1.1 || true
+          sleep 2
+          
+          echo "=== After Fix ==="
+          ping -c 1 models.inference.ai.azure.com 2>/dev/null || echo "Still failing"
+          nslookup models.inference.ai.azure.com 2>/dev/null || dig models.inference.ai.azure.com 2>/dev/null || echo "DNS tools unavailable"
+
+      - name: Ask AI (Fallback)
         env:
           PROMPT: ${{ github.event.inputs.prompt }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "📝 سوال: $PROMPT"
           echo "---"
-          for MODEL in "gpt-4o" "DeepSeek-R1" "Phi-4" "Llama-4-Maverick-17B-128E-Instruct-FP8"; do
-            echo "🔄 Trying: $MODEL"
-            if llm prompt -m "github/${MODEL}" --key "$GITHUB_TOKEN" "$PROMPT" 2>/dev/null; then
-              echo "✅ Success with $MODEL"
-              break
-            fi
-            echo "❌ $MODEL failed, trying next..."
-          done
+          
+          # First try: gpt-4o-mini (most accessible)
+          echo "🔄 Trying: gpt-4o-mini"
+          if llm prompt -m "github/gpt-4o-mini" --key "$GITHUB_TOKEN" "$PROMPT" 2>/dev/null; then
+            echo "✅ Success with gpt-4o-mini"
+            exit 0
+          fi
+          echo "❌ gpt-4o-mini failed"
+          
+          # Second try: DeepSeek-R1
+          echo "🔄 Trying: DeepSeek-R1"
+          if llm prompt -m "github/DeepSeek-R1" --key "$GITHUB_TOKEN" "$PROMPT" 2>/dev/null; then
+            echo "✅ Success with DeepSeek-R1"
+            exit 0
+          fi
+          echo "❌ DeepSeek-R1 failed"
+          
+          # Third try: Direct API call as last resort
+          echo "🔄 Trying: Direct API call to GitHub Models"
+          curl -s -X POST "https://models.inference.ai.azure.com/chat/completions" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "gpt-4o-mini",
+              "messages": [{"role": "user", "content": "'"$PROMPT"'"}],
+              "max_tokens": 500
+            }' | python3 -m json.tool 2>/dev/null || echo "All attempts failed"
+          
           echo "---"
