@@ -1,79 +1,141 @@
-name: Browser Stream via Log Bridge
+name: دانلودر پورن هاب
 
 on:
   workflow_dispatch:
     inputs:
-      target_url:
-        description: 'آدرس سایت پیش‌فرض'
+      url:
+        description: 'URL of the video'
+        required: true
+        type: string
+      output_folder:
+        description: 'Folder where the video will be saved'
         required: false
-        default: 'https://wikipedia.org'
+        type: string
+        default: 'downloads'
+      quality:
+        description: 'Video quality (yt-dlp format selector)'
+        required: true
+        type: string
+        default: 'bestvideo[height<=720]+bestaudio/best[ext=mp4]/best'
+      archive_name:
+        description: 'Base name for the RAR archive (if file is split)'
+        required: false
+        type: string
+        default: 'video'
 
 permissions:
   contents: write
 
 jobs:
-  browser-stream:
+  download-and-maybe-split:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
-      - run: npm init -y && npm install puppeteer ws
+          python-version: '3.10'
 
-      - name: Start Browser and WebSocket Bridge
-        env:
-          TARGET_URL: ${{ github.event.inputs.target_url }}
+      - name: Install yt-dlp and bc
         run: |
-          cat > bridge.js << 'EOF'
-          const puppeteer = require('puppeteer');
-          const WebSocket = require('ws');
+          pip install yt-dlp
+          sudo apt-get update && sudo apt-get install -y bc
 
-          const TARGET = process.env.TARGET_URL || 'https://wikipedia.org';
+      - name: Download video (retry up to 5 times)
+        id: download
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          mkdir -p "$FOLDER"
+          touch marker
 
-          (async () => {
-            const browser = await puppeteer.launch({
-              headless: 'new',
-              args: ['--no-sandbox', '--disable-setuid-sandbox']
-            });
-            const page = await browser.newPage();
-            await page.goto(TARGET, { waitUntil: 'networkidle2' });
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          SUCCESS=false
 
-            // WebSocket server on localhost
-            const wss = new WebSocket.Server({ port: 8080 });
-            
-            wss.on('connection', (ws) => {
-              ws.on('message', async (msg) => {
-                const cmd = msg.toString().trim();
-                
-                if (cmd.startsWith('NAVIGATE ')) {
-                  const url = cmd.replace('NAVIGATE ', '');
-                  await page.goto(url, { waitUntil: 'networkidle2' });
-                  console.log(`BRIDGE_RESULT:NAVIGATED:${url}`);
-                  ws.send('OK');
-                } else if (cmd === 'SCREENSHOT') {
-                  const shot = await page.screenshot({ encoding: 'base64' });
-                  console.log(`BRIDGE_RESULT:SCREENSHOT:${shot}`);
-                  ws.send('OK');
-                } else if (cmd === 'HTML') {
-                  const html = await page.content();
-                  const b64 = Buffer.from(html).toString('base64');
-                  console.log(`BRIDGE_RESULT:HTML:${b64}`);
-                  ws.send('OK');
-                }
-              });
-            });
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "Download attempt $((RETRY_COUNT+1))/$MAX_RETRIES"
+            yt-dlp \
+              --output "./$FOLDER/%(uploader)s - %(title)s - %(id)s.%(ext)s" \
+              --format "${{ github.event.inputs.quality }}" \
+              --merge-output-format mp4 \
+              --retries 3 \
+              --fragment-retries 10 \
+              --no-check-certificate \
+              --geo-bypass \
+              --no-color \
+              --ignore-errors \
+              --newline \
+              "${{ github.event.inputs.url }}" && {
+                # Verify that a new file was actually created
+                NEW_FILE=$(find "$FOLDER" -type f -newer marker -print -quit)
+                if [ -n "$NEW_FILE" ]; then
+                  echo "Download succeeded: $NEW_FILE"
+                  SUCCESS=true
+                  break
+                else
+                  echo "The download command exited with code 0, but no new file was found. Retrying..."
+                fi
+              } || {
+                echo "Download attempt failed with exit code $?"
+              }
+            RETRY_COUNT=$((RETRY_COUNT+1))
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+              echo "Waiting 5 seconds before next attempt..."
+              sleep 5
+            fi
+          done
 
-            console.log('BRIDGE_READY');
-            process.stdin.resume();
-          })();
-          EOF
-          node bridge.js
+          if [ "$SUCCESS" = false ]; then
+            echo "Error: All $MAX_RETRIES download attempts failed."
+            exit 1
+          fi
 
-      - name: Keep alive
-        run: sleep 21600
+          FILENAME=$(basename "$NEW_FILE")
+          SIZE_BYTES=$(stat -c %s "$NEW_FILE")
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+          echo "size_bytes=$SIZE_BYTES" >> $GITHUB_OUTPUT
+          echo "Downloaded: $NEW_FILE (${SIZE_BYTES} bytes)"
+        shell: bash
+
+      - name: Install RAR
+        run: sudo apt-get install -y rar
+
+      - name: Conditional split (if file > 99 MB)
+        id: split
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          FILENAME="${{ steps.download.outputs.filename }}"
+          SIZE_BYTES="${{ steps.download.outputs.size_bytes }}"
+          SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
+          THRESHOLD_MB=99
+
+          cd "$FOLDER"
+
+          if (( $(echo "$SIZE_MB > $THRESHOLD_MB" | bc -l) )); then
+            echo "File size ${SIZE_MB} MB exceeds ${THRESHOLD_MB} MB – splitting into 95 MB RAR parts."
+            # Append a random 6‑character hex suffix to avoid name collisions
+            RANDOM_HEX=$(openssl rand -hex 3)
+            ARCHIVE_NAME="${{ github.event.inputs.archive_name }}_${RANDOM_HEX}"
+            echo "Archive base name: ${ARCHIVE_NAME}"
+            rar a -v95m -m5 -ep1 "${ARCHIVE_NAME}.rar" "$FILENAME"
+            rm "$FILENAME"   # Remove original file after successful split
+            echo "split_done=true" >> $GITHUB_OUTPUT
+            echo "Split completed. Parts created:"
+            ls -lh "${ARCHIVE_NAME}.part"*.rar
+          else
+            echo "File size ${SIZE_MB} MB is ≤${THRESHOLD_MB} MB – keeping original file (no RAR)."
+            echo "split_done=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push to repository
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$FOLDER/"
+          git commit -m "Add downloaded video(s)"
+          git push
+          
