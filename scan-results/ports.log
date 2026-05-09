@@ -8,3 +8,13 @@ PORT_OPEN|cloudflare.com|2053
 PORT_OPEN|cloudflare.com|2096
 PORT_OPEN|microsoft.com|80
 PORT_OPEN|microsoft.com|443
+PORT_OPEN|github.com|80
+PORT_OPEN|github.com|443
+PORT_OPEN|cloudflare.com|80
+PORT_OPEN|cloudflare.com|443
+PORT_OPEN|cloudflare.com|8080
+PORT_OPEN|cloudflare.com|8443
+PORT_OPEN|cloudflare.com|2053
+PORT_OPEN|cloudflare.com|2096
+PORT_OPEN|microsoft.com|80
+PORT_OPEN|microsoft.com|443
