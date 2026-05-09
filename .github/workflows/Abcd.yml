@@ -1,94 +1,151 @@
-name: The Buster - Iran Network Scanner
+name: Manhwa OCR + Translate + WAN Inpaint
 
 on:
-  schedule:
-    - cron: '0 */2 * * *'
   workflow_dispatch:
+    inputs:
+      image_url:
+        description: 'آدرس عکس مانهوا'
+        required: true
+        default: 'https://i.imgur.com/example.jpg'
+      source_lang:
+        description: 'زبان مبدأ'
+        required: false
+        default: 'Korean'
 
 permissions:
+  models: read
   contents: write
 
 jobs:
-  scan:
+  translate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils curl jq
-
-      - name: Scan DNS
+      - name: Install Dependencies
         run: |
-          echo "=== DNS SCAN ==="
-          mkdir -p scan-results
-          
-          # روش ساده بدون آرایه
-          dig +time=3 +tries=1 @8.8.8.8 github.com 2>/dev/null | grep "Query time" && echo "DNS_OK|Google|8.8.8.8" >> scan-results/dns.log || echo "DNS_FAIL|Google|8.8.8.8" >> scan-results/dns.log
-          dig +time=3 +tries=1 @1.1.1.1 github.com 2>/dev/null | grep "Query time" && echo "DNS_OK|Cloudflare|1.1.1.1" >> scan-results/dns.log || echo "DNS_FAIL|Cloudflare|1.1.1.1" >> scan-results/dns.log
-          dig +time=3 +tries=1 @9.9.9.9 github.com 2>/dev/null | grep "Query time" && echo "DNS_OK|Quad9|9.9.9.9" >> scan-results/dns.log || echo "DNS_FAIL|Quad9|9.9.9.9" >> scan-results/dns.log
-          dig +time=3 +tries=1 @178.22.122.100 github.com 2>/dev/null | grep "Query time" && echo "DNS_OK|Shecan|178.22.122.100" >> scan-results/dns.log || echo "DNS_FAIL|Shecan|178.22.122.100" >> scan-results/dns.log
-          dig +time=3 +tries=1 @185.51.200.2 github.com 2>/dev/null | grep "Query time" && echo "DNS_OK|Electro|185.51.200.2" >> scan-results/dns.log || echo "DNS_FAIL|Electro|185.51.200.2" >> scan-results/dns.log
-          dig +time=3 +tries=1 @10.202.10.10 github.com 2>/dev/null | grep "Query time" && echo "DNS_OK|403|10.202.10.10" >> scan-results/dns.log || echo "DNS_FAIL|403|10.202.10.10" >> scan-results/dns.log
-          dig +time=3 +tries=1 @78.157.42.100 github.com 2>/dev/null | grep "Query time" && echo "DNS_OK|Radar|78.157.42.100" >> scan-results/dns.log || echo "DNS_FAIL|Radar|78.157.42.100" >> scan-results/dns.log
-          dig +time=3 +tries=1 @208.67.222.222 github.com 2>/dev/null | grep "Query time" && echo "DNS_OK|OpenDNS|208.67.222.222" >> scan-results/dns.log || echo "DNS_FAIL|OpenDNS|208.67.222.222" >> scan-results/dns.log
+          pip install -q requests pillow manga-ocr torch torchvision gradio_client
 
-      - name: Scan SNI
+      - name: Download Image
         run: |
-          echo "=== SNI SCAN ==="
-          for SNI in github.com cloudflare.com microsoft.com google.com arvancloud.com vercel.com telegram.org whatsapp.com youtube.com twitter.com; do
-            if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "https://$SNI" 2>/dev/null | grep -q "200\|301\|302"; then
-              echo "✅ $SNI"
-              echo "SNI_OPEN|$SNI" >> scan-results/sni.log
-            else
-              echo "❌ $SNI"
-              echo "SNI_BLOCKED|$SNI" >> scan-results/sni.log
-            fi
-          done
+          mkdir -p manhwa
+          curl -L -o manhwa/original.jpg "${{ github.event.inputs.image_url }}"
+          echo "✅ Downloaded"
 
-      - name: Scan Ports
+      # ============== مرحله ۱: OCR ==============
+      - name: Step 1 - OCR
         run: |
-          echo "=== PORT SCAN ==="
-          for TARGET in github.com cloudflare.com microsoft.com arvancloud.com; do
-            for PORT in 80 443 8080 8443 2053 2096; do
-              if timeout 2 bash -c "echo >/dev/tcp/$TARGET/$PORT" 2>/dev/null; then
-                echo "✅ $TARGET:$PORT"
-                echo "PORT_OPEN|$TARGET|$PORT" >> scan-results/ports.log
-              fi
-            done
-          done
+          python3 << 'EOF'
+          from manga_ocr import MangaOcr
 
-      - name: Runner Info
-        run: |
-          echo "=== RUNNER INFO ==="
-          PUBLIC_IP=$(curl -s https://api.ipify.org)
-          echo "IP: $PUBLIC_IP"
-          curl -s "https://ipapi.co/$PUBLIC_IP/json/" | jq '{ip, city, country}'
-
-      - name: Generate Report
-        run: |
-          mkdir -p buster-reports
-          cat > "buster-reports/report_$(date +%Y%m%d_%H%M).md" << 'EOF'
-          # 🕵️ Buster Report
-          **Time:** $(date)
-          **Runner IP:** $(curl -s https://api.ipify.org)
-          
-          ## DNS
-          $(cat scan-results/dns.log 2>/dev/null | head -10)
-          
-          ## SNI
-          $(cat scan-results/sni.log 2>/dev/null | head -15)
-          
-          ## Ports
-          $(cat scan-results/ports.log 2>/dev/null | head -15)
+          mocr = MangaOcr()
+          text = mocr("manhwa/original.jpg")
+          print(f"📝 OCR Text: {text}")
+          open("manhwa/text_original.txt", "w", encoding="utf-8").write(text)
           EOF
+
+      # ============== مرحله ۲: ترجمه با GitHub Models ==============
+      - name: Step 2 - Translate with GitHub Models
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_LANG: ${{ github.event.inputs.source_lang }}
+        run: |
+          TEXT=$(cat manhwa/text_original.txt)
+          
+          python3 << 'EOF'
+          import requests, os
+
+          text = open("manhwa/text_original.txt").read()
+          token = os.environ["GITHUB_TOKEN"]
+          source_lang = os.environ["SOURCE_LANG"]
+
+          prompt = f"""Translate this manhwa text from {source_lang} to Persian (فارسی). 
+          Keep it natural, fluent, and suitable for manhwa speech bubbles.
+          Return ONLY the translation, nothing else.
+          
+          Original text:
+          {text}"""
+
+          print("🤖 Calling GitHub Models...")
+          resp = requests.post(
+              "https://models.inference.ai.azure.com/chat/completions",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Content-Type": "application/json"
+              },
+              json={
+                  "model": "gpt-4o-mini",
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": 500
+              },
+              timeout=30
+          )
+
+          if resp.status_code == 200:
+              translated = resp.json()["choices"][0]["message"]["content"]
+              print(f"📝 Translated: {translated}")
+              open("manhwa/text_translated.txt", "w", encoding="utf-8").write(translated)
+          else:
+              print(f"❌ Error: {resp.status_code}")
+              print(resp.text[:300])
+          EOF
+
+      # ============== مرحله ۳: WAN Inpainting ==============
+      - name: Step 3 - WAN Inpainting
+        run: |
+          python3 << 'EOF'
+          import time
+          from gradio_client import Client, file
+
+          print("🖼️ Connecting to WAN Inpainting Space...")
+          client = Client("https://instantx-qwen-image-controlnet-inpainting.hf.space/")
+
+          print("📤 Sending image for inpainting...")
+          result = client.predict(
+              image=file("manhwa/original.jpg"),
+              prompt="Remove all text and speech bubbles from this manga panel, clean inpainting",
+              negative_prompt="text, watermark, low quality, blurry",
+              guidance_scale=7.0,
+              num_inference_steps=28,
+              api_name="/predict"
+          )
+
+          print("✅ Inpainting Done!")
+
+          # نتیجه می‌تونه یه رشته (آدرس فایل) یا دیکشنری باشه
+          if isinstance(result, str):
+              with open(result, "rb") as src:
+                  with open("manhwa/cleaned.jpg", "wb") as dst:
+                      dst.write(src.read())
+          elif isinstance(result, dict):
+              if "image" in result:
+                  img_path = result["image"]
+                  with open(img_path, "rb") as src:
+                      with open("manhwa/cleaned.jpg", "wb") as dst:
+                          dst.write(src.read())
+              else:
+                  print(f"⚠️ Unexpected result format: {result.keys()}")
+          else:
+              print(f"⚠️ Unexpected type: {type(result)}")
+          EOF
+
+      # ============== ذخیره ==============
+      - name: Save Results
+        run: |
+          FOLDER="manhwa-results/$(date +%Y%m%d_%H%M)"
+          mkdir -p "$FOLDER"
+          cp manhwa/original.jpg "$FOLDER/01_original.jpg"
+          cp manhwa/cleaned.jpg "$FOLDER/02_cleaned.jpg" 2>/dev/null || echo "No cleaned image"
+          cp manhwa/text_original.txt "$FOLDER/03_original.txt"
+          cp manhwa/text_translated.txt "$FOLDER/04_translated.txt"
 
       - name: Commit
         run: |
-          git config user.name "Buster"
-          git config user.email "buster@bot"
-          git add scan-results/ buster-reports/
-          git commit -m "🕵️ Scan $(date +%H:%M)" || echo "Nothing"
+          git config user.name "ManhwaBot"
+          git config user.email "bot@manhwa"
+          git add manhwa-results/
+          git commit -m "📖 Translation $(date +%H:%M)" || echo "Nothing"
           git push || true
