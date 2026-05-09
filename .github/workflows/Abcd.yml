@@ -10,7 +10,7 @@ on:
       model:
         description: 'مدل مورد نظر'
         required: false
-        default: 'gpt-4o-mini'
+        default: 'gpt-5-mini'
 
 permissions:
   id-token: write
@@ -25,27 +25,14 @@ jobs:
           pip install --upgrade pip -q
           pip install llm llm-github-models -q
 
-      - name: Set GitHub Token
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "$GITHUB_TOKEN" | llm keys set github-models
-
-      - name: List Available Models
-        run: |
-          echo "🔍 مدل‌های موجود:"
-          llm models | grep github || echo "No models listed yet"
-
       - name: Ask AI
         env:
           PROMPT: ${{ github.event.inputs.prompt }}
           MODEL: ${{ github.event.inputs.model }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "📝 سوال: $PROMPT"
           echo "🤖 مدل: $MODEL"
           echo "---"
-          llm prompt -m "github/${MODEL}" "$PROMPT" || \
-          llm prompt -m "github/gpt-4o" "$PROMPT" || \
-          llm prompt -m "github/gpt-4o-mini" "$PROMPT" || \
-          llm prompt -m "github/Phi-3.5-mini-instruct" "$PROMPT"
+          llm prompt -m "github/${MODEL}" --key "$GITHUB_TOKEN" "$PROMPT"
           echo "---"
