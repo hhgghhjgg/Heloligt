@@ -1,215 +1,107 @@
-name: Manhwa Split + Process + Stitch (Fixed Inpaint)
+name: Browser Stream via Puppeteer
 
 on:
   workflow_dispatch:
     inputs:
-      image_url:
-        description: 'آدرس عکس مانهوا (Raw URL)'
-        required: true
-      chunk_height:
-        description: 'ارتفاع هر تکه (پیکسل)'
+      target_url:
+        description: 'آدرس سایتی که می‌خوای باز بشه (پیش‌فرض: wikipedia.org)'
         required: false
-        default: '1024'
+        default: 'https://wikipedia.org'
+      port:
+        description: 'پورت سرور WebSocket (پیش‌فرض: 8080)'
+        required: false
+        default: '8080'
 
 permissions:
-  models: read
   contents: write
 
 jobs:
-  process:
+  browser-stream:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: pip install -q requests pillow gradio_client
+      - name: Setup Node.js and install Puppeteer
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm init -y && npm install puppeteer ws
 
-      # ==================== 1. دانلود و تکه‌تکه ====================
-      - name: Download and Split Image
-        run: |
-          mkdir -p manhwa/chunks manhwa/results manhwa/cleaned_chunks
-
-          URL="${{ github.event.inputs.image_url }}"
-          URL=$(echo "$URL" | sed 's|github.com/.*/blob/|raw.githubusercontent.com/|' | sed 's|/blob/|/|')
-          echo "📥 Downloading: $URL"
-          curl -L -o manhwa/original.jpg "$URL"
-
-          python3 << 'EOF'
-          from PIL import Image
-          import os
-
-          img = Image.open("manhwa/original.jpg")
-          width, height = img.size
-          chunk_h = int(os.environ["CHUNK_HEIGHT"])
-
-          num_chunks = (height + chunk_h - 1) // chunk_h
-          print(f"📐 Image: {width}x{height}, Chunks: {num_chunks}")
-
-          for i in range(num_chunks):
-              top = i * chunk_h
-              bottom = min((i + 1) * chunk_h, height)
-              chunk = img.crop((0, top, width, bottom))
-              chunk.save(f"manhwa/chunks/chunk_{i:04d}.jpg")
-              print(f"  ✂️ Chunk {i}: 0,{top} → {width},{bottom}")
-
-          with open("manhwa/split_info.txt", "w") as f:
-              f.write(f"{width}\n{height}\n{chunk_h}\n{num_chunks}")
-          EOF
+      - name: Start headless browser and open target URL
         env:
-          CHUNK_HEIGHT: ${{ github.event.inputs.chunk_height }}
-
-      # ==================== 2. OCR + Translate per chunk ====================
-      - name: OCR & Translate Each Chunk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_URL: ${{ github.event.inputs.target_url }}
+          PORT: ${{ github.event.inputs.port }}
         run: |
-          python3 << 'EOF'
-          import requests, base64, os, glob
+          cat > browser-stream.js << 'EOF'
+          const puppeteer = require('puppeteer');
+          const WebSocket = require('ws');
+          const http = require('http');
+          const fs = require('fs');
+          const port = process.env.PORT || 8080;
+          const targetURL = process.env.TARGET_URL || 'https://wikipedia.org';
 
-          token = os.environ["GITHUB_TOKEN"]
-          chunks = sorted(glob.glob("manhwa/chunks/chunk_*.jpg"))
-          all_texts = []
+          (async () => {
+            // 1. Launch headless browser
+            const browser = await puppeteer.launch({ headless: 'new' });
+            const page = await browser.newPage();
+            await page.goto(targetURL, { waitUntil: 'networkidle2' });
 
-          for i, chunk_path in enumerate(chunks):
-              print(f"\n📖 Processing chunk {i+1}/{len(chunks)}...")
-              with open(chunk_path, "rb") as f:
-                  img_b64 = base64.b64encode(f.read()).decode("utf-8")
-              prompt = "Read all visible text in this manhwa image (including speech bubbles). Translate it to Persian (فارسی). Return ONLY the translation, nothing else."
-              models = ["gpt-4o-mini", "Phi-4-multimodal-instruct"]
-              translated = None
-              for model in models:
-                  resp = requests.post(
-                      "https://models.inference.ai.azure.com/chat/completions",
-                      headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                      json={"model": model, "messages": [{"role": "user", "content": [
-                          {"type": "text", "text": prompt},
-                          {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-                      ]}], "max_tokens": 1500},
-                      timeout=90
-                  )
-                  if resp.status_code == 200:
-                      ans = resp.json()["choices"][0]["message"]["content"]
-                      if "I can't assist" not in ans.lower() and "sorry" not in ans.lower():
-                          translated = ans
-                          break
-                  print(f"  ⚠️ {model} failed, trying next...")
-              if translated:
-                  print(f"  ✅ Translation: {translated[:100]}...")
-                  all_texts.append(translated)
-              else:
-                  print(f"  ❌ All models failed for chunk {i}")
-                  all_texts.append("")
+            // 2. Start a local WebSocket server so KSWEB can talk to us
+            const server = http.createServer((req, res) => {
+              res.writeHead(200, { 'Content-Type': 'text/plain' });
+              res.end('WebSocket server is running');
+            });
+            const wss = new WebSocket.Server({ server });
+            server.listen(port, () => console.log(`WebSocket server listening on ws://localhost:${port}`));
 
-          with open("manhwa/results/all_translations.txt", "w", encoding="utf-8") as f:
-              for i, text in enumerate(all_texts):
-                  f.write(f"=== CHUNK {i} ===\n{text}\n\n")
-          print(f"\n✅ All chunks processed: {len(all_texts)} chunks")
+            // 3. Write WS address to a file in the repo so KSWEB can find it
+            const wsAddress = `ws://localhost:${port}`;
+            console.log(`Writing WS address to ws_address.txt: ${wsAddress}`);
+            fs.writeFileSync('ws_address.txt', wsAddress);
+
+            // 4. Listen for commands from KSWEB
+            wss.on('connection', (ws) => {
+              console.log('KSWEB connected to WebSocket');
+              ws.on('message', async (msg) => {
+                const command = msg.toString().trim();
+                console.log(`Received command: ${command}`);
+
+                if (command.startsWith('NAVIGATE ')) {
+                  const url = command.replace('NAVIGATE ', '');
+                  console.log(`Navigating to ${url}`);
+                  await page.goto(url, { waitUntil: 'networkidle2' });
+                } else if (command === 'SCREENSHOT') {
+                  const screenshot = await page.screenshot({ encoding: 'base64' });
+                  ws.send(`SCREENSHOT ${screenshot}`);
+                } else if (command === 'HTML') {
+                  const html = await page.content();
+                  ws.send(`HTML ${Buffer.from(html).toString('base64')}`);
+                }
+              });
+            });
+
+            // Keep the process alive
+            console.log('Browser is ready! Waiting for commands...');
+          })();
           EOF
+          node browser-stream.js &
 
-      # ==================== 3. Inpaint per chunk (corrected) ====================
-      - name: Inpaint Each Chunk
+      - name: Wait for browser to be ready and commit WS address
         run: |
-          python3 << 'EOF'
-          from gradio_client import Client, file
-          import glob, shutil, time
+          sleep 5
+          if [ -f ws_address.txt ]; then
+            echo "✅ WebSocket server started at: $(cat ws_address.txt)"
+          else
+            echo "❌ ws_address.txt not found!" && exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ws_address.txt
+          git commit -m "Update WebSocket address" || echo "Nothing to commit"
+          git push
 
-          chunks = sorted(glob.glob("manhwa/chunks/chunk_*.jpg"))
-          success_count = 0
-
-          for i, chunk_path in enumerate(chunks):
-              print(f"\n🖼️ Inpainting chunk {i+1}/{len(chunks)}...")
-              done = False
-              # اول فضای Qwen با api_name صحیح
-              try:
-                  client = Client("https://qwen-qwen-image-edit-2511.hf.space/")
-                  result = client.predict(
-                      images=[file(chunk_path)],
-                      prompt="Remove all text and speech bubbles, clean manga panel, high quality inpainting",
-                      seed=0,
-                      randomize_seed=False,
-                      true_guidance_scale=4.0,
-                      num_inference_steps=40,
-                      rewrite_prompt=True,
-                      api_name="/infer"
-                  )
-                  # خروجی تابع infer یک لیست از تصاویر است
-                  if isinstance(result, list) and len(result) > 0:
-                      shutil.copy(result[0], f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
-                      print("  ✅ Qwen success")
-                      done = True
-                      success_count += 1
-                  elif isinstance(result, str):
-                      shutil.copy(result, f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
-                      done = True
-                      success_count += 1
-              except Exception as e:
-                  print(f"  ⚠️ Qwen failed: {str(e)[:80]}")
-
-              # فضای پشتیبان Lama
-              if not done:
-                  try:
-                      client = Client("https://akhaliq-lama.hf.space/")
-                      result = client.predict(
-                          image=file(chunk_path),
-                          api_name="/predict"
-                      )
-                      if isinstance(result, str):
-                          shutil.copy(result, f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
-                          print("  ✅ Lama success")
-                          done = True
-                          success_count += 1
-                  except Exception as e:
-                      print(f"  ⚠️ Lama also failed: {str(e)[:80]}")
-
-              if not done:
-                  # کپی خود تکه اگر هیچکدام نشد
-                  shutil.copy(chunk_path, f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
-                  print("  ⚠️ Skipped (no inpainting)")
-
-              time.sleep(2)
-
-          print(f"\n✅ Inpainting: {success_count}/{len(chunks)} chunks")
-          EOF
-
-      # ==================== 4. Stitch ====================
-      - name: Stitch Chunks Together
-        run: |
-          python3 << 'EOF'
-          from PIL import Image
-
-          with open("manhwa/split_info.txt") as f:
-              width, height, chunk_h, num_chunks = [int(x) for x in f.read().split()]
-          cleaned = Image.new("RGB", (width, height))
-          for i in range(num_chunks):
-              chunk_path = f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg"
-              try:
-                  chunk = Image.open(chunk_path)
-                  top = i * chunk_h
-                  cleaned.paste(chunk, (0, top))
-              except Exception as e:
-                  print(f"  ⚠️ Missing chunk {i}: {e}")
-          cleaned.save("manhwa/results/final_cleaned.jpg")
-          print("✅ Stitched image saved!")
-          EOF
-
-      # ==================== 5. Save & Commit ====================
-      - name: Save Results
-        run: |
-          TIMESTAMP=$(date +%Y%m%d_%H%M)
-          FOLDER="manhwa-results/${TIMESTAMP}"
-          mkdir -p "$FOLDER"
-          cp manhwa/original.jpg "$FOLDER/01_original.jpg"
-          cp manhwa/results/final_cleaned.jpg "$FOLDER/02_cleaned.jpg"
-          cp manhwa/results/all_translations.txt "$FOLDER/03_translations.txt"
-          echo "✅ Saved to $FOLDER"
-
-      - name: Commit
-        run: |
-          git config user.name "ManhwaBot"
-          git config user.email "bot@manhwa"
-          git add manhwa-results/
-          git commit -m "📖 Split Process $(date +%H:%M)" || echo "Nothing"
-          git push || true
+      - name: Keep alive for 10 minutes
+        run: sleep 600
