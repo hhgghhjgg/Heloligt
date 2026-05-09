@@ -18,7 +18,7 @@ permissions:
 jobs:
   browser-stream:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 360  # ۶ ساعت
 
     steps:
       - name: Checkout repository
@@ -44,8 +44,11 @@ jobs:
           const targetURL = process.env.TARGET_URL || 'https://wikipedia.org';
 
           (async () => {
-            // 1. Launch headless browser
-            const browser = await puppeteer.launch({ headless: 'new' });
+            // 1. Launch headless browser with sandbox disabled
+            const browser = await puppeteer.launch({
+              headless: 'new',
+              args: ['--no-sandbox', '--disable-setuid-sandbox']
+            });
             const page = await browser.newPage();
             await page.goto(targetURL, { waitUntil: 'networkidle2' });
 
@@ -73,12 +76,25 @@ jobs:
                   const url = command.replace('NAVIGATE ', '');
                   console.log(`Navigating to ${url}`);
                   await page.goto(url, { waitUntil: 'networkidle2' });
+                  ws.send('NAVIGATED ' + url);
                 } else if (command === 'SCREENSHOT') {
                   const screenshot = await page.screenshot({ encoding: 'base64' });
                   ws.send(`SCREENSHOT ${screenshot}`);
                 } else if (command === 'HTML') {
                   const html = await page.content();
                   ws.send(`HTML ${Buffer.from(html).toString('base64')}`);
+                } else if (command === 'URL') {
+                  ws.send(`URL ${await page.url()}`);
+                } else if (command.startsWith('CLICK ')) {
+                  const selector = command.replace('CLICK ', '');
+                  await page.click(selector);
+                  ws.send('CLICKED ' + selector);
+                } else if (command.startsWith('TYPE ')) {
+                  const parts = command.replace('TYPE ', '').split('|');
+                  if (parts.length === 2) {
+                    await page.type(parts[0], parts[1]);
+                    ws.send('TYPED ' + parts[0]);
+                  }
                 }
               });
             });
@@ -103,5 +119,5 @@ jobs:
           git commit -m "Update WebSocket address" || echo "Nothing to commit"
           git push
 
-      - name: Keep alive for 10 minutes
-        run: sleep 600
+      - name: Keep alive for 6 hours
+        run: sleep 21600
