@@ -1,4 +1,4 @@
-name: Manhwa OCR + Translate + Qwen Alibaba Inpaint
+name: Manhwa Split + Process + Stitch
 
 on:
   workflow_dispatch:
@@ -6,113 +6,209 @@ on:
       image_url:
         description: 'آدرس عکس مانهوا (Raw URL)'
         required: true
+      chunk_height:
+        description: 'ارتفاع هر تکه (پیکسل)'
+        required: false
+        default: '1024'
 
 permissions:
   models: read
   contents: write
 
 jobs:
-  translate:
+  process:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: pip install -q requests pillow gradio_client
 
-      - name: Download & Validate Image
+      # ==================== ۱. دانلود و تکه‌تکه کردن ====================
+      - name: Download and Split Image
         run: |
-          mkdir -p manhwa
+          mkdir -p manhwa/chunks manhwa/results manhwa/cleaned_chunks
+
+          # Auto-convert blob URL to raw
           URL="${{ github.event.inputs.image_url }}"
           URL=$(echo "$URL" | sed 's|github.com/.*/blob/|raw.githubusercontent.com/|' | sed 's|/blob/|/|')
           echo "📥 Downloading: $URL"
           curl -L -o manhwa/original.jpg "$URL"
-          python3 -c "
-          from PIL import Image
-          img = Image.open('manhwa/original.jpg')
-          print(f'✅ Image loaded: {img.size}, {img.format}')
-          "
 
-      - name: Step 1 - OCR & Translate with GitHub Models Vision
+          python3 << 'EOF'
+          from PIL import Image
+          import os
+
+          img = Image.open("manhwa/original.jpg")
+          width, height = img.size
+          chunk_h = int(os.environ["CHUNK_HEIGHT"])
+
+          # تعداد تکه‌ها
+          num_chunks = (height + chunk_h - 1) // chunk_h
+          print(f"📐 Image: {width}x{height}, Chunks: {num_chunks}")
+
+          for i in range(num_chunks):
+              top = i * chunk_h
+              bottom = min((i + 1) * chunk_h, height)
+              chunk = img.crop((0, top, width, bottom))
+              chunk.save(f"manhwa/chunks/chunk_{i:04d}.jpg")
+              print(f"  ✂️ Chunk {i}: 0,{top} → {width},{bottom}")
+
+          # ذخیره اطلاعات برای چسباندن بعدی
+          with open("manhwa/split_info.txt", "w") as f:
+              f.write(f"{width}\n{height}\n{chunk_h}\n{num_chunks}")
+          EOF
+        env:
+          CHUNK_HEIGHT: ${{ github.event.inputs.chunk_height }}
+
+      # ==================== ۲. OCR + ترجمه برای هر تکه ====================
+      - name: OCR + Translate Each Chunk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 << 'EOF'
-          import requests, base64, os
-
-          with open("manhwa/original.jpg", "rb") as f:
-              img_bytes = f.read()
-          img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-
-          prompt = """Read all text in this manhwa image (even in speech bubbles). Translate it into fluent Persian (فارسی). Return in this exact format:
-
-          ORIGINAL:
-          [Original text here]
-
-          TRANSLATION:
-          [Persian translation here]"""
+          import requests, base64, os, glob
 
           token = os.environ["GITHUB_TOKEN"]
-          resp = requests.post(
-              "https://models.inference.ai.azure.com/chat/completions",
-              headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-              json={
-                  "model": "gpt-4o-mini",
-                  "messages": [{"role": "user", "content": [
-                      {"type": "text", "text": prompt},
-                      {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-                  ]}],
-                  "max_tokens": 1500
-              }, timeout=60
-          )
+          chunks = sorted(glob.glob("manhwa/chunks/chunk_*.jpg"))
 
-          if resp.status_code == 200:
-              answer = resp.json()["choices"][0]["message"]["content"]
-              print(f"✅ Model output:\n{answer}")
-              original = answer.split("ORIGINAL:")[1].split("TRANSLATION:")[0].strip() if "TRANSLATION:" in answer else answer
-              translation = answer.split("TRANSLATION:")[1].strip() if "TRANSLATION:" in answer else ""
-              with open("manhwa/text_original.txt", "w", encoding="utf-8") as f: f.write(original)
-              with open("manhwa/text_translated.txt", "w", encoding="utf-8") as f: f.write(translation)
-          else:
-              print(f"❌ Error: {resp.status_code} - {resp.text[:300]}")
-              open("manhwa/text_original.txt", "w").write("OCR failed")
-              open("manhwa/text_translated.txt", "w").write("Translation failed")
+          all_texts = []
+
+          for i, chunk_path in enumerate(chunks):
+              print(f"\n📖 Processing chunk {i+1}/{len(chunks)}...")
+
+              with open(chunk_path, "rb") as f:
+                  img_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+              prompt = "Read all visible text in this manhwa image (including speech bubbles). Translate it to Persian (فارسی). Return ONLY the translation, nothing else."
+
+              # Try multiple models if needed
+              models = ["gpt-4o-mini", "Phi-4-multimodal-instruct"]
+              translated = None
+
+              for model in models:
+                  resp = requests.post(
+                      "https://models.inference.ai.azure.com/chat/completions",
+                      headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                      json={
+                          "model": model,
+                          "messages": [{"role": "user", "content": [
+                              {"type": "text", "text": prompt},
+                              {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                          ]}],
+                          "max_tokens": 1500
+                      }, timeout=90
+                  )
+
+                  if resp.status_code == 200:
+                      answer = resp.json()["choices"][0]["message"]["content"]
+                      if "I can't assist" not in answer.lower() and "sorry" not in answer.lower():
+                          translated = answer
+                          break
+                  print(f"  ⚠️ {model} failed, trying next...")
+
+              if translated:
+                  print(f"  ✅ Translation: {translated[:100]}...")
+                  all_texts.append(translated)
+              else:
+                  print(f"  ❌ All models failed for chunk {i}")
+                  all_texts.append("")
+
+          # Save all translations
+          with open("manhwa/results/all_translations.txt", "w", encoding="utf-8") as f:
+              for i, text in enumerate(all_texts):
+                  f.write(f"=== CHUNK {i} ===\n{text}\n\n")
+
+          print(f"\n✅ All chunks processed: {len(all_texts)} chunks")
           EOF
 
-      - name: Step 2 - Inpainting with Qwen-Image-Edit Space
+      # ==================== ۳. Inpainting برای هر تکه ====================
+      - name: Inpaint Each Chunk
         run: |
           python3 << 'EOF'
           from gradio_client import Client, file
+          import glob, shutil, time
 
-          print("🖼️ Calling Qwen-Image-Edit Space...")
-          client = Client("https://qwen-qwen-image-edit-2511.hf.space/")
-          result = client.predict(
-              image=file("manhwa/original.jpg"),
-              prompt="Remove all text and speech bubbles, clean manga panel, high quality inpainting",
-              api_name="/predict"
-          )
-          
-          import shutil
-          if isinstance(result, str):
-              shutil.copy(result, "manhwa/cleaned.jpg")
-          elif isinstance(result, dict) and "image" in result:
-              shutil.copy(result["image"], "manhwa/cleaned.jpg")
-          else:
-              print(f"⚠️ Unexpected result: {type(result)}")
-          print("✅ Inpainting Done")
+          chunks = sorted(glob.glob("manhwa/chunks/chunk_*.jpg"))
+          success_count = 0
+
+          # Space fallbacks
+          spaces = [
+              "qwen-qwen-image-edit-2511.hf.space",
+          ]
+
+          for i, chunk_path in enumerate(chunks):
+              print(f"\n🖼️ Inpainting chunk {i+1}/{len(chunks)}...")
+              
+              done = False
+              for space in spaces:
+                  try:
+                      client = Client(f"https://{space}/")
+                      result = client.predict(
+                          image=file(chunk_path),
+                          prompt="Remove all text and speech bubbles, clean manga panel",
+                          api_name="/predict"
+                      )
+                      if isinstance(result, str):
+                          shutil.copy(result, f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
+                          print(f"  ✅ Done with {space}")
+                          done = True
+                          success_count += 1
+                          break
+                  except Exception as e:
+                      print(f"  ⚠️ {space}: {str(e)[:80]}")
+                      continue
+              
+              if not done:
+                  # کپی خود تکه اگر اینپینت نشد
+                  shutil.copy(chunk_path, f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
+                  print(f"  ⚠️ Skipped (no inpainting)")
+
+              time.sleep(2)  # Rate limit
+
+          print(f"\n✅ Inpainting: {success_count}/{len(chunks)} chunks")
           EOF
 
+      # ==================== ۴. چسباندن تکه‌ها ====================
+      - name: Stitch Chunks Together
+        run: |
+          python3 << 'EOF'
+          from PIL import Image
+          import glob
+
+          # خواندن اطلاعات عکس اصلی
+          with open("manhwa/split_info.txt") as f:
+              width, height, chunk_h, num_chunks = [int(x) for x in f.read().split()]
+
+          print(f"🩹 Stitching {num_chunks} chunks into {width}x{height}...")
+
+          cleaned = Image.new("RGB", (width, height))
+
+          for i in range(num_chunks):
+              chunk_path = f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg"
+              try:
+                  chunk = Image.open(chunk_path)
+                  top = i * chunk_h
+                  cleaned.paste(chunk, (0, top))
+              except Exception as e:
+                  print(f"  ⚠️ Missing chunk {i}: {e}")
+
+          cleaned.save("manhwa/results/final_cleaned.jpg")
+          print("✅ Stitched image saved!")
+          EOF
+
+      # ==================== ۵. ذخیره نتایج ====================
       - name: Save Results
         run: |
-          FOLDER="manhwa-results/$(date +%Y%m%d_%H%M)"
+          TIMESTAMP=$(date +%Y%m%d_%H%M)
+          FOLDER="manhwa-results/${TIMESTAMP}"
           mkdir -p "$FOLDER"
-          cp manhwa/original.jpg "$FOLDER/01_original.jpg"
-          cp manhwa/cleaned.jpg "$FOLDER/02_cleaned.jpg" 2>/dev/null || true
-          cp manhwa/text_original.txt "$FOLDER/03_original.txt"
-          cp manhwa/text_translated.txt "$FOLDER/04_translated.txt"
+          cp manhwa/original.jpg "$FOLDER/01_original.jpg" 2>/dev/null || true
+          cp manhwa/results/final_cleaned.jpg "$FOLDER/02_cleaned.jpg" 2>/dev/null || true
+          cp manhwa/results/all_translations.txt "$FOLDER/03_translations.txt" 2>/dev/null || true
           echo "✅ Saved to $FOLDER"
 
       - name: Commit
@@ -120,5 +216,5 @@ jobs:
           git config user.name "ManhwaBot"
           git config user.email "bot@manhwa"
           git add manhwa-results/
-          git commit -m "📖 Manhwa Translation $(date +%H:%M)" || echo "Nothing to commit"
+          git commit -m "📖 Split Process $(date +%H:%M)" || echo "Nothing"
           git push || true
