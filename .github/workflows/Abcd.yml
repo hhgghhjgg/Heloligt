@@ -1,10 +1,10 @@
-name: Manhwa OCR + Translate + WAN Inpaint
+name: Manhwa OCR + Translate + WAN Inpaint (Vision AI)
 
 on:
   workflow_dispatch:
     inputs:
       image_url:
-        description: 'آدرس Raw عکس مانهوا (raw.githubusercontent.com)'
+        description: 'آدرس عکس مانهوا (Raw URL)'
         required: true
 
 permissions:
@@ -14,17 +14,14 @@ permissions:
 jobs:
   translate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install Dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libgomp1
-          pip install -q requests pillow torch torchvision gradio_client paddlepaddle paddleocr
+        run: pip install -q requests pillow gradio_client
 
       - name: Download & Validate Image
         run: |
@@ -40,58 +37,80 @@ jobs:
           print(f'✅ Image loaded: {img.size}, {img.format}')
           "
 
-      - name: Step 1 - OCR with PaddleOCR
-        run: |
-          python3 << 'EOF'
-          from paddleocr import PaddleOCR
-          ocr = PaddleOCR(lang='en')
-          result = ocr.ocr("manhwa/original.jpg")
-          texts = []
-          for page in result:
-              if page:
-                  for line in page:
-                      texts.append(line[1][0])
-          text = '\n'.join(texts) if texts else "(No text found)"
-          print(f"📝 OCR Result:\n{text}")
-          open("manhwa/text_original.txt", "w", encoding="utf-8").write(text)
-          EOF
-
-      - name: Step 2 - Translate with GitHub Models
+      - name: Step 1 - OCR & Translate with GitHub Models Vision
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 << 'EOF'
-          import requests, os
-          text = open("manhwa/text_original.txt").read().strip()
+          import requests, base64, os, json
+
+          # Read image and encode as base64
+          with open("manhwa/original.jpg", "rb") as f:
+              img_bytes = f.read()
+          img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+          image_url = f"data:image/jpeg;base64,{img_b64}"
+
+          prompt = """You are a manhwa translator. Read all text in the image (even if it's in speech bubbles). Then translate it into fluent Persian (فارسی). Return the output in this exact format:
+
+          ORIGINAL:
+          [Original text here]
+
+          TRANSLATION:
+          [Persian translation here]
+          """
+
           token = os.environ["GITHUB_TOKEN"]
-          
-          if not text or text == "(No text found)":
-              print("⚠️ No text to translate, skipping")
-              open("manhwa/text_translated.txt", "w", encoding="utf-8").write("")
-              exit(0)
-          
-          print("🤖 Translating...")
+          payload = {
+              "model": "gpt-4o-mini",
+              "messages": [
+                  {
+                      "role": "user",
+                      "content": [
+                          {"type": "text", "text": prompt},
+                          {"type": "image_url", "image_url": {"url": image_url}}
+                      ]
+                  }
+              ],
+              "max_tokens": 1500
+          }
+
+          print("🤖 Sending image to GPT-4o-mini for OCR + Translation...")
           resp = requests.post(
               "https://models.inference.ai.azure.com/chat/completions",
-              headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-              json={
-                  "model": "gpt-4o-mini",
-                  "messages": [{"role": "user", "content": f"Translate this manhwa text to Persian (فارسی). Return ONLY the translation:\n\n{text}"}],
-                  "max_tokens": 1000
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Content-Type": "application/json"
               },
-              timeout=30
+              json=payload,
+              timeout=60
           )
-          
+
           if resp.status_code == 200:
-              translated = resp.json()["choices"][0]["message"]["content"]
-              print(f"📝 Translated:\n{translated}")
-              open("manhwa/text_translated.txt", "w", encoding="utf-8").write(translated)
+              answer = resp.json()["choices"][0]["message"]["content"]
+              print("✅ Model output:")
+              print(answer)
+              
+              # Split original and translation
+              if "ORIGINAL:" in answer and "TRANSLATION:" in answer:
+                  original = answer.split("ORIGINAL:")[1].split("TRANSLATION:")[0].strip()
+                  translation = answer.split("TRANSLATION:")[1].strip()
+              else:
+                  original = answer
+                  translation = ""
+              
+              with open("manhwa/text_original.txt", "w", encoding="utf-8") as f:
+                  f.write(original)
+              with open("manhwa/text_translated.txt", "w", encoding="utf-8") as f:
+                  f.write(translation)
+              print("📝 Saved original and translation")
           else:
-              print(f"❌ Translation failed: {resp.status_code}")
+              print(f"❌ Error: {resp.status_code}")
+              print(resp.text[:500])
+              open("manhwa/text_original.txt", "w").write("OCR failed")
               open("manhwa/text_translated.txt", "w").write("Translation failed")
           EOF
 
-      - name: Step 3 - WAN Inpainting
+      - name: Step 2 - WAN Inpainting
         run: |
           python3 << 'EOF'
           from gradio_client import Client, file
@@ -102,7 +121,6 @@ jobs:
               prompt="Remove all text and speech bubbles, clean manga panel, high quality inpainting",
               api_name="/predict"
           )
-          # result could be a path string or dict
           if isinstance(result, str):
               import shutil
               shutil.copy(result, "manhwa/cleaned.jpg")
@@ -131,5 +149,5 @@ jobs:
           git config user.name "ManhwaBot"
           git config user.email "bot@manhwa"
           git add manhwa-results/
-          git commit -m "📖 Manhwa $(date +%Y%m%d_%H%M)" || echo "Nothing to commit"
+          git commit -m "📖 Manhwa Vision AI $(date +%Y%m%d_%H%M)" || echo "Nothing to commit"
           git push || true
