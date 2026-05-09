@@ -1,16 +1,12 @@
-name: Browser Stream via Puppeteer
+name: Browser Stream via Log Bridge
 
 on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: 'آدرس سایتی که می‌خوای باز بشه (پیش‌فرض: wikipedia.org)'
+        description: 'آدرس سایت پیش‌فرض'
         required: false
         default: 'https://wikipedia.org'
-      port:
-        description: 'پورت سرور WebSocket (پیش‌فرض: 8080)'
-        required: false
-        default: '8080'
 
 permissions:
   contents: write
@@ -18,106 +14,66 @@ permissions:
 jobs:
   browser-stream:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # ۶ ساعت
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js and install Puppeteer
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: npm init -y && npm install puppeteer ws
 
-      - name: Start headless browser and open target URL
+      - name: Start Browser and WebSocket Bridge
         env:
           TARGET_URL: ${{ github.event.inputs.target_url }}
-          PORT: ${{ github.event.inputs.port }}
         run: |
-          cat > browser-stream.js << 'EOF'
+          cat > bridge.js << 'EOF'
           const puppeteer = require('puppeteer');
           const WebSocket = require('ws');
-          const http = require('http');
-          const fs = require('fs');
-          const port = process.env.PORT || 8080;
-          const targetURL = process.env.TARGET_URL || 'https://wikipedia.org';
+
+          const TARGET = process.env.TARGET_URL || 'https://wikipedia.org';
 
           (async () => {
-            // 1. Launch headless browser with sandbox disabled
             const browser = await puppeteer.launch({
               headless: 'new',
               args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
             const page = await browser.newPage();
-            await page.goto(targetURL, { waitUntil: 'networkidle2' });
+            await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
-            // 2. Start a local WebSocket server so KSWEB can talk to us
-            const server = http.createServer((req, res) => {
-              res.writeHead(200, { 'Content-Type': 'text/plain' });
-              res.end('WebSocket server is running');
-            });
-            const wss = new WebSocket.Server({ server });
-            server.listen(port, () => console.log(`WebSocket server listening on ws://localhost:${port}`));
-
-            // 3. Write WS address to a file in the repo so KSWEB can find it
-            const wsAddress = `ws://localhost:${port}`;
-            console.log(`Writing WS address to ws_address.txt: ${wsAddress}`);
-            fs.writeFileSync('ws_address.txt', wsAddress);
-
-            // 4. Listen for commands from KSWEB
+            // WebSocket server on localhost
+            const wss = new WebSocket.Server({ port: 8080 });
+            
             wss.on('connection', (ws) => {
-              console.log('KSWEB connected to WebSocket');
               ws.on('message', async (msg) => {
-                const command = msg.toString().trim();
-                console.log(`Received command: ${command}`);
-
-                if (command.startsWith('NAVIGATE ')) {
-                  const url = command.replace('NAVIGATE ', '');
-                  console.log(`Navigating to ${url}`);
+                const cmd = msg.toString().trim();
+                
+                if (cmd.startsWith('NAVIGATE ')) {
+                  const url = cmd.replace('NAVIGATE ', '');
                   await page.goto(url, { waitUntil: 'networkidle2' });
-                  ws.send('NAVIGATED ' + url);
-                } else if (command === 'SCREENSHOT') {
-                  const screenshot = await page.screenshot({ encoding: 'base64' });
-                  ws.send(`SCREENSHOT ${screenshot}`);
-                } else if (command === 'HTML') {
+                  console.log(`BRIDGE_RESULT:NAVIGATED:${url}`);
+                  ws.send('OK');
+                } else if (cmd === 'SCREENSHOT') {
+                  const shot = await page.screenshot({ encoding: 'base64' });
+                  console.log(`BRIDGE_RESULT:SCREENSHOT:${shot}`);
+                  ws.send('OK');
+                } else if (cmd === 'HTML') {
                   const html = await page.content();
-                  ws.send(`HTML ${Buffer.from(html).toString('base64')}`);
-                } else if (command === 'URL') {
-                  ws.send(`URL ${await page.url()}`);
-                } else if (command.startsWith('CLICK ')) {
-                  const selector = command.replace('CLICK ', '');
-                  await page.click(selector);
-                  ws.send('CLICKED ' + selector);
-                } else if (command.startsWith('TYPE ')) {
-                  const parts = command.replace('TYPE ', '').split('|');
-                  if (parts.length === 2) {
-                    await page.type(parts[0], parts[1]);
-                    ws.send('TYPED ' + parts[0]);
-                  }
+                  const b64 = Buffer.from(html).toString('base64');
+                  console.log(`BRIDGE_RESULT:HTML:${b64}`);
+                  ws.send('OK');
                 }
               });
             });
 
-            // Keep the process alive
-            console.log('Browser is ready! Waiting for commands...');
+            console.log('BRIDGE_READY');
+            process.stdin.resume();
           })();
           EOF
-          node browser-stream.js &
+          node bridge.js
 
-      - name: Wait for browser to be ready and commit WS address
-        run: |
-          sleep 5
-          if [ -f ws_address.txt ]; then
-            echo "✅ WebSocket server started at: $(cat ws_address.txt)"
-          else
-            echo "❌ ws_address.txt not found!" && exit 1
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ws_address.txt
-          git commit -m "Update WebSocket address" || echo "Nothing to commit"
-          git push
-
-      - name: Keep alive for 6 hours
+      - name: Keep alive
         run: sleep 21600
