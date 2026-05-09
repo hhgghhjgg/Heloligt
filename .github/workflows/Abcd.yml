@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       image_url:
-        description: 'آدرس Raw عکس مانهوا'
+        description: 'آدرس Raw عکس (یا مسیر داخل مخزن)'
         required: true
         default: 'https://raw.githubusercontent.com/hhgghhjgg/Heloligt/main/sites/manga/The%20Great%20Mage%20Of%20The%20Heros%20Party%20Reincarnates/chapter_1/2026-05-06_17-15/images/009.jpg'
 
@@ -18,31 +18,46 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - name: Checkout
+      - name: Checkout (with LFS)
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Install Dependencies
         run: pip install -q requests pillow manga-ocr torch torchvision gradio_client
 
-      - name: Download & Validate Image
+      - name: Locate Image
+        id: locate
         run: |
           mkdir -p manhwa
           URL="${{ github.event.inputs.image_url }}"
           
-          # تبدیل blob URL به raw URL
-          URL=$(echo "$URL" | sed 's|github.com/.*/blob/|raw.githubusercontent.com/|' | sed 's|/blob/|/|')
+          # استخراج مسیر نسبی از URL
+          REL_PATH=$(echo "$URL" | sed 's|https://raw.githubusercontent.com/[^/]*/[^/]*/main/||')
           
-          echo "📥 Downloading: $URL"
-          curl -L -o manhwa/original.jpg "$URL"
+          echo "🔍 Looking for: $REL_PATH"
           
-          # اعتبارسنجی فایل
+          if [ -f "$REL_PATH" ]; then
+            cp "$REL_PATH" manhwa/original.jpg
+            echo "✅ Copied from repo: $REL_PATH"
+          else
+            echo "📥 Downloading from: $URL"
+            curl -L -o manhwa/original.jpg "$URL"
+          fi
+          
+          # اعتبارسنجی
           python3 << 'EOF'
           from PIL import Image
           try:
               img = Image.open("manhwa/original.jpg")
-              print(f"✅ Valid image: {img.size}, Format: {img.format}")
+              print(f"✅ Valid: {img.size}, {img.format}")
           except Exception as e:
-              print(f"❌ Invalid image: {e}")
+              print(f"❌ Invalid: {e}")
+              # نمایش محتوای فایل برای دیباگ
+              with open("manhwa/original.jpg", "rb") as f:
+                  content = f.read()
+              print(f"File size: {len(content)} bytes")
+              print(f"First 100 bytes: {content[:100]}")
               exit(1)
           EOF
 
@@ -58,7 +73,7 @@ jobs:
           EOF
 
       # ============== ترجمه ==============
-      - name: Step 2 - Translate
+      - name: Step 2 - Translate with GitHub Models
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
