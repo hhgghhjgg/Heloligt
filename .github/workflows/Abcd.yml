@@ -1,4 +1,4 @@
-name: Manhwa Split + Process + Stitch
+name: Manhwa Split + Process + Stitch (Fixed Inpaint)
 
 on:
   workflow_dispatch:
@@ -27,12 +27,11 @@ jobs:
       - name: Install dependencies
         run: pip install -q requests pillow gradio_client
 
-      # ==================== ۱. دانلود و تکه‌تکه کردن ====================
+      # ==================== 1. دانلود و تکه‌تکه ====================
       - name: Download and Split Image
         run: |
           mkdir -p manhwa/chunks manhwa/results manhwa/cleaned_chunks
 
-          # Auto-convert blob URL to raw
           URL="${{ github.event.inputs.image_url }}"
           URL=$(echo "$URL" | sed 's|github.com/.*/blob/|raw.githubusercontent.com/|' | sed 's|/blob/|/|')
           echo "📥 Downloading: $URL"
@@ -46,7 +45,6 @@ jobs:
           width, height = img.size
           chunk_h = int(os.environ["CHUNK_HEIGHT"])
 
-          # تعداد تکه‌ها
           num_chunks = (height + chunk_h - 1) // chunk_h
           print(f"📐 Image: {width}x{height}, Chunks: {num_chunks}")
 
@@ -57,15 +55,14 @@ jobs:
               chunk.save(f"manhwa/chunks/chunk_{i:04d}.jpg")
               print(f"  ✂️ Chunk {i}: 0,{top} → {width},{bottom}")
 
-          # ذخیره اطلاعات برای چسباندن بعدی
           with open("manhwa/split_info.txt", "w") as f:
               f.write(f"{width}\n{height}\n{chunk_h}\n{num_chunks}")
           EOF
         env:
           CHUNK_HEIGHT: ${{ github.event.inputs.chunk_height }}
 
-      # ==================== ۲. OCR + ترجمه برای هر تکه ====================
-      - name: OCR + Translate Each Chunk
+      # ==================== 2. OCR + Translate per chunk ====================
+      - name: OCR & Translate Each Chunk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -74,42 +71,31 @@ jobs:
 
           token = os.environ["GITHUB_TOKEN"]
           chunks = sorted(glob.glob("manhwa/chunks/chunk_*.jpg"))
-
           all_texts = []
 
           for i, chunk_path in enumerate(chunks):
               print(f"\n📖 Processing chunk {i+1}/{len(chunks)}...")
-
               with open(chunk_path, "rb") as f:
                   img_b64 = base64.b64encode(f.read()).decode("utf-8")
-
               prompt = "Read all visible text in this manhwa image (including speech bubbles). Translate it to Persian (فارسی). Return ONLY the translation, nothing else."
-
-              # Try multiple models if needed
               models = ["gpt-4o-mini", "Phi-4-multimodal-instruct"]
               translated = None
-
               for model in models:
                   resp = requests.post(
                       "https://models.inference.ai.azure.com/chat/completions",
                       headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                      json={
-                          "model": model,
-                          "messages": [{"role": "user", "content": [
-                              {"type": "text", "text": prompt},
-                              {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-                          ]}],
-                          "max_tokens": 1500
-                      }, timeout=90
+                      json={"model": model, "messages": [{"role": "user", "content": [
+                          {"type": "text", "text": prompt},
+                          {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                      ]}], "max_tokens": 1500},
+                      timeout=90
                   )
-
                   if resp.status_code == 200:
-                      answer = resp.json()["choices"][0]["message"]["content"]
-                      if "I can't assist" not in answer.lower() and "sorry" not in answer.lower():
-                          translated = answer
+                      ans = resp.json()["choices"][0]["message"]["content"]
+                      if "I can't assist" not in ans.lower() and "sorry" not in ans.lower():
+                          translated = ans
                           break
                   print(f"  ⚠️ {model} failed, trying next...")
-
               if translated:
                   print(f"  ✅ Translation: {translated[:100]}...")
                   all_texts.append(translated)
@@ -117,15 +103,13 @@ jobs:
                   print(f"  ❌ All models failed for chunk {i}")
                   all_texts.append("")
 
-          # Save all translations
           with open("manhwa/results/all_translations.txt", "w", encoding="utf-8") as f:
               for i, text in enumerate(all_texts):
                   f.write(f"=== CHUNK {i} ===\n{text}\n\n")
-
           print(f"\n✅ All chunks processed: {len(all_texts)} chunks")
           EOF
 
-      # ==================== ۳. Inpainting برای هر تکه ====================
+      # ==================== 3. Inpaint per chunk (corrected) ====================
       - name: Inpaint Each Chunk
         run: |
           python3 << 'EOF'
@@ -135,58 +119,70 @@ jobs:
           chunks = sorted(glob.glob("manhwa/chunks/chunk_*.jpg"))
           success_count = 0
 
-          # Space fallbacks
-          spaces = [
-              "qwen-qwen-image-edit-2511.hf.space",
-          ]
-
           for i, chunk_path in enumerate(chunks):
               print(f"\n🖼️ Inpainting chunk {i+1}/{len(chunks)}...")
-              
               done = False
-              for space in spaces:
+              # اول فضای Qwen با api_name صحیح
+              try:
+                  client = Client("https://qwen-qwen-image-edit-2511.hf.space/")
+                  result = client.predict(
+                      images=[file(chunk_path)],
+                      prompt="Remove all text and speech bubbles, clean manga panel, high quality inpainting",
+                      seed=0,
+                      randomize_seed=False,
+                      true_guidance_scale=4.0,
+                      num_inference_steps=40,
+                      rewrite_prompt=True,
+                      api_name="/infer"
+                  )
+                  # خروجی تابع infer یک لیست از تصاویر است
+                  if isinstance(result, list) and len(result) > 0:
+                      shutil.copy(result[0], f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
+                      print("  ✅ Qwen success")
+                      done = True
+                      success_count += 1
+                  elif isinstance(result, str):
+                      shutil.copy(result, f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
+                      done = True
+                      success_count += 1
+              except Exception as e:
+                  print(f"  ⚠️ Qwen failed: {str(e)[:80]}")
+
+              # فضای پشتیبان Lama
+              if not done:
                   try:
-                      client = Client(f"https://{space}/")
+                      client = Client("https://akhaliq-lama.hf.space/")
                       result = client.predict(
                           image=file(chunk_path),
-                          prompt="Remove all text and speech bubbles, clean manga panel",
                           api_name="/predict"
                       )
                       if isinstance(result, str):
                           shutil.copy(result, f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
-                          print(f"  ✅ Done with {space}")
+                          print("  ✅ Lama success")
                           done = True
                           success_count += 1
-                          break
                   except Exception as e:
-                      print(f"  ⚠️ {space}: {str(e)[:80]}")
-                      continue
-              
-              if not done:
-                  # کپی خود تکه اگر اینپینت نشد
-                  shutil.copy(chunk_path, f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
-                  print(f"  ⚠️ Skipped (no inpainting)")
+                      print(f"  ⚠️ Lama also failed: {str(e)[:80]}")
 
-              time.sleep(2)  # Rate limit
+              if not done:
+                  # کپی خود تکه اگر هیچکدام نشد
+                  shutil.copy(chunk_path, f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg")
+                  print("  ⚠️ Skipped (no inpainting)")
+
+              time.sleep(2)
 
           print(f"\n✅ Inpainting: {success_count}/{len(chunks)} chunks")
           EOF
 
-      # ==================== ۴. چسباندن تکه‌ها ====================
+      # ==================== 4. Stitch ====================
       - name: Stitch Chunks Together
         run: |
           python3 << 'EOF'
           from PIL import Image
-          import glob
 
-          # خواندن اطلاعات عکس اصلی
           with open("manhwa/split_info.txt") as f:
               width, height, chunk_h, num_chunks = [int(x) for x in f.read().split()]
-
-          print(f"🩹 Stitching {num_chunks} chunks into {width}x{height}...")
-
           cleaned = Image.new("RGB", (width, height))
-
           for i in range(num_chunks):
               chunk_path = f"manhwa/cleaned_chunks/cleaned_{i:04d}.jpg"
               try:
@@ -195,20 +191,19 @@ jobs:
                   cleaned.paste(chunk, (0, top))
               except Exception as e:
                   print(f"  ⚠️ Missing chunk {i}: {e}")
-
           cleaned.save("manhwa/results/final_cleaned.jpg")
           print("✅ Stitched image saved!")
           EOF
 
-      # ==================== ۵. ذخیره نتایج ====================
+      # ==================== 5. Save & Commit ====================
       - name: Save Results
         run: |
           TIMESTAMP=$(date +%Y%m%d_%H%M)
           FOLDER="manhwa-results/${TIMESTAMP}"
           mkdir -p "$FOLDER"
-          cp manhwa/original.jpg "$FOLDER/01_original.jpg" 2>/dev/null || true
-          cp manhwa/results/final_cleaned.jpg "$FOLDER/02_cleaned.jpg" 2>/dev/null || true
-          cp manhwa/results/all_translations.txt "$FOLDER/03_translations.txt" 2>/dev/null || true
+          cp manhwa/original.jpg "$FOLDER/01_original.jpg"
+          cp manhwa/results/final_cleaned.jpg "$FOLDER/02_cleaned.jpg"
+          cp manhwa/results/all_translations.txt "$FOLDER/03_translations.txt"
           echo "✅ Saved to $FOLDER"
 
       - name: Commit
