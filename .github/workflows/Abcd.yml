@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       image_url:
-        description: 'آدرس Raw عکس (یا مسیر داخل مخزن)'
+        description: 'آدرس Raw عکس مانهوا (raw.githubusercontent.com)'
         required: true
-        default: 'https://raw.githubusercontent.com/hhgghhjgg/Heloligt/main/sites/manga/The%20Great%20Mage%20Of%20The%20Heros%20Party%20Reincarnates/chapter_1/2026-05-06_17-15/images/009.jpg'
 
 permissions:
   models: read
@@ -15,119 +14,122 @@ permissions:
 jobs:
   translate:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout (with LFS)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Install Dependencies
-        run: pip install -q requests pillow manga-ocr torch torchvision gradio_client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgomp1
+          pip install -q requests pillow torch torchvision gradio_client paddlepaddle paddleocr
 
-      - name: Locate Image
-        id: locate
+      - name: Download & Validate Image
         run: |
           mkdir -p manhwa
           URL="${{ github.event.inputs.image_url }}"
-          
-          # استخراج مسیر نسبی از URL
-          REL_PATH=$(echo "$URL" | sed 's|https://raw.githubusercontent.com/[^/]*/[^/]*/main/||')
-          
-          echo "🔍 Looking for: $REL_PATH"
-          
-          if [ -f "$REL_PATH" ]; then
-            cp "$REL_PATH" manhwa/original.jpg
-            echo "✅ Copied from repo: $REL_PATH"
-          else
-            echo "📥 Downloading from: $URL"
-            curl -L -o manhwa/original.jpg "$URL"
-          fi
-          
-          # اعتبارسنجی
-          python3 << 'EOF'
+          # Auto-convert blob to raw
+          URL=$(echo "$URL" | sed 's|github.com/.*/blob/|raw.githubusercontent.com/|' | sed 's|/blob/|/|')
+          echo "📥 Downloading: $URL"
+          curl -L -o manhwa/original.jpg "$URL"
+          python3 -c "
           from PIL import Image
-          try:
-              img = Image.open("manhwa/original.jpg")
-              print(f"✅ Valid: {img.size}, {img.format}")
-          except Exception as e:
-              print(f"❌ Invalid: {e}")
-              # نمایش محتوای فایل برای دیباگ
-              with open("manhwa/original.jpg", "rb") as f:
-                  content = f.read()
-              print(f"File size: {len(content)} bytes")
-              print(f"First 100 bytes: {content[:100]}")
-              exit(1)
-          EOF
+          img = Image.open('manhwa/original.jpg')
+          print(f'✅ Image loaded: {img.size}, {img.format}')
+          "
 
-      # ============== OCR ==============
-      - name: Step 1 - OCR
+      - name: Step 1 - OCR with PaddleOCR
         run: |
           python3 << 'EOF'
-          from manga_ocr import MangaOcr
-          mocr = MangaOcr()
-          text = mocr("manhwa/original.jpg")
-          print(f"📝 OCR: {text}")
+          from paddleocr import PaddleOCR
+          ocr = PaddleOCR(lang='en')
+          result = ocr.ocr("manhwa/original.jpg")
+          texts = []
+          for page in result:
+              if page:
+                  for line in page:
+                      texts.append(line[1][0])
+          text = '\n'.join(texts) if texts else "(No text found)"
+          print(f"📝 OCR Result:\n{text}")
           open("manhwa/text_original.txt", "w", encoding="utf-8").write(text)
           EOF
 
-      # ============== ترجمه ==============
       - name: Step 2 - Translate with GitHub Models
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 << 'EOF'
           import requests, os
-          text = open("manhwa/text_original.txt").read()
+          text = open("manhwa/text_original.txt").read().strip()
           token = os.environ["GITHUB_TOKEN"]
-
+          
+          if not text or text == "(No text found)":
+              print("⚠️ No text to translate, skipping")
+              open("manhwa/text_translated.txt", "w", encoding="utf-8").write("")
+              exit(0)
+          
+          print("🤖 Translating...")
           resp = requests.post(
               "https://models.inference.ai.azure.com/chat/completions",
               headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
               json={
                   "model": "gpt-4o-mini",
                   "messages": [{"role": "user", "content": f"Translate this manhwa text to Persian (فارسی). Return ONLY the translation:\n\n{text}"}],
-                  "max_tokens": 500
+                  "max_tokens": 1000
               },
               timeout=30
           )
-          translated = resp.json()["choices"][0]["message"]["content"]
-          print(f"📝 Translated: {translated}")
-          open("manhwa/text_translated.txt", "w", encoding="utf-8").write(translated)
+          
+          if resp.status_code == 200:
+              translated = resp.json()["choices"][0]["message"]["content"]
+              print(f"📝 Translated:\n{translated}")
+              open("manhwa/text_translated.txt", "w", encoding="utf-8").write(translated)
+          else:
+              print(f"❌ Translation failed: {resp.status_code}")
+              open("manhwa/text_translated.txt", "w").write("Translation failed")
           EOF
 
-      # ============== WAN Inpainting ==============
       - name: Step 3 - WAN Inpainting
         run: |
           python3 << 'EOF'
           from gradio_client import Client, file
+          print("🖼️ Calling WAN Inpainting Space...")
           client = Client("https://instantx-qwen-image-controlnet-inpainting.hf.space/")
           result = client.predict(
               image=file("manhwa/original.jpg"),
-              prompt="Remove all text and speech bubbles",
+              prompt="Remove all text and speech bubbles, clean manga panel, high quality inpainting",
               api_name="/predict"
           )
+          # result could be a path string or dict
           if isinstance(result, str):
               import shutil
               shutil.copy(result, "manhwa/cleaned.jpg")
-          print("✅ Inpainting Done")
+              print("✅ Inpainting saved")
+          elif isinstance(result, dict) and "image" in result:
+              import shutil
+              shutil.copy(result["image"], "manhwa/cleaned.jpg")
+              print("✅ Inpainting saved")
+          else:
+              print(f"⚠️ Unexpected WAN result: {type(result)}")
           EOF
 
-      # ============== ذخیره ==============
       - name: Save Results
         run: |
-          FOLDER="manhwa-results/$(date +%Y%m%d_%H%M)"
+          TIMESTAMP=$(date +%Y%m%d_%H%M)
+          FOLDER="manhwa-results/${TIMESTAMP}"
           mkdir -p "$FOLDER"
           cp manhwa/original.jpg "$FOLDER/01_original.jpg" 2>/dev/null || true
           cp manhwa/cleaned.jpg "$FOLDER/02_cleaned.jpg" 2>/dev/null || true
           cp manhwa/text_original.txt "$FOLDER/03_original.txt" 2>/dev/null || true
           cp manhwa/text_translated.txt "$FOLDER/04_translated.txt" 2>/dev/null || true
+          echo "✅ Results saved to $FOLDER"
 
       - name: Commit
         run: |
           git config user.name "ManhwaBot"
           git config user.email "bot@manhwa"
           git add manhwa-results/
-          git commit -m "📖 Translation $(date +%H:%M)" || echo "Nothing"
+          git commit -m "📖 Manhwa $(date +%Y%m%d_%H%M)" || echo "Nothing to commit"
           git push || true
