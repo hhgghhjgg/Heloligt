@@ -1,0 +1,10 @@
+SNI_OPEN|github.com
+SNI_OPEN|cloudflare.com
+SNI_OPEN|microsoft.com
+SNI_OPEN|google.com
+SNI_BLOCKED|arvancloud.com
+SNI_OPEN|vercel.com
+SNI_OPEN|telegram.org
+SNI_OPEN|whatsapp.com
+SNI_OPEN|youtube.com
+SNI_OPEN|twitter.com
