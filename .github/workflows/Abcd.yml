@@ -7,10 +7,6 @@ on:
         description: 'سوال خود را بنویسید'
         required: true
         default: 'یک شعر کوتاه به فارسی بگو'
-      model:
-        description: 'مدل مورد نظر'
-        required: false
-        default: 'gpt-5-mini'
 
 permissions:
   id-token: write
@@ -20,19 +16,22 @@ jobs:
   ask-ai:
     runs-on: ubuntu-latest
     steps:
-      - name: Install LLM and GitHub Models Plugin
-        run: |
-          pip install --upgrade pip -q
-          pip install llm llm-github-models -q
+      - name: Install LLM
+        run: pip install -q llm llm-github-models
 
       - name: Ask AI
         env:
           PROMPT: ${{ github.event.inputs.prompt }}
-          MODEL: ${{ github.event.inputs.model }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "📝 سوال: $PROMPT"
-          echo "🤖 مدل: $MODEL"
           echo "---"
-          llm prompt -m "github/${MODEL}" --key "$GITHUB_TOKEN" "$PROMPT"
+          for MODEL in "gpt-4o" "DeepSeek-R1" "Phi-4" "Llama-4-Maverick-17B-128E-Instruct-FP8"; do
+            echo "🔄 Trying: $MODEL"
+            if llm prompt -m "github/${MODEL}" --key "$GITHUB_TOKEN" "$PROMPT" 2>/dev/null; then
+              echo "✅ Success with $MODEL"
+              break
+            fi
+            echo "❌ $MODEL failed, trying next..."
+          done
           echo "---"
