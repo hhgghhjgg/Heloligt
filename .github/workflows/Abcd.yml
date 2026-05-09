@@ -8,17 +8,21 @@ on:
         required: true
         default: 'یک شعر کوتاه به فارسی بگو'
       model:
-        description: 'مدل مورد نظر (حتماً پیشوندش رو بذار. مثلاً openai/gpt-4.1-mini)'
+        description: 'مدل مورد نظر'
         required: false
         default: 'openai/gpt-4.1-mini'
 
 permissions:
-  models: read  # این خط طلاییه! بدون این، هیچی کار نمی‌کنه
+  models: read
+  contents: write
 
 jobs:
   ai-inference:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: AI Inference
         id: inference
         uses: actions/ai-inference@v1
@@ -26,6 +30,38 @@ jobs:
           prompt: ${{ github.event.inputs.prompt }}
           model: ${{ github.event.inputs.model }}
 
-      - name: Print AI Response
-        id: output
-        run: echo "${{ steps.inference.outputs.response }}"
+      - name: Save Response to File
+        run: |
+          mkdir -p ai-responses
+          TIMESTAMP=$(date '+%Y-%m-%d_%H-%M-%S')
+          MODEL_NAME="${{ github.event.inputs.model }}" | sed 's/\//-/g'
+          
+          cat > "ai-responses/response_${TIMESTAMP}.md" << 'EOF'
+          # 🤖 پاسخ هوش مصنوعی
+
+          **مدل:** ${{ github.event.inputs.model }}
+          **تاریخ:** $(date '+%Y-%m-%d %H:%M:%S')
+          **سوال:** ${{ github.event.inputs.prompt }}
+
+          ---
+
+          ${{ steps.inference.outputs.response }}
+          EOF
+          
+          echo "✅ پاسخ در فایل ai-responses/response_${TIMESTAMP}.md ذخیره شد"
+
+      - name: Commit and Push Response
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ai-responses/
+          git commit -m "🤖 AI Response: ${{ github.event.inputs.prompt }}" || echo "Nothing to commit"
+          git pull --rebase && git push || true
+
+      - name: Show Response in Log
+        run: |
+          echo "=============================================="
+          echo "  پاسخ نهایی:"
+          echo "=============================================="
+          echo "${{ steps.inference.outputs.response }}"
+          echo "=============================================="
