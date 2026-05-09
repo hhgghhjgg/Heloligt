@@ -1,67 +1,278 @@
-name: AI Inference with GitHub Models
+name: The Buster - Iran Network Scanner
 
 on:
+  schedule:
+    - cron: '0 */2 * * *'  # هر ۲ ساعت
   workflow_dispatch:
-    inputs:
-      prompt:
-        description: 'سوال خود را بنویسید'
-        required: true
-        default: 'یک شعر کوتاه به فارسی بگو'
-      model:
-        description: 'مدل مورد نظر'
-        required: false
-        default: 'openai/gpt-4.1-mini'
 
 permissions:
-  models: read
   contents: write
 
 jobs:
-  ai-inference:
+  scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: AI Inference
-        id: inference
-        uses: actions/ai-inference@v1
-        with:
-          prompt: ${{ github.event.inputs.prompt }}
-          model: ${{ github.event.inputs.model }}
-
-      - name: Save Response to File
+      - name: Install Tools
         run: |
-          mkdir -p ai-responses
-          TIMESTAMP=$(date '+%Y-%m-%d_%H-%M-%S')
-          MODEL_NAME="${{ github.event.inputs.model }}" | sed 's/\//-/g'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dnsutils curl tcptraceroute jq mtr-tiny
+
+      - name: 1. Scan DNS Servers (15 DNS)
+        run: |
+          echo "=== DNS SCAN (15 Servers) ==="
           
-          cat > "ai-responses/response_${TIMESTAMP}.md" << 'EOF'
-          # 🤖 پاسخ هوش مصنوعی
+          declare -A DNS_MAP
+          DNS_MAP["8.8.8.8"]="Google"
+          DNS_MAP["8.8.4.4"]="Google-2"
+          DNS_MAP["1.1.1.1"]="Cloudflare"
+          DNS_MAP["1.0.0.1"]="Cloudflare-2"
+          DNS_MAP["9.9.9.9"]="Quad9"
+          DNS_MAP["208.67.222.222"]="OpenDNS"
+          DNS_MAP["178.22.122.100"]="Shecan"
+          DNS_MAP["185.51.200.2"]="Electro"
+          DNS_MAP["10.202.10.10"]="403"
+          DNS_MAP["10.202.10.11"]="403-2"
+          DNS_MAP["78.157.42.100"]="Radar"
+          DNS_MAP["10.202.10.102"]="Shatel"
+          DNS_MAP["194.225.73.133"]="Begzar"
+          DNS_MAP["85.15.1.15"]="Pishgaman"
+          DNS_MAP["94.232.174.6"]="HostIran"
+          
+          mkdir -p scan-results
+          
+          for IP in "${!DNS_MAP[@]}"; do
+            NAME="${DNS_MAP[$IP]}"
+            RESULT=$(dig +time=3 +tries=1 @"$IP" github.com 2>/dev/null)
+            TIME=$(echo "$RESULT" | grep "Query time" | awk '{print $4}')
+            
+            if [ -n "$TIME" ]; then
+              echo "✅ DNS $NAME ($IP): ${TIME}ms"
+              echo "DNS_OK|$NAME|$IP|${TIME}ms" >> scan-results/dns_$(date +%Y%m%d).log
+            else
+              echo "❌ DNS $NAME ($IP): FAILED"
+              echo "DNS_FAIL|$NAME|$IP|TIMEOUT" >> scan-results/dns_$(date +%Y%m%d).log
+            fi
+          done
 
-          **مدل:** ${{ github.event.inputs.model }}
-          **تاریخ:** $(date '+%Y-%m-%d %H:%M:%S')
-          **سوال:** ${{ github.event.inputs.prompt }}
+      - name: 2. Scan SNI Domains (50+ SNIs)
+        run: |
+          echo "=== SNI SCAN (50+ Domains) ==="
+          
+          SNI_LIST=(
+            "github.com"
+            "cloudflare.com"
+            "microsoft.com"
+            "google.com"
+            "youtube.com"
+            "facebook.com"
+            "twitter.com"
+            "instagram.com"
+            "whatsapp.com"
+            "telegram.org"
+            "netflix.com"
+            "amazon.com"
+            "apple.com"
+            "wikipedia.org"
+            "reddit.com"
+            "stackoverflow.com"
+            "docker.com"
+            "npmjs.com"
+            "python.org"
+            "nodejs.org"
+            "arvancloud.com"
+            "vercel.com"
+            "netlify.com"
+            "heroku.com"
+            "digitalocean.com"
+            "linode.com"
+            "vultr.com"
+            "oracle.com"
+            "azure.com"
+            "aws.amazon.com"
+            "gcp.google.com"
+            "yahoo.com"
+            "bing.com"
+            "duckduckgo.com"
+            "twitch.tv"
+            "spotify.com"
+            "discord.com"
+            "slack.com"
+            "zoom.us"
+            "skype.com"
+            "tiktok.com"
+            "snapchat.com"
+            "pinterest.com"
+            "linkedin.com"
+            "medium.com"
+            "quora.com"
+            "bbc.com"
+            "cnn.com"
+            "nytimes.com"
+            "theguardian.com"
+          )
+          
+          for SNI in "${SNI_LIST[@]}"; do
+            if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "https://$SNI" 2>/dev/null | grep -q "200\|301\|302\|403"; then
+              echo "✅ SNI $SNI: OPEN"
+              echo "SNI_OPEN|$SNI" >> scan-results/sni_$(date +%Y%m%d).log
+            else
+              echo "❌ SNI $SNI: BLOCKED/TIMEOUT"
+              echo "SNI_BLOCKED|$SNI" >> scan-results/sni_$(date +%Y%m%d).log
+            fi
+          done
 
-          ---
+      - name: 3. Scan Ports (20 Ports x 10 Targets)
+        run: |
+          echo "=== PORT SCAN (20 Ports x 10 Targets) ==="
+          
+          PORTS=(80 443 8080 8443 2053 2083 2086 2087 2096 8443 8880 500 4500 51820 993 465 587 143 110 22)
+          TARGETS=(
+            "github.com"
+            "cloudflare.com"
+            "microsoft.com"
+            "google.com"
+            "arvancloud.com"
+            "vercel.com"
+            "fastly.com"
+            "akamai.com"
+            "stackpath.com"
+            "cdn77.com"
+          )
+          
+          for TARGET in "${TARGETS[@]}"; do
+            for PORT in "${PORTS[@]}"; do
+              if timeout 2 bash -c "echo >/dev/tcp/$TARGET/$PORT" 2>/dev/null; then
+                echo "✅ $TARGET:$PORT OPEN"
+                echo "PORT_OPEN|$TARGET|$PORT" >> scan-results/ports_$(date +%Y%m%d).log
+              fi
+            done
+          done
 
-          ${{ steps.inference.outputs.response }}
+      - name: 4. Scan IP Ranges (GitHub + Cloud Providers)
+        run: |
+          echo "=== IP RANGE SCAN ==="
+          
+          IP_RANGES=(
+            "140.82.112.0/20:GitHub"
+            "185.199.108.0/22:GitHub-Pages"
+            "13.64.0.0/11:Azure"
+            "52.0.0.0/8:AWS"
+            "34.0.0.0/8:Google-Cloud"
+          )
+          
+          for RANGE in "${IP_RANGES[@]}"; do
+            CIDR="${RANGE%%:*}"
+            NAME="${RANGE##*:}"
+            NETWORK=$(echo "$CIDR" | cut -d'/' -f1 | cut -d'.' -f1-3)
+            REP_IP="${NETWORK}.1"
+            
+            if ping -c 1 -W 2 "$REP_IP" 2>/dev/null | grep -q "bytes from"; then
+              echo "✅ Range $NAME ($CIDR): REACHABLE"
+              echo "RANGE_OK|$NAME|$CIDR" >> scan-results/ranges_$(date +%Y%m%d).log
+            else
+              echo "❌ Range $NAME ($CIDR): UNREACHABLE"
+              echo "RANGE_FAIL|$NAME|$CIDR" >> scan-results/ranges_$(date +%Y%m%d).log
+            fi
+          done
+
+      - name: 5. Trace Routes (MTR)
+        run: |
+          echo "=== TRACEROUTE ==="
+          
+          for TARGET in github.com cloudflare.com microsoft.com arvancloud.com; do
+            echo "--- MTR to $TARGET ---"
+            mtr -r -c 3 -n "$TARGET" 2>/dev/null || echo "MTR failed for $TARGET"
+            echo ""
+          done
+
+      - name: 6. Current Runner Info
+        run: |
+          echo "=== RUNNER INFO ==="
+          PUBLIC_IP=$(curl -s https://api.ipify.org)
+          echo "Runner IP: $PUBLIC_IP"
+          curl -s "https://ipapi.co/$PUBLIC_IP/json/" | jq '{ip, city, region, country, org, asn}'
+          echo ""
+          echo "Interface Info:"
+          ip addr show | grep "inet "
+
+      - name: 7. Test Proxy Protocols
+        run: |
+          echo "=== PROXY PROTOCOL TEST ==="
+          
+          # تست VLESS
+          echo "Testing VLESS connection..."
+          
+          # دانلود XRay
+          curl -L -o xray-test.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip 2>/dev/null
+          unzip -o xray-test.zip -d xray-test 2>/dev/null
+          chmod +x xray-test/xray
+          
+          # تست سریع VLESS
+          UUID=$(cat /proc/sys/kernel/random/uuid)
+          cat > xray-test/config.json << EOF
+          {
+            "inbounds": [{
+              "port": 10086,
+              "protocol": "vless",
+              "settings": {"clients": [{"id": "$UUID"}], "decryption": "none"},
+              "streamSettings": {"network": "tcp"}
+            }],
+            "outbounds": [{"protocol": "freedom"}]
+          }
           EOF
           
-          echo "✅ پاسخ در فایل ai-responses/response_${TIMESTAMP}.md ذخیره شد"
+          cd xray-test && timeout 5 ./xray run -config config.json &
+          sleep 3
+          if curl -s -x socks5://127.0.0.1:10086 https://api.ipify.org 2>/dev/null; then
+            echo "✅ VLESS: WORKING"
+            echo "PROTO_VLESS|WORKING" >> ../scan-results/protocols_$(date +%Y%m%d).log
+          else
+            echo "❌ VLESS: BLOCKED"
+            echo "PROTO_VLESS|BLOCKED" >> ../scan-results/protocols_$(date +%Y%m%d).log
+          fi
+          cd ..
 
-      - name: Commit and Push Response
+      - name: 8. Generate Master Report
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ai-responses/
-          git commit -m "🤖 AI Response: ${{ github.event.inputs.prompt }}" || echo "Nothing to commit"
-          git pull --rebase && git push || true
+          mkdir -p buster-reports
+          
+          cat > "buster-reports/report_$(date +%Y%m%d_%H%M).md" << 'EOF'
+          # 🕵️ The Buster - Iran Network Intelligence Report
+          **زمان اسکن:** $(date '+%Y-%m-%d %H:%M:%S')
+          **Runner IP:** $(curl -s https://api.ipify.org)
+          **Location:** $(curl -s "https://ipapi.co/$(curl -s https://api.ipify.org)/country/")
+          
+          ---
+          ## نتایج اسکن
+          
+          ### DNS (${DNS_COUNT:-15} Servers)
+          $(cat scan-results/dns_*.log 2>/dev/null | head -20 | while IFS='|' read status name ip time; do echo "- **$status** $name ($ip): $time"; done)
+          
+          ### SNI (${SNI_COUNT:-50}+ Domains)
+          $(cat scan-results/sni_*.log 2>/dev/null | head -30 | while IFS='|' read status sni; do echo "- **$status** $sni"; done)
+          
+          ### Ports
+          $(cat scan-results/ports_*.log 2>/dev/null | head -20 | while IFS='|' read status target port; do echo "- **$status** $target:$port"; done)
+          
+          ### Protocols
+          $(cat scan-results/protocols_*.log 2>/dev/null | while IFS='|' read status proto; do echo "- **$status** $proto"; done)
+          
+          ---
+          *Generated by The Buster on GitHub Actions*
+          EOF
+          
+          echo "✅ گزارش نهایی در buster-reports/ ذخیره شد"
+          cat "buster-reports/report_$(date +%Y%m%d_%H%M).md"
 
-      - name: Show Response in Log
+      - name: Commit Results
         run: |
-          echo "=============================================="
-          echo "  پاسخ نهایی:"
-          echo "=============================================="
-          echo "${{ steps.inference.outputs.response }}"
-          echo "=============================================="چ
+          git config user.name "The Buster"
+          git config user.email "buster@github.com"
+          git add scan-results/ buster-reports/
+          git commit -m "🕵️ Buster Scan $(date +%Y%m%d_%H%M)" || echo "Nothing new"
+          git push || true
