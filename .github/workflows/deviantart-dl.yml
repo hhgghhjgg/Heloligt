@@ -1,98 +1,141 @@
-name: Deploy VLESS Reality with Iranian SNI
+name: CF-Scan-TolidMelli
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 */4 * * *' # هر 4 ساعت یکبار اجرا می‌شود
+    inputs:
+      cdn:
+        description: 'CDN Provider'
+        required: true
+        type: choice
+        default: 'cloudflare'
+        options:
+          - 'cloudflare'
+          - 'cloudfront'
+          - 'fastly'
+          - 'all'
+      max_workers:
+        description: 'Max threads'
+        required: false
+        type: number
+        default: 400
+      timeout_per_ip:
+        description: 'Timeout per IP (seconds)'
+        required: false
+        type: number
+        default: 2
+      randomize:
+        description: 'Randomize scan'
+        required: false
+        type: boolean
+        default: true
+      random_ips_per_range:
+        description: 'Random IPs per /24 range'
+        required: false
+        type: number
+        default: 255
+      port:
+        description: 'Port'
+        required: false
+        type: number
+        default: 443
+
+permissions:
+  contents: write
 
 jobs:
-  deploy:
+  scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+
     steps:
-      - name: Install Xray
+      - name: Clone CF-Scan-TolidMelli
         run: |
-          # Install required packages
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
+          git clone https://github.com/AghaFarokh/CF-Scan-TolidMelli.git
+          cd CF-Scan-TolidMelli
+          echo "✅ Repository cloned"
 
-          # Download and install Xray
-          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip Xray-linux-64.zip -d xray
-          cd xray
-          sudo mv xray /usr/local/bin/
-
-          # Generate a UUID and keys
-          USER_ID=$(/usr/local/bin/xray uuid)
-          PRIVATE_KEY=$(/usr/local/bin/xray x25519 | grep "Private key" | awk '{print $3}')
-          PUBLIC_KEY=$(/usr/local/bin/xray x25519 -i "$PRIVATE_KEY" | grep "Public key" | awk '{print $3}')
-
-          # Create server configuration
-          cat > /usr/local/etc/xray/config.json << EOF
-{
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "port": 443,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
+      - name: Configure Scan
+        working-directory: ./CF-Scan-TolidMelli
+        run: |
+          cat > config.json << 'EOF'
           {
-            "id": "$USER_ID",
-            "flow": "xtls-rprx-vision"
+            "cdn": "${{ github.event.inputs.cdn }}",
+            "cdn_test_domains": {
+              "cloudflare": "chatgpt.com",
+              "cloudfront": "aws.amazon.com",
+              "fastly": "github.githubassets.com"
+            },
+            "test_path": "/",
+            "timeout": ${{ github.event.inputs.timeout_per_ip }},
+            "max_workers": ${{ github.event.inputs.max_workers }},
+            "test_download": true,
+            "download_size": 102400,
+            "port": ${{ github.event.inputs.port }},
+            "randomize": ${{ github.event.inputs.randomize }},
+            "random_ips_per_range": ${{ github.event.inputs.random_ips_per_range }},
+            "mix_ranges": true
           }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "sheypoor.com:443",
-          "serverNames": [
-            "sheypoor.com"
-          ],
-          "privateKey": "$PRIVATE_KEY"
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
+          EOF
+          echo "✅ Configuration saved:"
+          cat config.json
 
-          # Run Xray in the background
-          sudo /usr/local/bin/xray run -config /usr/local/etc/xray/config.json &
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Display Connection Info
+      - name: Run Scanner
+        working-directory: ./CF-Scan-TolidMelli
         run: |
-          echo "✅ VLESS Reality is now running!"
-          echo "---------------------------------"
-          echo "Server IP: $(curl -s ifconfig.me)"
-          echo "UUID: $USER_ID"
-          echo "Public Key: $PUBLIC_KEY"
-          echo ""
-          echo "To connect, use the following configuration in your VLESS client (e.g., Nekobox, v2rayNG):"
-          echo ""
-          echo "Protocol: VLESS"
-          echo "Address: $(curl -s ifconfig.me)"
-          echo "Port: 443"
-          echo "UUID: $USER_ID"
-          echo "Flow: xtls-rprx-vision"
-          echo "Security: Reality"
-          echo "SNI: sheypoor.com"
-          echo "Public Key (pbk): $PUBLIC_KEY"
-          echo ""
-          echo "The server will run for the duration of the GitHub Actions job (max 6 hours)."
-          echo "---------------------------------"
-          # Keep the workflow alive for 6 hours
-          sleep 21600
+          echo "🚀 Starting CF-Scan-TolidMelli..."
+          
+          # Map CDN choice to number for interactive prompt
+          case "${{ github.event.inputs.cdn }}" in
+            "cloudflare") CHOICE="1" ;;
+            "cloudfront") CHOICE="2" ;;
+            "fastly")      CHOICE="3" ;;
+            "all")         CHOICE="4" ;;
+            *)             CHOICE="1" ;;
+          esac
+          
+          # Run scanner with piped choice
+          echo "$CHOICE" | python3 cf_scanner.py || true
+          
+          echo "✅ Scan completed!"
+
+      - name: Show Results
+        working-directory: ./CF-Scan-TolidMelli
+        run: |
+          echo "=============================================="
+          echo "📊 Scan Results"
+          echo "=============================================="
+          
+          for f in working_ips_*.txt; do
+            if [ -f "$f" ]; then
+              COUNT=$(wc -l < "$f")
+              echo ""
+              echo "📁 $f ($COUNT IPs found)"
+              if [ "$COUNT" -gt 0 ]; then
+                echo "   Top 10 IPs:"
+                head -10 "$f" | sed 's/^/   /'
+              fi
+            fi
+          done
+          
+          for f in working_ips_*.json; do
+            if [ -f "$f" ]; then
+              COUNT=$(python3 -c "import json; print(len(json.load(open('$f'))))" 2>/dev/null || echo "?")
+              echo ""
+              echo "📁 $f ($COUNT entries)"
+            fi
+          done
+
+      - name: Copy Results to Repository
+        run: |
+          mkdir -p scan-results
+          cp CF-Scan-TolidMelli/working_ips_*.txt scan-results/ 2>/dev/null || true
+          cp CF-Scan-TolidMelli/working_ips_*.json scan-results/ 2>/dev/null || true
+          echo "✅ Results copied to scan-results/"
+
+      - name: Commit and Push Results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add scan-results/
+          git commit -m "📡 CF-Scan ${{ github.event.inputs.cdn }} $(date +%Y%m%d_%H%M)" || echo "Nothing to commit"
+          git pull --rebase && git push || true
