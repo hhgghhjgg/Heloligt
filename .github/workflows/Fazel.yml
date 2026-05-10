@@ -1,79 +1,302 @@
-name: Test Cloudflare Worker
+name: Fetch Telegram Posts (Hybrid)
 
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'نام کاربری کانال (بدون @)'
+        required: true
+        default: 'mitivpn'
+      count:
+        description: 'تعداد پست‌های آخر'
+        required: false
+        default: '20'
 
 permissions:
   contents: write
 
 jobs:
-  test:
+  fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 25
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Test Worker
-        run: |
-          echo "🧪 Testing Cloudflare Worker..."
-          
-          # آدرس Worker خودت رو اینجا بذار
-          WORKER_URL="https://morning-waterfall-79c0.workers.dev"
-          
-          echo "📡 Sending request to: $WORKER_URL"
-          
-          # تست ۱: درخواست ساده
-          echo ""
-          echo "=== Test 1: GET Request ==="
-          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" "$WORKER_URL" 2>&1)
-          HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
-          BODY=$(echo "$RESPONSE" | sed '/HTTP_CODE:/d')
-          
-          echo "HTTP Status: $HTTP_CODE"
-          echo "Response body (first 500 chars):"
-          echo "$BODY" | head -c 500
-          
-          # تست ۲: درخواست با User-Agent موبایل
-          echo ""
-          echo "=== Test 2: Mobile User-Agent ==="
-          MOBILE_RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
-            -H "User-Agent: Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36" \
-            "$WORKER_URL" 2>&1)
-          MOBILE_CODE=$(echo "$MOBILE_RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
-          echo "HTTP Status: $MOBILE_CODE"
-          
-          # تست ۳: DNS Resolution
-          echo ""
-          echo "=== Test 3: DNS Resolution ==="
-          WORKER_HOST=$(echo "$WORKER_URL" | sed 's|https://||')
-          nslookup "$WORKER_HOST" 2>&1 || echo "DNS lookup failed"
-          
-          # ذخیره نتایج
-          mkdir -p sites/worker-test
-          echo "Test URL: $WORKER_URL" > sites/worker-test/result.txt
-          echo "HTTP Status: $HTTP_CODE" >> sites/worker-test/result.txt
-          echo "Mobile Status: $MOBILE_CODE" >> sites/worker-test/result.txt
-          echo "" >> sites/worker-test/result.txt
-          echo "=== Response Body ===" >> sites/worker-test/result.txt
-          echo "$BODY" | head -c 2000 >> sites/worker-test/result.txt
-          
-          # نتیجه‌گیری
-          echo ""
-          echo "=== Summary ==="
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "✅ Worker is ACTIVE and responding!"
-          elif [ "$HTTP_CODE" = "530" ] || [ "$HTTP_CODE" = "000" ]; then
-            echo "⚠️ Worker is OFFLINE or not deployed"
-          else
-            echo "❓ Worker returned HTTP $HTTP_CODE"
-          fi
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4
 
-      - name: Commit results
+      - name: Fetch posts from Telegram
+        env:
+          CHANNEL: ${{ github.event.inputs.channel }}
+          COUNT: ${{ github.event.inputs.count }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, requests, re, time, uuid
+          from bs4 import BeautifulSoup
+          from datetime import datetime
+          from pathlib import Path
+          from urllib.parse import unquote
+
+          channel = os.environ["CHANNEL"]
+          target_count = int(os.environ["COUNT"])
+
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              "Accept-Language": "en-US,en;q=0.5",
+          }
+
+          # جمع‌آوری پست‌ها از t.me/s
+          all_messages = []
+          before_id = None
+          channel_title = f'@{channel}'
+
+          while len(all_messages) < target_count:
+              url = f"https://t.me/s/{channel}"
+              if before_id:
+                  url += f"?before={before_id}"
+              print(f"📡 Fetching: {url}")
+              resp = requests.get(url, headers=headers, timeout=30)
+              if resp.status_code != 200:
+                  break
+              soup = BeautifulSoup(resp.text, 'html.parser')
+              if not before_id:
+                  title_tag = soup.find('meta', property='og:title')
+                  if title_tag:
+                      channel_title = title_tag['content']
+                      channel_title = re.sub(r'\s*\[ALL CHAPTERS\]', '', channel_title)
+                      channel_title = re.sub(r'^Telegram:\s*(Contact\s*)?', '', channel_title)
+                      channel_title = channel_title.replace('@', '').strip()
+              messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+              if not messages:
+                  break
+              for msg in messages:
+                  if len(all_messages) >= target_count:
+                      break
+                  all_messages.append(msg)
+              last_msg = messages[-1]
+              msg_data = last_msg.get('data-post', '')
+              before_id = msg_data.split('/')[-1] if msg_data else None
+              if not before_id:
+                  break
+              print(f"  Progress: {len(all_messages)}/{target_count}")
+
+          latest = all_messages[:target_count]
+          print(f"\n📊 Processing {len(latest)} messages")
+
+          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+          output_dir = f"sites/telegram/{channel}/{timestamp}"
+          media_dir = f"{output_dir}/media"
+          files_dir = f"{output_dir}/files"
+          Path(media_dir).mkdir(parents=True, exist_ok=True)
+          Path(files_dir).mkdir(parents=True, exist_ok=True)
+
+          owner, repo, branch = "hhgghhjgg", "Heloligt", "main"
+          MEDIA_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/media/"
+          FILES_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/files/"
+
+          downloaded_hashes = set()
+
+          def safe_download(url, save_dir, custom_name=None, timeout=60):
+              try:
+                  url_hash = str(hash(url))
+                  if url_hash in downloaded_hashes:
+                      return None
+                  
+                  resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
+                  if resp.status_code != 200:
+                      return None
+                  
+                  if custom_name:
+                      fname = custom_name
+                  else:
+                      cd = resp.headers.get('Content-Disposition', '')
+                      m = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)', cd)
+                      if m:
+                          fname = unquote(m.group(1))
+                      else:
+                          fname = url.split('/')[-1].split('?')[0]
+                  
+                  fname = re.sub(r'[\\/*?:"<>|]', '_', fname or 'file')
+                  if len(fname) > 120:
+                      name, ext = os.path.splitext(fname)
+                      fname = name[:80] + ext
+                  
+                  fpath = os.path.join(save_dir, fname)
+                  if os.path.exists(fpath):
+                      base, ext = os.path.splitext(fname)
+                      counter = 1
+                      while os.path.exists(os.path.join(save_dir, f"{base}_{counter}{ext}")):
+                          counter += 1
+                      fname = f"{base}_{counter}{ext}"
+                      fpath = os.path.join(save_dir, fname)
+                  
+                  with open(fpath, "wb") as f:
+                      for chunk in resp.iter_content(8192):
+                          f.write(chunk)
+                  
+                  sz = os.path.getsize(fpath) // 1024
+                  downloaded_hashes.add(url_hash)
+                  print(f"    ✅ {fname} ({sz}KB)")
+                  return fname
+              except Exception as e:
+                  print(f"    ❌ {str(e)[:50]}")
+                  return None
+
+          # اسکرپر اصلی برای عکس و ویدیو
+          def make_static_url(url):
+              if 't.me/' in url and '/s/' not in url:
+                  return url.replace('t.me/', 't.me/s/')
+              return url
+
+          def extract_buttons(soup):
+              buttons = []
+              for btn in soup.find_all('a', class_='tgme_widget_message_inline_button'):
+                  href = btn.get('href')
+                  if href:
+                      buttons.append(href)
+              return buttons
+
+          # API واسط برای دانلود فایل (npvt و ...)
+          def download_file_via_api(telegram_link, save_dir):
+              api_url = "https://telegramdownloader.net/proxy.php"
+              data = {"telegram_link": telegram_link}
+              
+              print(f"    🌐 Resolving file link: {telegram_link}")
+              try:
+                  resp = requests.post(api_url, headers=headers, data=data, timeout=15)
+                  resp.raise_for_status()
+                  result = resp.json()
+                  raw_url = result.get('data', {}).get('data', {}).get('link')
+                  file_name = result.get('data', {}).get('data', {}).get('file_name')
+                  
+                  if not raw_url or not file_name:
+                      print("    ⚠️ Could not extract download link")
+                      return None
+                  
+                  print(f"    📁 Resolved: {file_name}")
+                  fname = safe_download(raw_url, save_dir, custom_name=file_name)
+                  return fname
+              except Exception as e:
+                  print(f"    ❌ API download error: {str(e)[:80]}")
+                  return None
+
+          posts_data = []
+
+          for idx, msg in enumerate(latest):
+              msg_id = msg.get('data-post', f'post-{idx}')
+              text_div = msg.find('div', class_='tgme_widget_message_text')
+              raw_text = text_div.get_text('\n', strip=True) if text_div else ""
+              date_tag = msg.find('time', class_='time')
+              date_str = date_tag.get('datetime', '') if date_tag else ''
+              views_tag = msg.find('span', class_='tgme_widget_message_views')
+              views = views_tag.get_text(strip=True) if views_tag else ''
+
+              links = []
+              if text_div:
+                  for a in text_div.find_all('a', href=True):
+                      href = a['href']
+                      if href.startswith('/'):
+                          href = f"https://t.me{href}"
+                      links.append(href)
+
+              # عکس‌ها - از صفحه اصلی کانال
+              photos = []
+              for pw in msg.find_all('a', class_='tgme_widget_message_photo_wrap'):
+                  style = pw.get('style', '')
+                  m = re.search(r"background-image:url\('([^']+)'\)", style)
+                  if m:
+                      fname = safe_download(m.group(1), media_dir)
+                      if fname:
+                          photos.append(fname)
+
+              # ویدیوها - از صفحه اصلی کانال
+              videos = []
+              for vt in msg.find_all('video'):
+                  src = vt.get('src') or vt.get('data-video', '')
+                  if src:
+                      fname = safe_download(src, media_dir, timeout=120)
+                      if fname:
+                          videos.append(fname)
+
+              files_downloaded = []
+
+              # متد A: داکیومنت رسمی
+              doc_wrap = msg.find('a', class_='tgme_widget_message_document_wrap')
+              if doc_wrap:
+                  doc_url = doc_wrap.get('href')
+                  if doc_url:
+                      if doc_url.startswith('/'):
+                          doc_url = f"https://t.me{doc_url}"
+                      
+                      # اول با API واسط امتحان کن
+                      fname = download_file_via_api(doc_url, files_dir)
+                      if fname:
+                          files_downloaded.append(fname)
+                      else:
+                          # Fallback به اسکرپ مستقیم
+                          static_url = make_static_url(doc_url)
+                          fname = safe_download(static_url, files_dir, timeout=120)
+                          if fname:
+                              files_downloaded.append(fname)
+
+              # متد B: لینک‌های عددی (مثل t.me/channel/123)
+              for link in links:
+                  if re.search(r't\.me/[^/]+/\d+$', link):
+                      fname = download_file_via_api(link, files_dir)
+                      if fname and fname not in files_downloaded:
+                          files_downloaded.append(fname)
+
+              # متد C: لینک‌های مستقیم به فایل (از متن)
+              for link in links:
+                  clean_link = link.split('?')[0].split('/')[-1].lower()
+                  if any(clean_link.endswith(ext) for ext in ['.npvt','.pdf','.zip','.rar','.7z','.apk','.epub','.mobi']):
+                      if link not in files_downloaded:
+                          fname = safe_download(link, files_dir, timeout=120)
+                          if fname: files_downloaded.append(fname)
+
+              # متد D: دکمه‌های inline
+              btns = extract_buttons(msg)
+              for btn_url in btns:
+                  if 't.me/' in btn_url:
+                      fname = download_file_via_api(btn_url, files_dir)
+                      if fname and fname not in files_downloaded:
+                          files_downloaded.append(fname)
+
+              posts_data.append({
+                  "id": msg_id, "date": date_str, "text": raw_text,
+                  "views": views, "links": links,
+                  "photos": photos, "videos": videos, "files": files_downloaded,
+              })
+              print(f"  Post {idx+1}/{len(latest)}: {len(photos)}📸 {len(videos)}🎬 {len(files_downloaded)}📄")
+
+          # ذخیره JSON
+          with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
+              json.dump({
+                  "channel": channel, "title": channel_title,
+                  "posts_count": len(posts_data), "posts": posts_data,
+                  "_media_base": MEDIA_BASE_RAW, "_files_base": FILES_BASE_RAW,
+              }, f, ensure_ascii=False, indent=2)
+
+          cache_dir = "sites/telegram"
+          Path(cache_dir).mkdir(parents=True, exist_ok=True)
+          with open(f"{cache_dir}/{channel}.json", "w", encoding="utf-8") as f:
+              json.dump({
+                  "channel": channel, "title": channel_title,
+                  "posts_count": len(posts_data), "posts": posts_data,
+                  "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                  "_media_base": MEDIA_BASE_RAW, "_files_base": FILES_BASE_RAW,
+              }, f, ensure_ascii=False, indent=2)
+
+          tf = sum(len(p['files']) for p in posts_data)
+          print(f"\n✅ Done! {len(posts_data)} posts | {sum(len(p['photos']) for p in posts_data)}📸 {sum(len(p['videos']) for p in posts_data)}🎬 {tf}📄")
+          PYEOF
+
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sites/worker-test/
-          git commit -m "🧪 Cloudflare Worker test | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git add sites/telegram/
+          git commit -m "📡 @${{ github.event.inputs.channel }} (${{ github.event.inputs.count }} posts) | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
           git pull --rebase && git push || true
