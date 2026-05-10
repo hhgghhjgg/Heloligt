@@ -33,15 +33,15 @@ on:
         type: string
         default: ''
       exclude_keywords:
-        description: 'Keywords to exclude from titles (e.g., podcast,interview,Q&A)'
+        description: 'Keywords to exclude (comma-separated) – leave empty for none'
         required: false
         type: string
-        default: 'podcast,interview,Q&A,camming,leaving porn'
+        default: ''
       max_duration_minutes:
         description: 'Max video duration in minutes (0 = no limit)'
         required: false
         type: string
-        default: '20'
+        default: '0'
       start:
         description: 'Start from video # (for playlists / search)'
         required: false
@@ -79,7 +79,7 @@ jobs:
           pip install yt-dlp
           sudo apt-get update && sudo apt-get install -y bc
 
-      - name: Download video(s) with playlist support (retry up to 5 times)
+      - name: Download video(s) with filters (retry up to 5 times)
         id: download
         run: |
           FOLDER="${{ github.event.inputs.output_folder }}"
@@ -94,25 +94,36 @@ jobs:
             *)              SORT_ARG="" ;;
           esac
 
-          # --- Match filter (include category) ---
-          MATCH_ARGS=()
-          if [ -n "${{ github.event.inputs.category_filter }}" ]; then
-            MATCH_ARGS+=("--match-filter" "title ~= (?i)${{ github.event.inputs.category_filter }}")
-          fi
+          # --- Build match filter string (comma = AND logic) ---
+          MATCH_FILTER_PARTS=()
 
-          # --- Duration filter ---
+          # Duration filter
           if [ "${{ github.event.inputs.max_duration_minutes }}" != "0" ]; then
             MAX_SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
-            MATCH_ARGS+=("--match-filter" "duration < ${MAX_SEC}")
+            MATCH_FILTER_PARTS+=("duration < ${MAX_SEC}")
           fi
 
-          # --- Exclude keywords ---
+          # Include category filter
+          if [ -n "${{ github.event.inputs.category_filter }}" ]; then
+            MATCH_FILTER_PARTS+=("title ~= (?i)${{ github.event.inputs.category_filter }}")
+          fi
+
+          # Exclude keywords (comma-separated)
           if [ -n "${{ github.event.inputs.exclude_keywords }}" ]; then
             IFS=',' read -ra KW <<< "${{ github.event.inputs.exclude_keywords }}"
             for kw in "${KW[@]}"; do
               kw=$(echo "$kw" | xargs)  # trim
-              [ -n "$kw" ] && MATCH_ARGS+=("--match-filter" "title !~ (?i)${kw}")
+              if [ -n "$kw" ]; then
+                MATCH_FILTER_PARTS+=("title !~ (?i)${kw}")
+              fi
             done
+          fi
+
+          # Join parts with &
+          MATCH_FILTER=""
+          if [ ${#MATCH_FILTER_PARTS[@]} -gt 0 ]; then
+            MATCH_FILTER=$(IFS=' & '; echo "${MATCH_FILTER_PARTS[*]}")
+            echo "🔍 Match filter: ${MATCH_FILTER}"
           fi
 
           MAX_RETRIES=5
@@ -121,33 +132,44 @@ jobs:
 
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
             echo "Download attempt $((RETRY_COUNT+1))/$MAX_RETRIES"
-            yt-dlp \
-              --output "./$FOLDER/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s" \
-              --format "${{ github.event.inputs.quality }}" \
-              --merge-output-format mp4 \
-              --playlist-start "${{ github.event.inputs.start }}" \
-              --playlist-end "${{ github.event.inputs.end }}" \
-              $SORT_ARG \
-              "${MATCH_ARGS[@]}" \
-              --retries 3 \
-              --fragment-retries 10 \
-              --no-check-certificate \
-              --geo-bypass \
-              --no-color \
-              --ignore-errors \
-              --newline \
-              "${{ github.event.inputs.url }}" && {
-                NEW_FILE=$(find "$FOLDER" -type f -newer marker -print -quit)
-                if [ -n "$NEW_FILE" ]; then
-                  echo "Download succeeded: $NEW_FILE"
-                  SUCCESS=true
-                  break
-                else
-                  echo "No new file found. Retrying..."
-                fi
-              } || {
-                echo "Download attempt failed with exit code $?"
-              }
+            
+            CMD=(
+              yt-dlp
+              --output "./$FOLDER/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
+              --format "${{ github.event.inputs.quality }}"
+              --merge-output-format mp4
+              --playlist-start "${{ github.event.inputs.start }}"
+              --playlist-end "${{ github.event.inputs.end }}"
+              $SORT_ARG
+              --retries 3
+              --fragment-retries 10
+              --no-check-certificate
+              --geo-bypass
+              --no-color
+              --ignore-errors
+              --newline
+            )
+            
+            # Add match-filter only if non-empty
+            if [ -n "$MATCH_FILTER" ]; then
+              CMD+=(--match-filter "$MATCH_FILTER")
+            fi
+            
+            CMD+=("${{ github.event.inputs.url }}")
+
+            if "${CMD[@]}"; then
+              NEW_FILE=$(find "$FOLDER" -type f -newer marker -print -quit)
+              if [ -n "$NEW_FILE" ]; then
+                echo "Download succeeded: $NEW_FILE"
+                SUCCESS=true
+                break
+              else
+                echo "No new file found. Retrying..."
+              fi
+            else
+              echo "Download attempt failed with exit code $?"
+            fi
+            
             RETRY_COUNT=$((RETRY_COUNT+1))
             [ $RETRY_COUNT -lt $MAX_RETRIES ] && sleep 5
           done
