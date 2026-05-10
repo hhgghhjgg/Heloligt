@@ -101,7 +101,8 @@ jobs:
 
       - name: Download
         run: |
-          mkdir -p downloads
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          mkdir -p "$FOLDER"
 
           SORT=""
           case "${{ github.event.inputs.sort_by }}" in
@@ -114,7 +115,7 @@ jobs:
           for i in 1 2 3 4 5; do
             echo "Attempt $i/5"
             CMD=(yt-dlp
-              --output "./downloads/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
+              --output "./${FOLDER}/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
               --format "${{ github.event.inputs.quality }}"
               --merge-output-format mp4
               --playlist-start "${{ github.event.inputs.start }}"
@@ -131,13 +132,15 @@ jobs:
             sleep 5
           done
 
-          find downloads -type f | while read -r f; do
+          echo "Downloaded files:"
+          find "$FOLDER" -type f | while read -r f; do
             echo "  $(basename "$f") ($(stat -c %s "$f") bytes)"
           done
 
       - name: Split large files
         run: |
-          cd downloads
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          cd "$FOLDER"
 
           find . -maxdepth 1 -type f | while read -r FILE; do
             FILENAME=$(basename "$FILE")
@@ -150,10 +153,14 @@ jobs:
             fi
           done
 
-      - name: Commit
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add downloads/ splits/ 2>/dev/null || true
-          git commit -m "Downloaded videos" || echo "Nothing to commit"
-          git push || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Downloaded videos"
+            git pull --rebase && git push
+          fi
