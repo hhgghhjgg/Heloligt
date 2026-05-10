@@ -1,119 +1,98 @@
-name: DeviantArt with FlareSolverr + gallery-dl
+name: Deploy VLESS Reality with Iranian SNI
 
 on:
   workflow_dispatch:
-    inputs:
-      url:
-        description: 'لینک گالری یا پست DeviantArt'
-        required: true
-        default: 'https://www.deviantart.com/artistname/gallery'
-      sleep_time:
-        description: 'تأخیر بین درخواست‌ها (ثانیه)'
-        required: false
-        default: '5'
-
-permissions:
-  contents: write
+  schedule:
+    - cron: '0 */4 * * *' # هر 4 ساعت یکبار اجرا می‌شود
 
 jobs:
-  download:
+  deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
+      - name: Install Xray
         run: |
-          pip install -q gallery-dl
-          sudo apt-get install -y jq
+          # Install required packages
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
 
-      - name: Wait for FlareSolverr
-        run: |
-          echo "Waiting for FlareSolverr..."
-          for i in $(seq 1 30); do
-            status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
-            if [ "$status" = "200" ] || [ "$status" = "405" ]; then
-              echo "FlareSolverr ready (status: $status)"
-              break
-            fi
-            sleep 2
-          done
+          # Download and install Xray
+          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip Xray-linux-64.zip -d xray
+          cd xray
+          sudo mv xray /usr/local/bin/
 
-      - name: Get cookies from DeviantArt via FlareSolverr
-        run: |
-          echo "Getting cookies from DeviantArt..."
-          RESPONSE=$(curl -s -X POST http://localhost:8191/v1 \
-            -H "Content-Type: application/json" \
-            -d '{
-              "cmd": "request.get",
-              "url": "https://www.deviantart.com/",
-              "maxTimeout": 180000
-            }')
-          
-          echo "FlareSolverr response:"
-          echo "$RESPONSE" | jq .
-          
-          # Extract cookies array
-          COOKIES=$(echo "$RESPONSE" | jq -r '.solution.cookies[]? | "\(.name)\t\(.value)\t\(.domain)\t\(.path)\t\(.expires)\t\(.httpOnly)\t\(.secure)"' || echo "")
-          
-          if [ -z "$COOKIES" ]; then
-            echo "No cookies obtained. Checking if challenge was solved..."
-            STATUS=$(echo "$RESPONSE" | jq -r '.solution.status')
-            if [ "$STATUS" = "200" ]; then
-              echo "Page returned 200 but no cookies. Possibly no cloudflare."
-            else
-              echo "Failed to solve challenge. HTTP status: $STATUS"
-              exit 1
-            fi
-          else
-            echo "Cookies obtained. Saving to cookies.txt in Netscape format..."
-            echo "# Netscape HTTP Cookie File" > cookies.txt
-            echo "$COOKIES" >> cookies.txt
-            echo "Saved cookies:"
-            cat cookies.txt
-          fi
+          # Generate a UUID and keys
+          USER_ID=$(/usr/local/bin/xray uuid)
+          PRIVATE_KEY=$(/usr/local/bin/xray x25519 | grep "Private key" | awk '{print $3}')
+          PUBLIC_KEY=$(/usr/local/bin/xray x25519 -i "$PRIVATE_KEY" | grep "Public key" | awk '{print $3}')
 
-      - name: Download with gallery-dl using cookies
+          # Create server configuration
+          cat > /usr/local/etc/xray/config.json << EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "$USER_ID",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "sheypoor.com:443",
+          "serverNames": [
+            "sheypoor.com"
+          ],
+          "privateKey": "$PRIVATE_KEY"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+
+          # Run Xray in the background
+          sudo /usr/local/bin/xray run -config /usr/local/etc/xray/config.json &
         env:
-          TARGET_URL: ${{ inputs.url }}
-          SLEEP: ${{ inputs.sleep_time }}
-        run: |
-          mkdir -p downloads
-          
-          COOKIE_ARG=""
-          if [ -f cookies.txt ] && [ -s cookies.txt ]; then
-            COOKIE_ARG="--cookies cookies.txt"
-          fi
-          
-          echo "Downloading from: $TARGET_URL"
-          gallery-dl \
-            --dest downloads \
-            --no-part \
-            $COOKIE_ARG \
-            --sleep $SLEEP \
-            --sleep-request 2 \
-            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36" \
-            "$TARGET_URL" || echo "Download ended with errors (some may still have succeeded)"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: List downloads
+      - name: Display Connection Info
         run: |
-          echo "Downloaded files:"
-          find downloads -type f | head -50
-          echo "Total files: $(find downloads -type f | wc -l)"
-          du -sh downloads
-
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/ cookies.txt 2>/dev/null || true
-          git commit -m "📥 DA download via FlareSolverr + gallery-dl | $(date '+%H:%M:%S')" || echo "Nothing to commit"
-          git pull --rebase && git push || true
+          echo "✅ VLESS Reality is now running!"
+          echo "---------------------------------"
+          echo "Server IP: $(curl -s ifconfig.me)"
+          echo "UUID: $USER_ID"
+          echo "Public Key: $PUBLIC_KEY"
+          echo ""
+          echo "To connect, use the following configuration in your VLESS client (e.g., Nekobox, v2rayNG):"
+          echo ""
+          echo "Protocol: VLESS"
+          echo "Address: $(curl -s ifconfig.me)"
+          echo "Port: 443"
+          echo "UUID: $USER_ID"
+          echo "Flow: xtls-rprx-vision"
+          echo "Security: Reality"
+          echo "SNI: sheypoor.com"
+          echo "Public Key (pbk): $PUBLIC_KEY"
+          echo ""
+          echo "The server will run for the duration of the GitHub Actions job (max 6 hours)."
+          echo "---------------------------------"
+          # Keep the workflow alive for 6 hours
+          sleep 21600
