@@ -1,302 +1,247 @@
-name: Fetch Telegram Posts (Hybrid)
+name: تلگرام دانلودر
 
 on:
   workflow_dispatch:
     inputs:
-      channel:
-        description: 'نام کاربری کانال (بدون @)'
+      telegram_link:
+        description: '🔗 Telegram post link (e.g., https://t.me/channel/123)'
         required: true
-        default: 'mitivpn'
-      count:
-        description: 'تعداد پست‌های آخر'
+        type: string
+      split_threshold_mb:
+        description: '📦 Maximum file size per part (MB) – set 0 to disable splitting'
         required: false
-        default: '20'
+        type: number
+        default: 90
 
 permissions:
   contents: write
 
 jobs:
-  fetch:
+  download:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: 📂 Clone repository
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install dependencies
-        run: pip install -q requests beautifulsoup4
-
-      - name: Fetch posts from Telegram
-        env:
-          CHANNEL: ${{ github.event.inputs.channel }}
-          COUNT: ${{ github.event.inputs.count }}
+      - name: 🔧 Install system dependencies
         run: |
-          python3 << 'PYEOF'
-          import os, json, requests, re, time, uuid
-          from bs4 import BeautifulSoup
-          from datetime import datetime
+          sudo apt-get update
+          sudo apt-get install -y curl jq zip unzip openssl python3 python3-pip
+
+      - name: 🐍 Install Python dependencies
+        run: pip3 install requests
+
+      - name: 📝 Create downloader script (with resume support)
+        run: |
+          cat > telegram_downloader.py << 'EOF'
+          #!/usr/bin/env python3
+          import requests
+          import sys
+          import time
           from pathlib import Path
-          from urllib.parse import unquote
 
-          channel = os.environ["CHANNEL"]
-          target_count = int(os.environ["COUNT"])
+          def download_with_resume(url, output_path, headers, max_retries=10, chunk_size=64*1024):
+              output_path = Path(output_path)
+              output_path.parent.mkdir(parents=True, exist_ok=True)
+              temp_path = output_path.with_suffix(output_path.suffix + ".partial")
+              
+              downloaded = temp_path.stat().st_size if temp_path.exists() else 0
+              session = requests.Session()
+              session.headers.update(headers)
+              
+              for attempt in range(max_retries):
+                  try:
+                      range_header = {"Range": f"bytes={downloaded}-"} if downloaded > 0 else {}
+                      resp = session.get(url, stream=True, timeout=30, headers=range_header)
+                      resp.raise_for_status()
+                      
+                      total_size = int(resp.headers.get('content-length', 0))
+                      if downloaded > 0:
+                          total_size = total_size + downloaded
+                      
+                      mode = 'ab' if downloaded > 0 else 'wb'
+                      with open(temp_path, mode) as f:
+                          for chunk in resp.iter_content(chunk_size=chunk_size):
+                              if chunk:
+                                  f.write(chunk)
+                                  downloaded += len(chunk)
+                                  if total_size > 0:
+                                      percent = downloaded / total_size * 100
+                                      bar_len = 40
+                                      filled = int(bar_len * downloaded // total_size)
+                                      bar = '█' * filled + '░' * (bar_len - filled)
+                                      print(f"\rProgress: |{bar}| {percent:.1f}% ({downloaded}/{total_size} bytes)",
+                                            end='', flush=True)
+                      print()
+                      temp_path.rename(output_path)
+                      return True
+                  except (requests.exceptions.ChunkedEncodingError,
+                          requests.exceptions.ConnectionError,
+                          requests.exceptions.Timeout) as e:
+                      print(f"\n⚠️ Connection lost: {e}. Retry {attempt+1}/{max_retries}")
+                      time.sleep(2 ** attempt)
+                  except Exception as e:
+                      print(f"\n❌ Fatal error: {e}")
+                      return False
+              print("\n❌ Max retries reached.")
+              return False
 
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-              "Accept-Language": "en-US,en;q=0.5",
-          }
-
-          # جمع‌آوری پست‌ها از t.me/s
-          all_messages = []
-          before_id = None
-          channel_title = f'@{channel}'
-
-          while len(all_messages) < target_count:
-              url = f"https://t.me/s/{channel}"
-              if before_id:
-                  url += f"?before={before_id}"
-              print(f"📡 Fetching: {url}")
-              resp = requests.get(url, headers=headers, timeout=30)
-              if resp.status_code != 200:
-                  break
-              soup = BeautifulSoup(resp.text, 'html.parser')
-              if not before_id:
-                  title_tag = soup.find('meta', property='og:title')
-                  if title_tag:
-                      channel_title = title_tag['content']
-                      channel_title = re.sub(r'\s*\[ALL CHAPTERS\]', '', channel_title)
-                      channel_title = re.sub(r'^Telegram:\s*(Contact\s*)?', '', channel_title)
-                      channel_title = channel_title.replace('@', '').strip()
-              messages = soup.find_all('div', class_='tgme_widget_message_wrap')
-              if not messages:
-                  break
-              for msg in messages:
-                  if len(all_messages) >= target_count:
-                      break
-                  all_messages.append(msg)
-              last_msg = messages[-1]
-              msg_data = last_msg.get('data-post', '')
-              before_id = msg_data.split('/')[-1] if msg_data else None
-              if not before_id:
-                  break
-              print(f"  Progress: {len(all_messages)}/{target_count}")
-
-          latest = all_messages[:target_count]
-          print(f"\n📊 Processing {len(latest)} messages")
-
-          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-          output_dir = f"sites/telegram/{channel}/{timestamp}"
-          media_dir = f"{output_dir}/media"
-          files_dir = f"{output_dir}/files"
-          Path(media_dir).mkdir(parents=True, exist_ok=True)
-          Path(files_dir).mkdir(parents=True, exist_ok=True)
-
-          owner, repo, branch = "hhgghhjgg", "Heloligt", "main"
-          MEDIA_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/media/"
-          FILES_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/files/"
-
-          downloaded_hashes = set()
-
-          def safe_download(url, save_dir, custom_name=None, timeout=60):
-              try:
-                  url_hash = str(hash(url))
-                  if url_hash in downloaded_hashes:
-                      return None
-                  
-                  resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
-                  if resp.status_code != 200:
-                      return None
-                  
-                  if custom_name:
-                      fname = custom_name
-                  else:
-                      cd = resp.headers.get('Content-Disposition', '')
-                      m = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)', cd)
-                      if m:
-                          fname = unquote(m.group(1))
-                      else:
-                          fname = url.split('/')[-1].split('?')[0]
-                  
-                  fname = re.sub(r'[\\/*?:"<>|]', '_', fname or 'file')
-                  if len(fname) > 120:
-                      name, ext = os.path.splitext(fname)
-                      fname = name[:80] + ext
-                  
-                  fpath = os.path.join(save_dir, fname)
-                  if os.path.exists(fpath):
-                      base, ext = os.path.splitext(fname)
-                      counter = 1
-                      while os.path.exists(os.path.join(save_dir, f"{base}_{counter}{ext}")):
-                          counter += 1
-                      fname = f"{base}_{counter}{ext}"
-                      fpath = os.path.join(save_dir, fname)
-                  
-                  with open(fpath, "wb") as f:
-                      for chunk in resp.iter_content(8192):
-                          f.write(chunk)
-                  
-                  sz = os.path.getsize(fpath) // 1024
-                  downloaded_hashes.add(url_hash)
-                  print(f"    ✅ {fname} ({sz}KB)")
-                  return fname
-              except Exception as e:
-                  print(f"    ❌ {str(e)[:50]}")
-                  return None
-
-          # اسکرپر اصلی برای عکس و ویدیو
-          def make_static_url(url):
-              if 't.me/' in url and '/s/' not in url:
-                  return url.replace('t.me/', 't.me/s/')
-              return url
-
-          def extract_buttons(soup):
-              buttons = []
-              for btn in soup.find_all('a', class_='tgme_widget_message_inline_button'):
-                  href = btn.get('href')
-                  if href:
-                      buttons.append(href)
-              return buttons
-
-          # API واسط برای دانلود فایل (npvt و ...)
-          def download_file_via_api(telegram_link, save_dir):
+          def download_telegram_file(telegram_link, output_dir="."):
               api_url = "https://telegramdownloader.net/proxy.php"
+              headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
               data = {"telegram_link": telegram_link}
               
-              print(f"    🌐 Resolving file link: {telegram_link}")
               try:
+                  print(f"🔗 Fetching download info...")
                   resp = requests.post(api_url, headers=headers, data=data, timeout=15)
                   resp.raise_for_status()
                   result = resp.json()
                   raw_url = result.get('data', {}).get('data', {}).get('link')
                   file_name = result.get('data', {}).get('data', {}).get('file_name')
-                  
                   if not raw_url or not file_name:
-                      print("    ⚠️ Could not extract download link")
-                      return None
+                      print("❌ Could not extract download link or filename")
+                      return False, "", 0
                   
-                  print(f"    📁 Resolved: {file_name}")
-                  fname = safe_download(raw_url, save_dir, custom_name=file_name)
-                  return fname
+                  out_path = Path(output_dir) / file_name
+                  print(f"📁 File: {file_name}")
+                  print(f"🚀 Starting download with resume support...")
+                  
+                  success = download_with_resume(raw_url, out_path, headers)
+                  if success:
+                      size = out_path.stat().st_size
+                      print(f"✅ Download complete: {file_name} ({size/1e6:.2f} MB)")
+                      return True, file_name, size
+                  return False, "", 0
               except Exception as e:
-                  print(f"    ❌ API download error: {str(e)[:80]}")
-                  return None
+                  print(f"❌ Error: {e}")
+                  return False, "", 0
 
-          posts_data = []
+          if __name__ == "__main__":
+              if len(sys.argv) < 2:
+                  print("Usage: python telegram_downloader.py <telegram_link> [output_dir]")
+                  sys.exit(1)
+              link = sys.argv[1]
+              out_dir = sys.argv[2] if len(sys.argv) > 2 else "."
+              success, fname, fsize = download_telegram_file(link, out_dir)
+              if success:
+                  with open(Path(out_dir) / ".download_info", "w") as info:
+                      info.write(f"{fname}\n{fsize}")
+              sys.exit(0 if success else 1)
+          EOF
+          chmod +x telegram_downloader.py
 
-          for idx, msg in enumerate(latest):
-              msg_id = msg.get('data-post', f'post-{idx}')
-              text_div = msg.find('div', class_='tgme_widget_message_text')
-              raw_text = text_div.get_text('\n', strip=True) if text_div else ""
-              date_tag = msg.find('time', class_='time')
-              date_str = date_tag.get('datetime', '') if date_tag else ''
-              views_tag = msg.find('span', class_='tgme_widget_message_views')
-              views = views_tag.get_text(strip=True) if views_tag else ''
+      - name: 📥 Download Telegram file
+        id: download
+        run: |
+          mkdir -p downloads
+          python3 telegram_downloader.py "${{ github.event.inputs.telegram_link }}" downloads
+          if [ -f downloads/.download_info ]; then
+            FILENAME=$(head -n1 downloads/.download_info)
+            FILESIZE=$(tail -n1 downloads/.download_info)
+            echo "downloaded_name=$FILENAME" >> $GITHUB_OUTPUT
+            echo "file_size=$FILESIZE" >> $GITHUB_OUTPUT
+            rm downloads/.download_info
+          else
+            echo "❌ Download failed"
+            exit 1
+          fi
 
-              links = []
-              if text_div:
-                  for a in text_div.find_all('a', href=True):
-                      href = a['href']
-                      if href.startswith('/'):
-                          href = f"https://t.me{href}"
-                      links.append(href)
+      - name: ✂️ Split large file (if needed)
+        if: github.event.inputs.split_threshold_mb != '0'
+        run: |
+          THRESHOLD="${{ github.event.inputs.split_threshold_mb }}"
+          FILENAME="${{ steps.download.outputs.downloaded_name }}"
+          FILE_SIZE="${{ steps.download.outputs.file_size }}"
+          LIMIT=$((THRESHOLD * 1024 * 1024))
 
-              # عکس‌ها - از صفحه اصلی کانال
-              photos = []
-              for pw in msg.find_all('a', class_='tgme_widget_message_photo_wrap'):
-                  style = pw.get('style', '')
-                  m = re.search(r"background-image:url\('([^']+)'\)", style)
-                  if m:
-                      fname = safe_download(m.group(1), media_dir)
-                      if fname:
-                          photos.append(fname)
+          if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt "$LIMIT" ]; then
+            echo "✂️ File (${FILE_SIZE} bytes) exceeds ${THRESHOLD}MB, splitting into parts..."
+            cd downloads
+            zip -s "${THRESHOLD}m" "${FILENAME}.zip" -j "$FILENAME"
+            rm "$FILENAME"
+            cd ..
+          else
+            echo "📦 File size within threshold, no splitting needed."
+          fi
 
-              # ویدیوها - از صفحه اصلی کانال
-              videos = []
-              for vt in msg.find_all('video'):
-                  src = vt.get('src') or vt.get('data-video', '')
-                  if src:
-                      fname = safe_download(src, media_dir, timeout=120)
-                      if fname:
-                          videos.append(fname)
+      - name: 🔄 Sanitize filenames (remove non‑ASCII / special characters)
+        run: |
+          cd downloads
+          for file in *; do
+            [ -e "$file" ] || continue
+            EXT="${file##*.}"
+            if [[ "$EXT" == "$file" ]]; then
+              EXT="bin"
+            fi
+            if [[ "$file" =~ [^[:ascii:]] ]]; then
+              RANDOM_NAME=$(openssl rand -hex 8)
+              NEW_NAME="${RANDOM_NAME}.${EXT}"
+              echo "   🌐 Renaming: $file -> $NEW_NAME"
+              mv "$file" "$NEW_NAME"
+            else
+              CLEAN_NAME=$(echo "$file" | sed 's/[^a-zA-Z0-9._-]/_/g' | sed 's/__*/_/g')
+              if [ "$file" != "$CLEAN_NAME" ]; then
+                echo "   📝 Cleaning: $file -> $CLEAN_NAME"
+                mv "$file" "$CLEAN_NAME"
+              fi
+            fi
+          done
+          cd ..
 
-              files_downloaded = []
-
-              # متد A: داکیومنت رسمی
-              doc_wrap = msg.find('a', class_='tgme_widget_message_document_wrap')
-              if doc_wrap:
-                  doc_url = doc_wrap.get('href')
-                  if doc_url:
-                      if doc_url.startswith('/'):
-                          doc_url = f"https://t.me{doc_url}"
-                      
-                      # اول با API واسط امتحان کن
-                      fname = download_file_via_api(doc_url, files_dir)
-                      if fname:
-                          files_downloaded.append(fname)
-                      else:
-                          # Fallback به اسکرپ مستقیم
-                          static_url = make_static_url(doc_url)
-                          fname = safe_download(static_url, files_dir, timeout=120)
-                          if fname:
-                              files_downloaded.append(fname)
-
-              # متد B: لینک‌های عددی (مثل t.me/channel/123)
-              for link in links:
-                  if re.search(r't\.me/[^/]+/\d+$', link):
-                      fname = download_file_via_api(link, files_dir)
-                      if fname and fname not in files_downloaded:
-                          files_downloaded.append(fname)
-
-              # متد C: لینک‌های مستقیم به فایل (از متن)
-              for link in links:
-                  clean_link = link.split('?')[0].split('/')[-1].lower()
-                  if any(clean_link.endswith(ext) for ext in ['.npvt','.pdf','.zip','.rar','.7z','.apk','.epub','.mobi']):
-                      if link not in files_downloaded:
-                          fname = safe_download(link, files_dir, timeout=120)
-                          if fname: files_downloaded.append(fname)
-
-              # متد D: دکمه‌های inline
-              btns = extract_buttons(msg)
-              for btn_url in btns:
-                  if 't.me/' in btn_url:
-                      fname = download_file_via_api(btn_url, files_dir)
-                      if fname and fname not in files_downloaded:
-                          files_downloaded.append(fname)
-
-              posts_data.append({
-                  "id": msg_id, "date": date_str, "text": raw_text,
-                  "views": views, "links": links,
-                  "photos": photos, "videos": videos, "files": files_downloaded,
-              })
-              print(f"  Post {idx+1}/{len(latest)}: {len(photos)}📸 {len(videos)}🎬 {len(files_downloaded)}📄")
-
-          # ذخیره JSON
-          with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
-              json.dump({
-                  "channel": channel, "title": channel_title,
-                  "posts_count": len(posts_data), "posts": posts_data,
-                  "_media_base": MEDIA_BASE_RAW, "_files_base": FILES_BASE_RAW,
-              }, f, ensure_ascii=False, indent=2)
-
-          cache_dir = "sites/telegram"
-          Path(cache_dir).mkdir(parents=True, exist_ok=True)
-          with open(f"{cache_dir}/{channel}.json", "w", encoding="utf-8") as f:
-              json.dump({
-                  "channel": channel, "title": channel_title,
-                  "posts_count": len(posts_data), "posts": posts_data,
-                  "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                  "_media_base": MEDIA_BASE_RAW, "_files_base": FILES_BASE_RAW,
-              }, f, ensure_ascii=False, indent=2)
-
-          tf = sum(len(p['files']) for p in posts_data)
-          print(f"\n✅ Done! {len(posts_data)} posts | {sum(len(p['photos']) for p in posts_data)}📸 {sum(len(p['videos']) for p in posts_data)}🎬 {tf}📄")
-          PYEOF
-
-      - name: Commit and push
+      - name: 📤 Upload files to GitHub (one by one)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sites/telegram/
-          git commit -m "📡 @${{ github.event.inputs.channel }} (${{ github.event.inputs.count }} posts) | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
-          git pull --rebase && git push || true
+
+          if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
+            echo "⚠️ No files to upload!"
+            exit 1
+          fi
+
+          NEW_FILES=()
+          for file in downloads/*; do
+            filename=$(basename "$file")
+            if ! git ls-files --error-unmatch "downloads/$filename" &>/dev/null; then
+              NEW_FILES+=("$filename")
+            else
+              echo "⏭️ Skipping already tracked file: $filename"
+            fi
+          done
+
+          TOTAL=${#NEW_FILES[@]}
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "✅ No new files to upload!"
+            exit 0
+          fi
+
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "📦 New files to upload: $TOTAL"
+          echo "═══════════════════════════════════════════════════════════════"
+
+          for (( i=0; i<TOTAL; i++ )); do
+            echo ""
+            echo "🚀 Uploading $((i+1)) of $TOTAL: ${NEW_FILES[$i]}"
+            git add "downloads/${NEW_FILES[$i]}"
+            git commit -m "Add ${NEW_FILES[$i]} [skip ci]"
+
+            for attempt in 1 2 3; do
+              if git push origin main 2>&1; then
+                echo "   ✅ Uploaded successfully"
+                break
+              else
+                if [ $attempt -lt 3 ]; then
+                  echo "   ⚠️ Push failed, retry $attempt/3..."
+                  git reset --soft HEAD~1
+                  sleep 5
+                else
+                  echo "   ❌ Failed to upload ${NEW_FILES[$i]}"
+                  git reset --soft HEAD~1
+                fi
+              fi
+            done
+          done
