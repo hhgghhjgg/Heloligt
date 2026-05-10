@@ -30,6 +30,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Wait for FlareSolverr
+        run: |
+          echo "⏳ Waiting for FlareSolverr..."
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+            if [ "$STATUS" = "ok" ]; then
+              echo "✅ FlareSolverr is ready!"
+              break
+            fi
+            echo "  Attempt $i/10..."
+            sleep 3
+          done
+          curl -s http://localhost:8191/v1 | python3 -m json.tool
+
       - name: Install dependencies
         run: pip install -q requests beautifulsoup4
 
@@ -37,7 +51,6 @@ jobs:
         env:
           CHANNEL: ${{ github.event.inputs.channel }}
           COUNT: ${{ github.event.inputs.count }}
-          FLARESOLVERR_URL: http://localhost:8191/v1
         run: |
           python3 << 'PYEOF'
           import os, json, requests, re, time
@@ -48,23 +61,22 @@ jobs:
 
           channel = os.environ["CHANNEL"]
           target_count = int(os.environ["COUNT"])
-          flaresolverr = os.environ["FLARESOLVERR_URL"]
+          FLARESOLVERR = "http://localhost:8191/v1"
 
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          }
+          headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-          # تابع گرفتن صفحه از طریق FlareSolverr
           def fetch_page(url):
-              payload = {
+              """دریافت صفحه از طریق FlareSolverr"""
+              print(f"  🔄 FlareSolverr: {url}")
+              resp = requests.post(FLARESOLVERR, json={
                   "cmd": "request.get",
                   "url": url,
                   "maxTimeout": 30000
-              }
-              resp = requests.post(flaresolverr, json=payload, timeout=40)
+              }, timeout=40)
               data = resp.json()
               if data.get("status") == "ok":
                   return data["solution"]["response"]
+              print(f"  ❌ FlareSolverr error: {data.get('message', 'unknown')}")
               return None
 
           # جمع‌آوری پست‌ها
@@ -76,12 +88,12 @@ jobs:
               url = f"https://t.me/s/{channel}"
               if before_id:
                   url += f"?before={before_id}"
-              print(f"📡 Fetching via FlareSolverr: {url}")
-              
+              print(f"📡 Fetching: {url}")
+
               html = fetch_page(url)
               if not html:
                   break
-              
+
               soup = BeautifulSoup(html, 'html.parser')
               if not before_id:
                   title_tag = soup.find('meta', property='og:title')
@@ -90,24 +102,24 @@ jobs:
                       channel_title = re.sub(r'\s*\[ALL CHAPTERS\]', '', channel_title)
                       channel_title = re.sub(r'^Telegram:\s*(Contact\s*)?', '', channel_title)
                       channel_title = channel_title.replace('@', '').strip()
-              
+
               messages = soup.find_all('div', class_='tgme_widget_message_wrap')
               if not messages:
                   break
-              
+
               for msg in messages:
                   if len(all_messages) >= target_count:
                       break
                   all_messages.append(msg)
-              
+
               last_msg = messages[-1]
               msg_data = last_msg.get('data-post', '')
               before_id = msg_data.split('/')[-1] if msg_data else None
               if not before_id:
                   break
-              
+
               print(f"  Progress: {len(all_messages)}/{target_count}")
-              time.sleep(1)  # Rate limit
+              time.sleep(1)
 
           latest = all_messages[:target_count]
           print(f"\n📊 Processing {len(latest)} messages")
@@ -123,18 +135,16 @@ jobs:
           MEDIA_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/media/"
           FILES_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/files/"
 
-          downloaded_hashes = set()
+          dl_hashes = set()
 
           def safe_download(url, save_dir, custom_name=None, timeout=60):
               try:
-                  url_hash = str(hash(url))
-                  if url_hash in downloaded_hashes:
+                  h = str(hash(url))
+                  if h in dl_hashes:
                       return None
-                  
                   resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
                   if resp.status_code != 200:
                       return None
-                  
                   if custom_name:
                       fname = custom_name
                   else:
@@ -144,54 +154,49 @@ jobs:
                           fname = unquote(m.group(1))
                       else:
                           fname = url.split('/')[-1].split('?')[0]
-                  
                   fname = re.sub(r'[\\/*?:"<>|]', '_', fname or 'file')
                   if len(fname) > 120:
                       name, ext = os.path.splitext(fname)
                       fname = name[:80] + ext
-                  
                   fpath = os.path.join(save_dir, fname)
                   if os.path.exists(fpath):
                       base, ext = os.path.splitext(fname)
-                      counter = 1
-                      while os.path.exists(os.path.join(save_dir, f"{base}_{counter}{ext}")):
-                          counter += 1
-                      fname = f"{base}_{counter}{ext}"
+                      c = 1
+                      while os.path.exists(os.path.join(save_dir, f"{base}_{c}{ext}")):
+                          c += 1
+                      fname = f"{base}_{c}{ext}"
                       fpath = os.path.join(save_dir, fname)
-                  
                   with open(fpath, "wb") as f:
                       for chunk in resp.iter_content(8192):
                           f.write(chunk)
-                  
-                  sz = os.path.getsize(fpath) // 1024
-                  downloaded_hashes.add(url_hash)
-                  print(f"    ✅ {fname} ({sz}KB)")
+                  dl_hashes.add(h)
+                  print(f"    ✅ {fname} ({os.path.getsize(fpath)//1024}KB)")
                   return fname
               except Exception as e:
                   print(f"    ❌ {str(e)[:50]}")
                   return None
 
-          # API واسط برای دانلود فایل
           def download_file_via_api(telegram_link, save_dir):
-              api_url = "https://telegramdownloader.net/proxy.php"
-              data = {"telegram_link": telegram_link}
-              
-              print(f"    🌐 Resolving: {telegram_link}")
+              """دانلود فایل با API واسط telegramdownloader.net"""
+              print(f"    🌐 API: {telegram_link}")
               try:
-                  resp = requests.post(api_url, headers=headers, data=data, timeout=15)
+                  resp = requests.post(
+                      "https://telegramdownloader.net/proxy.php",
+                      headers=headers,
+                      data={"telegram_link": telegram_link},
+                      timeout=20
+                  )
                   resp.raise_for_status()
                   result = resp.json()
                   raw_url = result.get('data', {}).get('data', {}).get('link')
                   file_name = result.get('data', {}).get('data', {}).get('file_name')
-                  
                   if not raw_url or not file_name:
-                      print("    ⚠️ No download link")
+                      print("    ⚠️ No link in response")
                       return None
-                  
                   print(f"    📁 {file_name}")
                   return safe_download(raw_url, save_dir, custom_name=file_name)
               except Exception as e:
-                  print(f"    ❌ API error: {str(e)[:80]}")
+                  print(f"    ❌ API: {str(e)[:80]}")
                   return None
 
           posts_data = []
