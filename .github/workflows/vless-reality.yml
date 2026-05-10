@@ -12,7 +12,7 @@ jobs:
       - name: Install Xray
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip
+          sudo apt-get install -y wget unzip jq
           wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip Xray-linux-64.zip -d xray
           sudo mv xray/xray /usr/local/bin/
@@ -21,8 +21,11 @@ jobs:
       - name: Generate Keys and Config
         run: |
           USER_ID=$(/usr/local/bin/xray uuid)
-          PRIVATE_KEY=$(/usr/local/bin/xray x25519 | grep "Private key" | awk '{print $3}')
-          PUBLIC_KEY=$(/usr/local/bin/xray x25519 -i "$PRIVATE_KEY" | grep "Public key" | awk '{print $3}')
+          
+          # استخراج کلیدها با jq (مطمئن برای همه نسخه‌ها)
+          KEYS=$(/usr/local/bin/xray x25519 -json)
+          PRIVATE_KEY=$(echo "$KEYS" | jq -r '.privateKey')
+          PUBLIC_KEY=$(echo "$KEYS" | jq -r '.publicKey')
 
           sudo mkdir -p /usr/local/etc/xray
 
