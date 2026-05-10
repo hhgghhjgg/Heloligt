@@ -1,0 +1,151 @@
+name: Manhwa Translator Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_base64:
+        description: 'عکس به صورت Base64'
+        required: true
+        type: string
+      prompt:
+        description: 'پرامپت ترجمه'
+        required: false
+        type: string
+        default: 'Read all visible text in this manhwa image (including speech bubbles). Translate it to fluent Persian (فارسی). Return ONLY the translated text, nothing else.'
+      model:
+        description: 'مدل هوش مصنوعی'
+        required: false
+        type: string
+        default: 'gpt-4o-mini'
+      chunk_height:
+        description: 'ارتفاع هر تکه از عکس (پیکسل)'
+        required: false
+        type: string
+        default: '1024'
+
+permissions:
+  models: read
+  contents: write
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        run: pip install -q requests pillow
+
+      - name: Process image and translate
+        id: translation
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_B64: ${{ github.event.inputs.image_base64 }}
+          PROMPT: ${{ github.event.inputs.prompt }}
+          MODEL: ${{ github.event.inputs.model }}
+          CHUNK_HEIGHT: ${{ github.event.inputs.chunk_height }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, base64, requests, sys
+          from PIL import Image
+          from io import BytesIO
+
+          token = os.environ["GITHUB_TOKEN"]
+          image_b64 = os.environ["IMAGE_B64"]
+          prompt = os.environ["PROMPT"]
+          model = os.environ["MODEL"]
+          chunk_h = int(os.environ["CHUNK_HEIGHT"])
+
+          # Clean base64 string
+          if "base64," in image_b64:
+              image_b64 = image_b64.split("base64,")[1]
+
+          img_bytes = base64.b64decode(image_b64)
+          img = Image.open(BytesIO(img_bytes))
+          width, height = img.size
+
+          print(f"📐 Image size: {width}x{height}")
+
+          # Split image into vertical chunks
+          num_chunks = (height + chunk_h - 1) // chunk_h
+          print(f"✂️ Splitting into {num_chunks} chunks")
+
+          all_translations = []
+          fallback_models = [model, "gpt-4o-mini", "Phi-4-multimodal-instruct"]
+
+          for i in range(num_chunks):
+              top = i * chunk_h
+              bottom = min((i + 1) * chunk_h, height)
+              chunk = img.crop((0, top, width, bottom))
+
+              buf = BytesIO()
+              chunk.save(buf, format="JPEG", quality=75)
+              chunk_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+              chunk_prompt = prompt
+              if num_chunks > 1:
+                  chunk_prompt = f"This is part {i+1} of {num_chunks}. {prompt}"
+
+              translated = None
+              for fm in fallback_models:
+                  try:
+                      print(f"  🔄 Chunk {i+1}: Trying model {fm}...")
+                      resp = requests.post(
+                          "https://models.inference.ai.azure.com/chat/completions",
+                          headers={
+                              "Authorization": f"Bearer {token}",
+                              "Content-Type": "application/json"
+                          },
+                          json={
+                              "model": fm,
+                              "messages": [{
+                                  "role": "user",
+                                  "content": [
+                                      {"type": "text", "text": chunk_prompt},
+                                      {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{chunk_b64}"}}
+                                  ]
+                              }],
+                              "max_tokens": 2000
+                          },
+                          timeout=90
+                      )
+
+                      if resp.status_code == 200:
+                          data = resp.json()
+                          ans = data["choices"][0]["message"]["content"]
+                          if "I can't assist" not in ans and "sorry" not in ans.lower():
+                              translated = ans
+                              print(f"  ✅ Chunk {i+1} done with {fm}")
+                              break
+                      print(f"  ⚠️ {fm} failed with status {resp.status_code}")
+                  except Exception as e:
+                      print(f"  ❌ {fm} error: {str(e)[:80]}")
+
+              if translated:
+                  all_translations.append(translated)
+              else:
+                  all_translations.append(f"[Chunk {i+1}: translation failed]")
+
+          result = "\n".join(all_translations)
+          print(f"\n📝 Final translation:\n{result}")
+
+          # Save to file
+          with open("translation_result.txt", "w", encoding="utf-8") as f:
+              f.write(result)
+
+          with open("translation_result.json", "w", encoding="utf-8") as f:
+              json.dump({"translation": result, "chunks": all_translations, "model_used": model, "chunk_count": num_chunks}, f, ensure_ascii=False, indent=2)
+
+          print("\n✅ Done!")
+          PYEOF
+
+      - name: Commit and push result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add translation_result.txt translation_result.json
+          git commit -m "📖 Manhwa translation $(date +%H:%M)" || echo "Nothing to commit"
+          git push || true
