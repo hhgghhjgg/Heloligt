@@ -17,21 +17,6 @@ on:
         required: true
         type: string
         default: 'bestvideo[height<=240]+bestaudio/best[height<=240][ext=mp4]/best[height<=240]'
-      sort_by:
-        description: 'Sort order for playlists'
-        required: false
-        type: choice
-        options:
-          - 'none (default)'
-          - 'newest first'
-          - 'oldest first'
-          - 'random'
-        default: 'none (default)'
-      category_filter:
-        description: 'Category / tag filter (e.g., big-ass, milf, etc.) – leave empty for none'
-        required: false
-        type: string
-        default: ''
       start:
         description: 'Start from video # (for playlists)'
         required: false
@@ -76,21 +61,6 @@ jobs:
           mkdir -p "$FOLDER"
           touch marker
 
-          # Build sort argument
-          SORT_ARG=""
-          case "${{ github.event.inputs.sort_by }}" in
-            "newest first") SORT_ARG="--playlist-reverse" ;;
-            "random")       SORT_ARG="--playlist-random" ;;
-            *)              SORT_ARG="" ;;
-          esac
-
-          # Build match filter
-          if [ -n "${{ github.event.inputs.category_filter }}" ]; then
-            MATCH_ARG="--match-filter title ~= (?i)${{ github.event.inputs.category_filter }}"
-          else
-            MATCH_ARG=""
-          fi
-
           MAX_RETRIES=5
           RETRY_COUNT=0
           SUCCESS=false
@@ -103,8 +73,6 @@ jobs:
               --merge-output-format mp4 \
               --playlist-start "${{ github.event.inputs.start }}" \
               --playlist-end "${{ github.event.inputs.end }}" \
-              $SORT_ARG \
-              $MATCH_ARG \
               --retries 3 \
               --fragment-retries 10 \
               --no-check-certificate \
@@ -113,23 +81,31 @@ jobs:
               --ignore-errors \
               --newline \
               "${{ github.event.inputs.url }}" && {
+                # Verify that a new file was actually created
                 NEW_FILE=$(find "$FOLDER" -type f -newer marker -print -quit)
                 if [ -n "$NEW_FILE" ]; then
                   echo "Download succeeded: $NEW_FILE"
                   SUCCESS=true
                   break
                 else
-                  echo "No new file found. Retrying..."
+                  echo "The download command exited with code 0, but no new file was found. Retrying..."
                 fi
               } || {
                 echo "Download attempt failed with exit code $?"
               }
             RETRY_COUNT=$((RETRY_COUNT+1))
-            [ $RETRY_COUNT -lt $MAX_RETRIES ] && sleep 5
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+              echo "Waiting 5 seconds before next attempt..."
+              sleep 5
+            fi
           done
 
-          [ "$SUCCESS" = false ] && { echo "All attempts failed."; exit 1; }
+          if [ "$SUCCESS" = false ]; then
+            echo "Error: All $MAX_RETRIES download attempts failed."
+            exit 1
+          fi
 
+          # Find all newly downloaded files
           echo "All downloaded files:"
           find "$FOLDER" -type f -newer marker | while read -r FILE; do
             FILENAME=$(basename "$FILE")
@@ -150,6 +126,7 @@ jobs:
 
           cd "$FOLDER"
 
+          # Process all downloaded files
           find . -maxdepth 1 -type f | while read -r FILE; do
             FILENAME=$(basename "$FILE")
             SIZE_BYTES=$(stat -c %s "$FILE")
