@@ -25,11 +25,7 @@ on:
           - 'none (default)'
           - 'newest first'
           - 'oldest first'
-          - 'most viewed first'
-          - 'top rated first'
-          - 'longest first'
-          - 'shortest first'
-          - 'most liked first'
+          - 'random'
         default: 'none (default)'
       category_filter:
         description: 'Category / tag filter (e.g., big-ass, milf, etc.) – leave empty for none'
@@ -83,20 +79,16 @@ jobs:
           # Build sort argument
           SORT_ARG=""
           case "${{ github.event.inputs.sort_by }}" in
-            "newest first")      SORT_ARG="--playlist-reverse" ;;
-            "oldest first")      SORT_ARG="" ;;
-            "most viewed first") SORT_ARG="--playlist-sort=view_count" ;;
-            "top rated first")   SORT_ARG="--playlist-sort=rating:desc" ;;
-            "longest first")     SORT_ARG="--playlist-sort=duration:desc" ;;
-            "shortest first")    SORT_ARG="--playlist-sort=duration:asc" ;;
-            "most liked first")  SORT_ARG="--playlist-sort=like_count:desc" ;;
-            *)                   SORT_ARG="" ;;
+            "newest first") SORT_ARG="--playlist-reverse" ;;
+            "random")       SORT_ARG="--playlist-random" ;;
+            *)              SORT_ARG="" ;;
           esac
 
-          # Build match filter for category/tag
-          MATCH_ARG=""
+          # Build match filter
           if [ -n "${{ github.event.inputs.category_filter }}" ]; then
-            MATCH_ARG='--match-filter "tags ~* ${{ github.event.inputs.category_filter }} || categories ~* ${{ github.event.inputs.category_filter }} || title ~* ${{ github.event.inputs.category_filter }}"'
+            MATCH_ARG="--match-filter title ~= (?i)${{ github.event.inputs.category_filter }}"
+          else
+            MATCH_ARG=""
           fi
 
           MAX_RETRIES=5
@@ -127,22 +119,16 @@ jobs:
                   SUCCESS=true
                   break
                 else
-                  echo "The download command exited with code 0, but no new file was found. Retrying..."
+                  echo "No new file found. Retrying..."
                 fi
               } || {
                 echo "Download attempt failed with exit code $?"
               }
             RETRY_COUNT=$((RETRY_COUNT+1))
-            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-              echo "Waiting 5 seconds before next attempt..."
-              sleep 5
-            fi
+            [ $RETRY_COUNT -lt $MAX_RETRIES ] && sleep 5
           done
 
-          if [ "$SUCCESS" = false ]; then
-            echo "Error: All $MAX_RETRIES download attempts failed."
-            exit 1
-          fi
+          [ "$SUCCESS" = false ] && { echo "All attempts failed."; exit 1; }
 
           echo "All downloaded files:"
           find "$FOLDER" -type f -newer marker | while read -r FILE; do
