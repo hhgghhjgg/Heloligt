@@ -13,12 +13,12 @@ on:
         type: string
         default: 'downloads'
       quality:
-        description: 'Video quality (yt-dlp format selector)'
+        description: 'Video quality'
         required: true
         type: string
         default: 'bestvideo[height<=240]+bestaudio/best[height<=240][ext=mp4]/best[height<=240]'
       sort_by:
-        description: 'Sort order for playlists / search results'
+        description: 'Sort order'
         required: false
         type: choice
         options:
@@ -27,36 +27,26 @@ on:
           - 'oldest first'
           - 'random'
         default: 'none (default)'
-      category_filter:
-        description: 'Category / tag filter – leave empty for none'
-        required: false
-        type: string
-        default: ''
       exclude_keywords:
-        description: 'Keywords to exclude (comma-separated) – leave empty for none'
+        description: 'Keywords to exclude (comma)'
         required: false
         type: string
         default: ''
       max_duration_minutes:
-        description: 'Max video duration in minutes (0 = no limit)'
+        description: 'Max duration in minutes (0=no limit)'
         required: false
         type: string
         default: '0'
       start:
-        description: 'Start from video # (for playlists / search)'
+        description: 'Start from video #'
         required: false
         type: string
         default: '1'
       end:
-        description: 'End at video # (for playlists / search)'
+        description: 'End at video #'
         required: false
         type: string
         default: '5'
-      archive_name:
-        description: 'Base name for the RAR archive (if file is split)'
-        required: false
-        type: string
-        default: 'video'
 
 permissions:
   contents: write
@@ -79,145 +69,89 @@ jobs:
           pip install yt-dlp
           sudo apt-get update && sudo apt-get install -y bc
 
-      - name: Download video(s) with filters (retry up to 5 times)
-        id: download
+      - name: Download
         run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          mkdir -p "$FOLDER"
+          mkdir -p downloads
           touch marker
 
-          # --- Sort argument ---
-          SORT_ARG=""
+          SORT=""
           case "${{ github.event.inputs.sort_by }}" in
-            "newest first") SORT_ARG="--playlist-reverse" ;;
-            "random")       SORT_ARG="--playlist-random" ;;
-            *)              SORT_ARG="" ;;
+            "newest first") SORT="--playlist-reverse" ;;
+            "random")       SORT="--playlist-random" ;;
           esac
 
-          # --- Build match filter string (comma = AND logic) ---
-          MATCH_FILTER_PARTS=()
-
-          # Duration filter
+          FILTER=""
           if [ "${{ github.event.inputs.max_duration_minutes }}" != "0" ]; then
-            MAX_SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
-            MATCH_FILTER_PARTS+=("duration < ${MAX_SEC}")
+            SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
+            FILTER="duration < ${SEC}"
           fi
 
-          # Include category filter
-          if [ -n "${{ github.event.inputs.category_filter }}" ]; then
-            MATCH_FILTER_PARTS+=("title ~= (?i)${{ github.event.inputs.category_filter }}")
-          fi
-
-          # Exclude keywords (comma-separated)
           if [ -n "${{ github.event.inputs.exclude_keywords }}" ]; then
             IFS=',' read -ra KW <<< "${{ github.event.inputs.exclude_keywords }}"
             for kw in "${KW[@]}"; do
-              kw=$(echo "$kw" | xargs)  # trim
+              kw=$(echo "$kw" | xargs)
               if [ -n "$kw" ]; then
-                MATCH_FILTER_PARTS+=("title !~ (?i)${kw}")
+                if [ -n "$FILTER" ]; then FILTER="${FILTER} & "; fi
+                FILTER="${FILTER}title !* '${kw}'"
               fi
             done
           fi
 
-          # Join parts with &
-          MATCH_FILTER=""
-          if [ ${#MATCH_FILTER_PARTS[@]} -gt 0 ]; then
-            MATCH_FILTER=$(IFS=' & '; echo "${MATCH_FILTER_PARTS[*]}")
-            echo "🔍 Match filter: ${MATCH_FILTER}"
-          fi
-
-          MAX_RETRIES=5
-          RETRY_COUNT=0
-          SUCCESS=false
-
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            echo "Download attempt $((RETRY_COUNT+1))/$MAX_RETRIES"
-            
-            CMD=(
-              yt-dlp
-              --output "./$FOLDER/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
-              --format "${{ github.event.inputs.quality }}"
-              --merge-output-format mp4
-              --playlist-start "${{ github.event.inputs.start }}"
-              --playlist-end "${{ github.event.inputs.end }}"
-              $SORT_ARG
-              --retries 3
-              --fragment-retries 10
-              --no-check-certificate
-              --geo-bypass
-              --no-color
-              --ignore-errors
-              --newline
-            )
-            
-            # Add match-filter only if non-empty
-            if [ -n "$MATCH_FILTER" ]; then
-              CMD+=(--match-filter "$MATCH_FILTER")
-            fi
-            
-            CMD+=("${{ github.event.inputs.url }}")
-
-            if "${CMD[@]}"; then
-              NEW_FILE=$(find "$FOLDER" -type f -newer marker -print -quit)
-              if [ -n "$NEW_FILE" ]; then
-                echo "Download succeeded: $NEW_FILE"
-                SUCCESS=true
-                break
-              else
-                echo "No new file found. Retrying..."
-              fi
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i/5"
+            if [ -n "$FILTER" ]; then
+              yt-dlp \
+                --output "./downloads/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s" \
+                --format "${{ github.event.inputs.quality }}" \
+                --merge-output-format mp4 \
+                --playlist-start "${{ github.event.inputs.start }}" \
+                --playlist-end "${{ github.event.inputs.end }}" \
+                $SORT \
+                --match-filter "$FILTER" \
+                --retries 3 --fragment-retries 10 \
+                --no-check-certificate --geo-bypass --no-color --ignore-errors --newline \
+                "${{ github.event.inputs.url }}" && break
             else
-              echo "Download attempt failed with exit code $?"
+              yt-dlp \
+                --output "./downloads/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s" \
+                --format "${{ github.event.inputs.quality }}" \
+                --merge-output-format mp4 \
+                --playlist-start "${{ github.event.inputs.start }}" \
+                --playlist-end "${{ github.event.inputs.end }}" \
+                $SORT \
+                --retries 3 --fragment-retries 10 \
+                --no-check-certificate --geo-bypass --no-color --ignore-errors --newline \
+                "${{ github.event.inputs.url }}" && break
             fi
-            
-            RETRY_COUNT=$((RETRY_COUNT+1))
-            [ $RETRY_COUNT -lt $MAX_RETRIES ] && sleep 5
+            sleep 5
           done
 
-          [ "$SUCCESS" = false ] && { echo "All attempts failed."; exit 1; }
-
-          echo "All downloaded files:"
-          find "$FOLDER" -type f -newer marker | while read -r FILE; do
-            FILENAME=$(basename "$FILE")
-            SIZE_BYTES=$(stat -c %s "$FILE")
-            echo "  $FILENAME (${SIZE_BYTES} bytes)"
+          find downloads -type f -newer marker | while read -r f; do
+            echo "  $(basename "$f") ($(stat -c %s "$f") bytes)"
           done
-        shell: bash
 
       - name: Install RAR
         run: sudo apt-get install -y rar
 
-      - name: Conditional split (if any file > 99 MB)
-        id: split
+      - name: Split
         run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          THRESHOLD_MB=99
-
-          cd "$FOLDER"
-
+          cd downloads
           find . -maxdepth 1 -type f | while read -r FILE; do
             FILENAME=$(basename "$FILE")
-            SIZE_BYTES=$(stat -c %s "$FILE")
-            SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
-
-            if (( $(echo "$SIZE_MB > $THRESHOLD_MB" | bc -l) )); then
-              echo "File '${FILENAME}' size ${SIZE_MB} MB exceeds ${THRESHOLD_MB} MB – splitting into 95 MB RAR parts."
-              RANDOM_HEX=$(openssl rand -hex 3)
-              ARCHIVE_NAME="${FILENAME%.*}_${RANDOM_HEX}"
-              rar a -v95m -m5 -ep1 "${ARCHIVE_NAME}.rar" "$FILENAME"
+            SIZE=$(stat -c %s "$FILE")
+            SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+            if (( $(echo "$SIZE_MB > 99" | bc -l) )); then
+              HEX=$(openssl rand -hex 3)
+              NAME="${FILENAME%.*}_${HEX}"
+              rar a -v95m -m5 -ep1 "${NAME}.rar" "$FILENAME"
               rm "$FILENAME"
-              echo "Split completed for ${FILENAME}. Parts:"
-              ls -lh "${ARCHIVE_NAME}.part"*.rar
-            else
-              echo "File '${FILENAME}' size ${SIZE_MB} MB is ≤${THRESHOLD_MB} MB – keeping original file."
             fi
           done
 
-      - name: Commit and push to repository
+      - name: Commit
         run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$FOLDER/"
-          git commit -m "Downloaded videos from playlist" || echo "No changes to commit"
+          git add downloads/
+          git commit -m "Downloaded videos" || echo "Nothing"
           git push
