@@ -64,36 +64,44 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install yt-dlp and bc
-        run: |
-          pip install yt-dlp
-          sudo apt-get update && sudo apt-get install -y bc
+      - name: Install yt-dlp
+        run: pip install yt-dlp
 
-      - name: Build filter file
+      - name: Build filter
+        id: filters
         run: |
-          python3 << 'EOF'
-          import os
-          filter_parts = []
-          max_dur = '${{ github.event.inputs.max_duration_minutes }}'
-          if max_dur and max_dur != '0':
-              sec = int(max_dur) * 60
-              filter_parts.append(f"duration<{sec}")
-          exclude = '${{ github.event.inputs.exclude_keywords }}'
-          if exclude:
-              for kw in exclude.split(','):
-                  kw = kw.strip()
-                  if kw:
-                      filter_parts.append(f"title!~(?i){kw}")
-          filter_str = '&'.join(filter_parts)
-          with open('/tmp/yt_filter.txt', 'w') as f:
-              f.write(filter_str)
-          print(f"Filter: {filter_str if filter_str else 'none'}")
-          EOF
+          FILTER_PARTS=()
+
+          if [ "${{ github.event.inputs.max_duration_minutes }}" != "0" ]; then
+            SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
+            FILTER_PARTS+=("duration<${SEC}")
+          fi
+
+          if [ -n "${{ github.event.inputs.exclude_keywords }}" ]; then
+            IFS=',' read -ra KW <<< "${{ github.event.inputs.exclude_keywords }}"
+            for kw in "${KW[@]}"; do
+              kw=$(echo "$kw" | xargs)
+              if [ -n "$kw" ]; then
+                FILTER_PARTS+=("title!~=(?i)${kw}")
+              fi
+            done
+          fi
+
+          FILTER=""
+          for part in "${FILTER_PARTS[@]}"; do
+            if [ -z "$FILTER" ]; then
+              FILTER="$part"
+            else
+              FILTER="${FILTER}&${part}"
+            fi
+          done
+
+          echo "filter=${FILTER}" >> $GITHUB_OUTPUT
+          echo "Filter: ${FILTER:-none}"
 
       - name: Download
         run: |
           mkdir -p downloads
-          touch marker
 
           SORT=""
           case "${{ github.event.inputs.sort_by }}" in
@@ -101,7 +109,7 @@ jobs:
             "random")       SORT="--playlist-random" ;;
           esac
 
-          FILTER=$(cat /tmp/yt_filter.txt)
+          FILTER="${{ steps.filters.outputs.filter }}"
 
           for i in 1 2 3 4 5; do
             echo "Attempt $i/5"
@@ -123,25 +131,22 @@ jobs:
             sleep 5
           done
 
-          find downloads -type f -newer marker | while read -r f; do
+          find downloads -type f | while read -r f; do
             echo "  $(basename "$f") ($(stat -c %s "$f") bytes)"
           done
 
-      - name: Install RAR
-        run: sudo apt-get install -y rar
-
-      - name: Split
+      - name: Split large files
         run: |
           cd downloads
+
           find . -maxdepth 1 -type f | while read -r FILE; do
             FILENAME=$(basename "$FILE")
             SIZE=$(stat -c %s "$FILE")
-            SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
-            if (( $(echo "$SIZE_MB > 99" | bc -l) )); then
-              HEX=$(openssl rand -hex 3)
-              NAME="${FILENAME%.*}_${HEX}"
-              rar a -v95m -m5 -ep1 "${NAME}.rar" "$FILENAME"
-              rm "$FILENAME"
+            if [ "$SIZE" -gt 104857600 ]; then
+              mkdir -p "../splits/${FILENAME}"
+              split -b 95M "$FILE" "../splits/${FILENAME}/part_"
+              rm "$FILE"
+              echo "Split: ${FILENAME}"
             fi
           done
 
@@ -149,6 +154,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/
-          git commit -m "Downloaded videos" || echo "Nothing"
-          git push
+          git add downloads/ splits/ 2>/dev/null || true
+          git commit -m "Downloaded videos" || echo "Nothing to commit"
+          git push || true
