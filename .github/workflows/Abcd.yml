@@ -69,6 +69,27 @@ jobs:
           pip install yt-dlp
           sudo apt-get update && sudo apt-get install -y bc
 
+      - name: Build filter file
+        run: |
+          python3 << 'EOF'
+          import os
+          filter_parts = []
+          max_dur = '${{ github.event.inputs.max_duration_minutes }}'
+          if max_dur and max_dur != '0':
+              sec = int(max_dur) * 60
+              filter_parts.append(f"duration<{sec}")
+          exclude = '${{ github.event.inputs.exclude_keywords }}'
+          if exclude:
+              for kw in exclude.split(','):
+                  kw = kw.strip()
+                  if kw:
+                      filter_parts.append(f"title!~(?i){kw}")
+          filter_str = '&'.join(filter_parts)
+          with open('/tmp/yt_filter.txt', 'w') as f:
+              f.write(filter_str)
+          print(f"Filter: {filter_str if filter_str else 'none'}")
+          EOF
+
       - name: Download
         run: |
           mkdir -p downloads
@@ -80,24 +101,7 @@ jobs:
             "random")       SORT="--playlist-random" ;;
           esac
 
-          FILTER=""
-          if [ "${{ github.event.inputs.max_duration_minutes }}" != "0" ]; then
-            SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
-            FILTER="duration < ${SEC}"
-          fi
-
-          if [ -n "${{ github.event.inputs.exclude_keywords }}" ]; then
-            IFS=',' read -ra KW <<< "${{ github.event.inputs.exclude_keywords }}"
-            for kw in "${KW[@]}"; do
-              kw=$(echo "$kw" | xargs)
-              if [ -n "$kw" ]; then
-                if [ -n "$FILTER" ]; then FILTER="${FILTER} & "; fi
-                FILTER="${FILTER}title !~ (?i)${kw}"
-              fi
-            done
-          fi
-
-          echo "Filter: ${FILTER:-none}"
+          FILTER=$(cat /tmp/yt_filter.txt)
 
           for i in 1 2 3 4 5; do
             echo "Attempt $i/5"
