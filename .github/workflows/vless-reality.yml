@@ -18,13 +18,10 @@ jobs:
           sudo mv xray/xray /usr/local/bin/
           sudo chmod +x /usr/local/bin/xray
 
-      - name: Generate Keys and Config
+      - name: Create Config
         run: |
           USER_ID=$(/usr/local/bin/xray uuid)
-          KEYS=$(/usr/local/bin/xray x25519)
-          PRIVATE_KEY=$(echo "$KEYS" | sed -n 's/Private key:\s*//p')
-          PUBLIC_KEY=$(echo "$KEYS" | sed -n 's/Public key:\s*//p')
-
+          
           sudo mkdir -p /usr/local/etc/xray
 
           sudo tee /usr/local/etc/xray/config.json << EOF
@@ -47,7 +44,7 @@ jobs:
                   "show": false,
                   "dest": "sheypoor.com:443",
                   "serverNames": ["sheypoor.com"],
-                  "privateKey": "$PRIVATE_KEY"
+                  "privateKey": "kNITNBmiUTzVBarvzUeo9vwdv5YZKCxzx5ZqadE6v08"
                 }
               }
             }],
@@ -59,7 +56,6 @@ jobs:
           EOF
 
           echo "USER_ID=$USER_ID" >> $GITHUB_ENV
-          echo "PUBLIC_KEY=$PUBLIC_KEY" >> $GITHUB_ENV
 
       - name: Run Xray
         run: |
@@ -76,7 +72,7 @@ jobs:
           echo ""
           echo "Server IP: $IP"
           echo "UUID: $USER_ID"
-          echo "Public Key: $PUBLIC_KEY"
+          echo "Public Key: yyQRS33qDcSpp8Yw2-wNeoGJYsDHwkEA9_2P4I3x3yQ"
           echo ""
           echo "--- Client Config ---"
           echo "Protocol: VLESS"
@@ -86,7 +82,7 @@ jobs:
           echo "Flow: xtls-rprx-vision"
           echo "Security: Reality"
           echo "SNI: sheypoor.com"
-          echo "Public Key (pbk): $PUBLIC_KEY"
+          echo "Public Key (pbk): yyQRS33qDcSpp8Yw2-wNeoGJYsDHwkEA9_2P4I3x3yQ"
           echo "Network: tcp"
           echo ""
           echo "=============================================="
