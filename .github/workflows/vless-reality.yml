@@ -1,0 +1,94 @@
+name: Deploy VLESS Reality with Iranian SNI
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */4 * * *'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Xray
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
+          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip Xray-linux-64.zip -d xray
+          sudo mv xray/xray /usr/local/bin/
+          sudo chmod +x /usr/local/bin/xray
+
+      - name: Generate Keys and Config
+        run: |
+          USER_ID=$(/usr/local/bin/xray uuid)
+          PRIVATE_KEY=$(/usr/local/bin/xray x25519 | grep "Private key" | awk '{print $3}')
+          PUBLIC_KEY=$(/usr/local/bin/xray x25519 -i "$PRIVATE_KEY" | grep "Public key" | awk '{print $3}')
+
+          sudo mkdir -p /usr/local/etc/xray
+
+          sudo tee /usr/local/etc/xray/config.json << EOF
+          {
+            "log": { "loglevel": "warning" },
+            "inbounds": [{
+              "port": 443,
+              "protocol": "vless",
+              "settings": {
+                "clients": [{
+                  "id": "$USER_ID",
+                  "flow": "xtls-rprx-vision"
+                }],
+                "decryption": "none"
+              },
+              "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                  "show": false,
+                  "dest": "sheypoor.com:443",
+                  "serverNames": ["sheypoor.com"],
+                  "privateKey": "$PRIVATE_KEY"
+                }
+              }
+            }],
+            "outbounds": [{
+              "protocol": "freedom",
+              "tag": "direct"
+            }]
+          }
+          EOF
+
+          echo "USER_ID=$USER_ID" >> $GITHUB_ENV
+          echo "PUBLIC_KEY=$PUBLIC_KEY" >> $GITHUB_ENV
+
+      - name: Run Xray
+        run: |
+          sudo /usr/local/bin/xray run -config /usr/local/etc/xray/config.json &
+          sleep 3
+
+      - name: Show Connection Info
+        run: |
+          IP=$(curl -s ifconfig.me)
+          echo ""
+          echo "=============================================="
+          echo "  ✅ VLESS Reality is running!"
+          echo "=============================================="
+          echo ""
+          echo "Server IP: $IP"
+          echo "UUID: $USER_ID"
+          echo "Public Key: $PUBLIC_KEY"
+          echo ""
+          echo "--- Client Config ---"
+          echo "Protocol: VLESS"
+          echo "Address: $IP"
+          echo "Port: 443"
+          echo "UUID: $USER_ID"
+          echo "Flow: xtls-rprx-vision"
+          echo "Security: Reality"
+          echo "SNI: sheypoor.com"
+          echo "Public Key (pbk): $PUBLIC_KEY"
+          echo "Network: tcp"
+          echo ""
+          echo "=============================================="
+
+      - name: Keep Alive
+        run: sleep 21600
