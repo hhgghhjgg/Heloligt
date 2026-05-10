@@ -1,155 +1,288 @@
-name: دانلودر پورن هاب
+name: Fetch Telegram Posts (Hybrid + FlareSolverr)
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: 'URL of the video or playlist'
+      channel:
+        description: 'نام کاربری کانال (بدون @)'
         required: true
-        type: string
-      output_folder:
-        description: 'Folder where the video will be saved'
+        default: 'mitivpn'
+      count:
+        description: 'تعداد پست‌های آخر'
         required: false
-        type: string
-        default: 'downloads'
-      quality:
-        description: 'Video quality (yt-dlp format selector)'
-        required: true
-        type: string
-        default: 'bestvideo[height<=240]+bestaudio/best[height<=240][ext=mp4]/best[height<=240]'
-      start:
-        description: 'Start from video # (for playlists)'
-        required: false
-        type: string
-        default: '1'
-      end:
-        description: 'End at video # (for playlists)'
-        required: false
-        type: string
-        default: '1'
-      archive_name:
-        description: 'Base name for the RAR archive (if file is split)'
-        required: false
-        type: string
-        default: 'video'
+        default: '20'
 
 permissions:
   contents: write
 
 jobs:
-  download-and-maybe-split:
+  fetch:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+      - name: Install dependencies
+        run: pip install -q requests beautifulsoup4
 
-      - name: Install yt-dlp and bc
+      - name: Fetch posts from Telegram
+        env:
+          CHANNEL: ${{ github.event.inputs.channel }}
+          COUNT: ${{ github.event.inputs.count }}
+          FLARESOLVERR_URL: http://localhost:8191/v1
         run: |
-          pip install yt-dlp
-          sudo apt-get update && sudo apt-get install -y bc
+          python3 << 'PYEOF'
+          import os, json, requests, re, time
+          from bs4 import BeautifulSoup
+          from datetime import datetime
+          from pathlib import Path
+          from urllib.parse import unquote
 
-      - name: Download video(s) with playlist support (retry up to 5 times)
-        id: download
-        run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          mkdir -p "$FOLDER"
-          touch marker
+          channel = os.environ["CHANNEL"]
+          target_count = int(os.environ["COUNT"])
+          flaresolverr = os.environ["FLARESOLVERR_URL"]
 
-          MAX_RETRIES=5
-          RETRY_COUNT=0
-          SUCCESS=false
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          }
 
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            echo "Download attempt $((RETRY_COUNT+1))/$MAX_RETRIES"
-            yt-dlp \
-              --output "./$FOLDER/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s" \
-              --format "${{ github.event.inputs.quality }}" \
-              --merge-output-format mp4 \
-              --playlist-start "${{ github.event.inputs.start }}" \
-              --playlist-end "${{ github.event.inputs.end }}" \
-              --retries 3 \
-              --fragment-retries 10 \
-              --no-check-certificate \
-              --geo-bypass \
-              --no-color \
-              --ignore-errors \
-              --newline \
-              "${{ github.event.inputs.url }}" && {
-                # Verify that a new file was actually created
-                NEW_FILE=$(find "$FOLDER" -type f -newer marker -print -quit)
-                if [ -n "$NEW_FILE" ]; then
-                  echo "Download succeeded: $NEW_FILE"
-                  SUCCESS=true
-                  break
-                else
-                  echo "The download command exited with code 0, but no new file was found. Retrying..."
-                fi
-              } || {
-                echo "Download attempt failed with exit code $?"
+          # تابع گرفتن صفحه از طریق FlareSolverr
+          def fetch_page(url):
+              payload = {
+                  "cmd": "request.get",
+                  "url": url,
+                  "maxTimeout": 30000
               }
-            RETRY_COUNT=$((RETRY_COUNT+1))
-            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-              echo "Waiting 5 seconds before next attempt..."
-              sleep 5
-            fi
-          done
+              resp = requests.post(flaresolverr, json=payload, timeout=40)
+              data = resp.json()
+              if data.get("status") == "ok":
+                  return data["solution"]["response"]
+              return None
 
-          if [ "$SUCCESS" = false ]; then
-            echo "Error: All $MAX_RETRIES download attempts failed."
-            exit 1
-          fi
+          # جمع‌آوری پست‌ها
+          all_messages = []
+          before_id = None
+          channel_title = f'@{channel}'
 
-          # Find all newly downloaded files
-          echo "All downloaded files:"
-          find "$FOLDER" -type f -newer marker | while read -r FILE; do
-            FILENAME=$(basename "$FILE")
-            SIZE_BYTES=$(stat -c %s "$FILE")
-            echo "  $FILENAME (${SIZE_BYTES} bytes)"
-            echo "file_${FILENAME}=$FILENAME" >> /tmp/files.txt
-          done
-        shell: bash
+          while len(all_messages) < target_count:
+              url = f"https://t.me/s/{channel}"
+              if before_id:
+                  url += f"?before={before_id}"
+              print(f"📡 Fetching via FlareSolverr: {url}")
+              
+              html = fetch_page(url)
+              if not html:
+                  break
+              
+              soup = BeautifulSoup(html, 'html.parser')
+              if not before_id:
+                  title_tag = soup.find('meta', property='og:title')
+                  if title_tag:
+                      channel_title = title_tag['content']
+                      channel_title = re.sub(r'\s*\[ALL CHAPTERS\]', '', channel_title)
+                      channel_title = re.sub(r'^Telegram:\s*(Contact\s*)?', '', channel_title)
+                      channel_title = channel_title.replace('@', '').strip()
+              
+              messages = soup.find_all('div', class_='tgme_widget_message_wrap')
+              if not messages:
+                  break
+              
+              for msg in messages:
+                  if len(all_messages) >= target_count:
+                      break
+                  all_messages.append(msg)
+              
+              last_msg = messages[-1]
+              msg_data = last_msg.get('data-post', '')
+              before_id = msg_data.split('/')[-1] if msg_data else None
+              if not before_id:
+                  break
+              
+              print(f"  Progress: {len(all_messages)}/{target_count}")
+              time.sleep(1)  # Rate limit
 
-      - name: Install RAR
-        run: sudo apt-get install -y rar
+          latest = all_messages[:target_count]
+          print(f"\n📊 Processing {len(latest)} messages")
 
-      - name: Conditional split (if any file > 99 MB)
-        id: split
+          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+          output_dir = f"sites/telegram/{channel}/{timestamp}"
+          media_dir = f"{output_dir}/media"
+          files_dir = f"{output_dir}/files"
+          Path(media_dir).mkdir(parents=True, exist_ok=True)
+          Path(files_dir).mkdir(parents=True, exist_ok=True)
+
+          owner, repo, branch = "hhgghhjgg", "Heloligt", "main"
+          MEDIA_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/media/"
+          FILES_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/files/"
+
+          downloaded_hashes = set()
+
+          def safe_download(url, save_dir, custom_name=None, timeout=60):
+              try:
+                  url_hash = str(hash(url))
+                  if url_hash in downloaded_hashes:
+                      return None
+                  
+                  resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
+                  if resp.status_code != 200:
+                      return None
+                  
+                  if custom_name:
+                      fname = custom_name
+                  else:
+                      cd = resp.headers.get('Content-Disposition', '')
+                      m = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)', cd)
+                      if m:
+                          fname = unquote(m.group(1))
+                      else:
+                          fname = url.split('/')[-1].split('?')[0]
+                  
+                  fname = re.sub(r'[\\/*?:"<>|]', '_', fname or 'file')
+                  if len(fname) > 120:
+                      name, ext = os.path.splitext(fname)
+                      fname = name[:80] + ext
+                  
+                  fpath = os.path.join(save_dir, fname)
+                  if os.path.exists(fpath):
+                      base, ext = os.path.splitext(fname)
+                      counter = 1
+                      while os.path.exists(os.path.join(save_dir, f"{base}_{counter}{ext}")):
+                          counter += 1
+                      fname = f"{base}_{counter}{ext}"
+                      fpath = os.path.join(save_dir, fname)
+                  
+                  with open(fpath, "wb") as f:
+                      for chunk in resp.iter_content(8192):
+                          f.write(chunk)
+                  
+                  sz = os.path.getsize(fpath) // 1024
+                  downloaded_hashes.add(url_hash)
+                  print(f"    ✅ {fname} ({sz}KB)")
+                  return fname
+              except Exception as e:
+                  print(f"    ❌ {str(e)[:50]}")
+                  return None
+
+          # API واسط برای دانلود فایل
+          def download_file_via_api(telegram_link, save_dir):
+              api_url = "https://telegramdownloader.net/proxy.php"
+              data = {"telegram_link": telegram_link}
+              
+              print(f"    🌐 Resolving: {telegram_link}")
+              try:
+                  resp = requests.post(api_url, headers=headers, data=data, timeout=15)
+                  resp.raise_for_status()
+                  result = resp.json()
+                  raw_url = result.get('data', {}).get('data', {}).get('link')
+                  file_name = result.get('data', {}).get('data', {}).get('file_name')
+                  
+                  if not raw_url or not file_name:
+                      print("    ⚠️ No download link")
+                      return None
+                  
+                  print(f"    📁 {file_name}")
+                  return safe_download(raw_url, save_dir, custom_name=file_name)
+              except Exception as e:
+                  print(f"    ❌ API error: {str(e)[:80]}")
+                  return None
+
+          posts_data = []
+
+          for idx, msg in enumerate(latest):
+              msg_id = msg.get('data-post', f'post-{idx}')
+              text_div = msg.find('div', class_='tgme_widget_message_text')
+              raw_text = text_div.get_text('\n', strip=True) if text_div else ""
+              date_tag = msg.find('time', class_='time')
+              date_str = date_tag.get('datetime', '') if date_tag else ''
+              views_tag = msg.find('span', class_='tgme_widget_message_views')
+              views = views_tag.get_text(strip=True) if views_tag else ''
+
+              links = []
+              if text_div:
+                  for a in text_div.find_all('a', href=True):
+                      href = a['href']
+                      if href.startswith('/'):
+                          href = f"https://t.me{href}"
+                      links.append(href)
+
+              # عکس‌ها
+              photos = []
+              for pw in msg.find_all('a', class_='tgme_widget_message_photo_wrap'):
+                  style = pw.get('style', '')
+                  m = re.search(r"background-image:url\('([^']+)'\)", style)
+                  if m:
+                      fname = safe_download(m.group(1), media_dir)
+                      if fname:
+                          photos.append(fname)
+
+              # ویدیوها
+              videos = []
+              for vt in msg.find_all('video'):
+                  src = vt.get('src') or vt.get('data-video', '')
+                  if src:
+                      fname = safe_download(src, media_dir, timeout=120)
+                      if fname:
+                          videos.append(fname)
+
+              files_downloaded = []
+
+              # فایل‌ها با API واسط
+              doc_wrap = msg.find('a', class_='tgme_widget_message_document_wrap')
+              if doc_wrap:
+                  doc_url = doc_wrap.get('href')
+                  if doc_url:
+                      if doc_url.startswith('/'):
+                          doc_url = f"https://t.me{doc_url}"
+                      fname = download_file_via_api(doc_url, files_dir)
+                      if fname:
+                          files_downloaded.append(fname)
+
+              for link in links:
+                  if re.search(r't\.me/[^/]+/\d+$', link):
+                      fname = download_file_via_api(link, files_dir)
+                      if fname and fname not in files_downloaded:
+                          files_downloaded.append(fname)
+
+              posts_data.append({
+                  "id": msg_id, "date": date_str, "text": raw_text,
+                  "views": views, "links": links,
+                  "photos": photos, "videos": videos, "files": files_downloaded,
+              })
+              print(f"  Post {idx+1}/{len(latest)}: {len(photos)}📸 {len(videos)}🎬 {len(files_downloaded)}📄")
+
+          with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
+              json.dump({
+                  "channel": channel, "title": channel_title,
+                  "posts_count": len(posts_data), "posts": posts_data,
+                  "_media_base": MEDIA_BASE_RAW, "_files_base": FILES_BASE_RAW,
+              }, f, ensure_ascii=False, indent=2)
+
+          cache_dir = "sites/telegram"
+          Path(cache_dir).mkdir(parents=True, exist_ok=True)
+          with open(f"{cache_dir}/{channel}.json", "w", encoding="utf-8") as f:
+              json.dump({
+                  "channel": channel, "title": channel_title,
+                  "posts_count": len(posts_data), "posts": posts_data,
+                  "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                  "_media_base": MEDIA_BASE_RAW, "_files_base": FILES_BASE_RAW,
+              }, f, ensure_ascii=False, indent=2)
+
+          tf = sum(len(p['files']) for p in posts_data)
+          print(f"\n✅ Done! {len(posts_data)} posts | {sum(len(p['photos']) for p in posts_data)}📸 {sum(len(p['videos']) for p in posts_data)}🎬 {tf}📄")
+          PYEOF
+
+      - name: Commit and push
         run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          THRESHOLD_MB=99
-
-          cd "$FOLDER"
-
-          # Process all downloaded files
-          find . -maxdepth 1 -type f | while read -r FILE; do
-            FILENAME=$(basename "$FILE")
-            SIZE_BYTES=$(stat -c %s "$FILE")
-            SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
-
-            if (( $(echo "$SIZE_MB > $THRESHOLD_MB" | bc -l) )); then
-              echo "File '${FILENAME}' size ${SIZE_MB} MB exceeds ${THRESHOLD_MB} MB – splitting into 95 MB RAR parts."
-              RANDOM_HEX=$(openssl rand -hex 3)
-              ARCHIVE_NAME="${FILENAME%.*}_${RANDOM_HEX}"
-              rar a -v95m -m5 -ep1 "${ARCHIVE_NAME}.rar" "$FILENAME"
-              rm "$FILENAME"
-              echo "Split completed for ${FILENAME}. Parts:"
-              ls -lh "${ARCHIVE_NAME}.part"*.rar
-            else
-              echo "File '${FILENAME}' size ${SIZE_MB} MB is ≤${THRESHOLD_MB} MB – keeping original file."
-            fi
-          done
-
-      - name: Commit and push to repository
-        run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$FOLDER/"
-          git commit -m "Downloaded videos from playlist" || echo "No changes to commit"
-          git push
+          git add sites/telegram/
+          git commit -m "📡 @${{ github.event.inputs.channel }} (${{ github.event.inputs.count }} posts) | $(date '+%Y-%m-%d %H:%M')" || echo "Nothing to commit"
+          git pull --rebase && git push || true
