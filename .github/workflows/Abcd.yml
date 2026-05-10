@@ -92,37 +92,30 @@ jobs:
               kw=$(echo "$kw" | xargs)
               if [ -n "$kw" ]; then
                 if [ -n "$FILTER" ]; then FILTER="${FILTER} & "; fi
-                FILTER="${FILTER}title !* '${kw}'"
+                FILTER="${FILTER}title !~ (?i)${kw}"
               fi
             done
           fi
 
+          echo "Filter: ${FILTER:-none}"
+
           for i in 1 2 3 4 5; do
             echo "Attempt $i/5"
+            CMD=(yt-dlp
+              --output "./downloads/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
+              --format "${{ github.event.inputs.quality }}"
+              --merge-output-format mp4
+              --playlist-start "${{ github.event.inputs.start }}"
+              --playlist-end "${{ github.event.inputs.end }}"
+              $SORT
+              --retries 3 --fragment-retries 10
+              --no-check-certificate --geo-bypass --no-color --ignore-errors --newline
+            )
             if [ -n "$FILTER" ]; then
-              yt-dlp \
-                --output "./downloads/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s" \
-                --format "${{ github.event.inputs.quality }}" \
-                --merge-output-format mp4 \
-                --playlist-start "${{ github.event.inputs.start }}" \
-                --playlist-end "${{ github.event.inputs.end }}" \
-                $SORT \
-                --match-filter "$FILTER" \
-                --retries 3 --fragment-retries 10 \
-                --no-check-certificate --geo-bypass --no-color --ignore-errors --newline \
-                "${{ github.event.inputs.url }}" && break
-            else
-              yt-dlp \
-                --output "./downloads/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s" \
-                --format "${{ github.event.inputs.quality }}" \
-                --merge-output-format mp4 \
-                --playlist-start "${{ github.event.inputs.start }}" \
-                --playlist-end "${{ github.event.inputs.end }}" \
-                $SORT \
-                --retries 3 --fragment-retries 10 \
-                --no-check-certificate --geo-bypass --no-color --ignore-errors --newline \
-                "${{ github.event.inputs.url }}" && break
+              CMD+=(--match-filter "$FILTER")
             fi
+            CMD+=("${{ github.event.inputs.url }}")
+            "${CMD[@]}" && break
             sleep 5
           done
 
