@@ -51,63 +51,79 @@ jobs:
           html = d["solution"]["response"]
           cookies = d["solution"].get("cookies", [])
           ua = d["solution"].get("userAgent", "")
-          print(f"✅ Page: {len(html)} bytes, {len(cookies)} cookies")
 
-          soup = BeautifulSoup(html, "html.parser")
           ses = requests.Session()
           ses.headers.update({"User-Agent": ua})
           for c in cookies: ses.cookies.set(c["name"], c["value"])
 
-          # --- 1. Find download links in HTML ---
+          soup = BeautifulSoup(html, "html.parser")
+
+          # ۱. پیدا کردن JSON-LD schema
           download_urls = []
+          for script in soup.find_all("script", type="application/ld+json"):
+              try:
+                  data = json.loads(script.string)
+                  if isinstance(data, dict) and "offers" in data:
+                      offers = data["offers"] if isinstance(data["offers"], list) else [data["offers"]]
+                      for offer in offers:
+                          if "downloadUrl" in offer:
+                              download_urls.append(offer["downloadUrl"])
+                          if "url" in offer:
+                              download_urls.append(offer["url"])
+              except: pass
+
+          # ۲. پیدا کردن همه لینک‌های دانلود از تگ‌های a
           for a in soup.find_all("a", href=True):
               href = a["href"]
-              if any(x in href.lower() for x in [".fbx", ".obj", ".gltf", ".glb", ".blend", ".zip", "/download/"]):
+              if any(x in href.lower() for x in [".fbx", ".obj", ".gltf", ".glb", ".blend", ".zip",
+                  "/download/", "downloads", "files", "asset"]):
                   if not href.startswith("http"): href = "https://www.cgtrader.com" + href
                   download_urls.append(href)
-              # Capture inline schema
-              if "download" in href.lower(): download_urls.append(href)
 
-          # --- 2. Look inside JSON-LD / React hydration ---
-          for script in soup.find_all("script"):
-              if script.string and '"downloadUrl"' in script.string:
-                  matches = re.findall(r'"downloadUrl"\s*:\s*"([^"]+)"', script.string)
-                  download_urls.extend(matches)
-
-          # --- 3. Try API guess ---
-          api_guesses = [
-              f"https://www.cgtrader.com/api/models/{uid}/download",
-              f"https://api.cgtrader.com/v1/3d-models/{uid}/download"
+          # ۳. جستجوی regex برای الگوهای دانلود
+          patterns = [
+              r'"downloadUrl"\s*:\s*"([^"]+)"',
+              r'"file"\s*:\s*"([^"]+)"',
+              r'"(https?://[^"]+\.(?:fbx|obj|gltf|glb|blend|zip|rar)[^"]*)"',
           ]
-          download_urls.extend(api_guesses)
+          for p in patterns:
+              matches = re.findall(p, html)
+              download_urls.extend(matches)
 
-          # --- 4. Try every found URL ---
           os.makedirs("3d-models", exist_ok=True)
           downloaded = False
-          for idx, durl in enumerate(download_urls[:10]):
-              if downloaded: break
-              print(f"📥 [{idx+1}] Trying: {durl[:120]}")
+
+          # حذف تکراری‌ها
+          download_urls = list(set(download_urls))
+          print(f"🔗 Found {len(download_urls)} unique links")
+
+          for idx, durl in enumerate(download_urls[:20]):
+              print(f"📥 [{idx+1}] {durl[:150]}")
               try:
                   dr = ses.get(durl, timeout=60, stream=True)
-                  if dr.status_code == 200 and int(dr.headers.get("Content-Length", "0")) > 1000:
+                  ct = dr.headers.get("Content-Type", "")
+                  cl = int(dr.headers.get("Content-Length", "0"))
+                  
+                  if dr.status_code == 200 and cl > 1000:
                       cd = dr.headers.get("Content-Disposition", "")
-                      fname = f"model_{uid}.zip"
+                      fname = f"model_{uid}_{idx}.zip"
                       m = re.search(r'filename="?([^"]+)"?', cd)
                       if m: fname = m.group(1)
+                      fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
+                      
                       path = f"3d-models/{fname}"
                       with open(path, "wb") as f:
                           for chunk in dr.iter_content(8192): f.write(chunk)
                       print(f"  ✅ Saved: {fname} ({os.path.getsize(path)//1024}KB)")
                       downloaded = True
+                      break
                   else:
-                      print(f"  ⚠️ HTTP {dr.status_code} / size={dr.headers.get('Content-Length','?')}")
+                      print(f"  ⚠️ HTTP {dr.status_code}, size={cl}, type={ct[:50]}")
               except Exception as e:
                   print(f"  ❌ {str(e)[:60]}")
 
           if not downloaded:
               print("❌ Could not download any file.")
-          else:
-              print("✅ Done!")
           PYEOF
       - name: Commit
         run: |
