@@ -1,131 +1,143 @@
-name: Download 3D Models from Hugging Face
+name: Generate 3D Character with CharacterGen
 
 on:
   workflow_dispatch:
     inputs:
-      repo_id:
-        description: 'Hugging Face Dataset Repo ID'
+      prompt:
+        description: 'Describe your character'
         required: true
         type: string
-        default: 'allenai/objaverse-xl'
-      format:
-        description: 'File format'
+        default: 'A cute anime girl with long blue hair, wearing a school uniform, standing pose'
+      texture_resolution:
+        description: 'Texture resolution'
+        required: false
+        type: choice
+        options:
+          - '1024'
+          - '2048'
+          - '4096'
+        default: '2048'
+      output_format:
+        description: 'Output format'
         required: false
         type: choice
         options:
           - 'glb'
-          - 'gltf'
           - 'obj'
           - 'fbx'
-          - 'all'
         default: 'glb'
-      max_models:
-        description: 'Max number of models to download'
-        required: false
-        type: string
-        default: '3'
-      subfolder:
-        description: 'Subfolder within the dataset (leave empty if none)'
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: write
 
 jobs:
-  download:
+  generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Python Dependencies
-        run: pip install requests
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-      - name: List and Download Models
+      - name: Install Dependencies
+        run: pip install requests huggingface_hub gradio_client
+
+      - name: Generate Character
         env:
-          REPO_ID: ${{ github.event.inputs.repo_id }}
-          FORMAT: ${{ github.event.inputs.format }}
-          MAX_MODELS: ${{ github.event.inputs.max_models }}
-          SUB: ${{ github.event.inputs.subfolder }}
+          PROMPT: ${{ github.event.inputs.prompt }}
+          TEX_RES: ${{ github.event.inputs.texture_resolution }}
+          FORMAT: ${{ github.event.inputs.output_format }}
         run: |
           python3 << 'PYEOF'
-          import requests, os, sys, subprocess, time
+          import requests, os, json, time, base64
+          from gradio_client import Client
 
-          repo_id = os.environ["REPO_ID"]
+          prompt = os.environ["PROMPT"]
+          tex_res = int(os.environ["TEX_RES"])
           fmt = os.environ["FORMAT"]
-          max_models = int(os.environ["MAX_MODELS"])
-          sub = os.environ["SUB"]
 
-          print(f"📡 Fetching file list from: {repo_id}")
-          api_url = f"https://huggingface.co/api/datasets/{repo_id}"
-          resp = requests.get(api_url, timeout=30)
-          if resp.status_code != 200:
-              print(f"❌ API Error: {resp.status_code}")
-              sys.exit(1)
+          print(f"🎨 Generating: {prompt}")
+          print(f"📐 Texture: {tex_res}px, Format: {fmt}")
 
-          siblings = resp.json().get("siblings", [])
-          print(f"📊 Total files: {len(siblings)}")
+          # Use CharacterGen Space on Hugging Face
+          space_url = "https://vast-ai-charactergen.hf.space/"
 
-          # Filter by format and subfolder
-          extensions = [fmt] if fmt != "all" else ["glb", "gltf", "obj", "fbx"]
+          try:
+              client = Client(space_url)
+              print(f"✅ Connected to CharacterGen")
 
-          matching = []
-          for sib in siblings:
-              fname = sib["rfilename"]
-              if sub and not fname.startswith(sub):
-                  continue
-              if any(fname.lower().endswith(f".{ext}") or fname.lower().endswith(f".{ext}.gz") for ext in extensions):
-                  matching.append(fname)
+              # Generate 3D model
+              result = client.predict(
+                  prompt=prompt,
+                  texture_resolution=tex_res,
+                  output_format=fmt,
+                  api_name="/predict"
+              )
 
-          print(f"🎯 Matching files: {len(matching)}")
+              print(f"🔗 Result: {result}")
 
-          if not matching:
-              print("⚠️ No matching files found!")
-              sys.exit(0)
+              # The result is usually a file path or dict
+              out_dir = "generated-3d-models"
+              os.makedirs(out_dir, exist_ok=True)
 
-          # Pick first N files
-          to_download = matching[:max_models]
-          print(f"📥 Downloading {len(to_download)} files...")
+              if isinstance(result, str) and os.path.exists(result):
+                  import shutil
+                  fname = f"character.{fmt}"
+                  shutil.copy(result, os.path.join(out_dir, fname))
+                  print(f"✅ Saved: {fname}")
+              elif isinstance(result, dict):
+                  for key in ["result", "output", "file", "model"]:
+                      if key in result:
+                          path = result[key]
+                          if isinstance(path, str):
+                              if path.startswith("http"):
+                                  # Download
+                                  r = requests.get(path, timeout=60)
+                                  fname = f"character.{fmt}"
+                                  fpath = os.path.join(out_dir, fname)
+                                  with open(fpath, "wb") as f:
+                                      f.write(r.content)
+                                  print(f"✅ Downloaded: {fname} ({len(r.content)//1024}KB)")
+                              elif os.path.exists(path):
+                                  import shutil
+                                  shutil.copy(path, os.path.join(out_dir, f"character.{fmt}"))
+                                  print(f"✅ Saved: character.{fmt}")
+              else:
+                  print(f"⚠️ Unexpected result type: {type(result)}")
+                  print(f"  Raw: {str(result)[:500]}")
 
-          out_dir = "3d-models"
-          os.makedirs(out_dir, exist_ok=True)
+          except Exception as e:
+              print(f"⚠️ Space failed: {str(e)[:100]}")
+              print("🔄 Attempting API-only approach...")
 
-          for idx, fname in enumerate(to_download):
-              url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{fname}"
-              local_name = os.path.basename(fname)
-              local_path = os.path.join(out_dir, local_name)
+              # Fallback: direct API call
+              api_url = "https://api-inference.huggingface.co/models/VAST-AI/CharacterGen"
+              headers = {"Authorization": "Bearer ${{ secrets.HF_TOKEN }}"}
 
-              print(f"  [{idx+1}/{len(to_download)}] {local_name}")
-              # Use curl with retry
-              for attempt in range(3):
-                  ret = subprocess.run([
-                      "curl", "-L", "-o", local_path,
-                      "--retry", "3", "-C", "-",
-                      "--max-time", "300",
-                      url
-                  ], capture_output=True, text=True)
-                  if ret.returncode == 0:
-                      sz = os.path.getsize(local_path)
-                      print(f"    ✅ Done ({sz//1024}KB)")
-                      break
-                  else:
-                      if attempt < 2:
-                          print(f"    ⚠️ Retry {attempt+1}...")
-                          time.sleep(5)
-                      else:
-                          print(f"    ❌ Failed: {ret.stderr[:100]}")
+              resp = requests.post(api_url, json={"inputs": prompt}, timeout=120)
 
-          print(f"\n✅ Downloaded to: {out_dir}/")
+              if resp.status_code == 200:
+                  out_dir = "generated-3d-models"
+                  os.makedirs(out_dir, exist_ok=True)
+                  fname = f"character.{fmt}"
+                  fpath = os.path.join(out_dir, fname)
+                  with open(fpath, "wb") as f:
+                      f.write(resp.content)
+                  print(f"✅ Generated via API: {fname} ({len(resp.content)//1024}KB)")
+              else:
+                  print(f"❌ API failed: {resp.status_code}")
+                  print(resp.text[:300])
           PYEOF
 
       - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add 3d-models/ 2>/dev/null || true
-          git commit -m "📦 3D models from ${{ github.event.inputs.repo_id }}" || echo "Nothing"
+          git add generated-3d-models/ 2>/dev/null || true
+          git commit -m "🎨 Generated 3D character: ${{ github.event.inputs.prompt }}" || echo "Nothing"
           git pull --rebase && git push || true
