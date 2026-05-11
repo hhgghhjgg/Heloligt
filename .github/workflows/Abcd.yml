@@ -1,166 +1,155 @@
-name: دانلودر پورن هاب
+name: Download CGTrader 3D Model (FlareSolverr Direct)
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: 'URL of the video, search, or playlist'
+      model_url:
+        description: 'CGTrader model URL'
         required: true
         type: string
-      output_folder:
-        description: 'Folder where the video will be saved'
-        required: false
-        type: string
-        default: 'downloads'
-      quality:
-        description: 'Video quality'
-        required: true
-        type: string
-        default: 'bestvideo[height<=240]+bestaudio/best[height<=240][ext=mp4]/best[height<=240]'
-      sort_by:
-        description: 'Sort order'
+        default: 'https://www.cgtrader.com/3d-models/character/woman/anime-character-casual-female-sleeveless-c092f010-d071-4994-97d2-586d0f24542a'
+      model_format:
+        description: 'فرمت فایل'
         required: false
         type: choice
         options:
-          - 'none (default)'
-          - 'newest first'
-          - 'oldest first'
-          - 'random'
-        default: 'none (default)'
-      exclude_keywords:
-        description: 'Keywords to exclude (comma)'
-        required: false
-        type: string
-        default: ''
-      max_duration_minutes:
-        description: 'Max duration in minutes (0=no limit)'
-        required: false
-        type: string
-        default: '0'
-      start:
-        description: 'Start from video #'
-        required: false
-        type: string
-        default: '1'
-      end:
-        description: 'End at video #'
-        required: false
-        type: string
-        default: '5'
+          - 'fbx'
+          - 'obj'
+          - 'gltf'
+          - 'blend'
+          - 'all'
+        default: 'fbx'
 
 permissions:
   contents: write
 
 jobs:
-  download-and-maybe-split:
+  download:
     runs-on: ubuntu-latest
 
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install yt-dlp
-        run: pip install yt-dlp
-
-      - name: Build filter
-        id: filters
+      - name: Wait for FlareSolverr
         run: |
-          FILTER_PARTS=()
-
-          if [ "${{ github.event.inputs.max_duration_minutes }}" != "0" ]; then
-            SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
-            FILTER_PARTS+=("duration<${SEC}")
-          fi
-
-          if [ -n "${{ github.event.inputs.exclude_keywords }}" ]; then
-            IFS=',' read -ra KW <<< "${{ github.event.inputs.exclude_keywords }}"
-            for kw in "${KW[@]}"; do
-              kw=$(echo "$kw" | xargs)
-              if [ -n "$kw" ]; then
-                FILTER_PARTS+=("title!~=(?i)${kw}")
-              fi
-            done
-          fi
-
-          FILTER=""
-          for part in "${FILTER_PARTS[@]}"; do
-            if [ -z "$FILTER" ]; then
-              FILTER="$part"
-            else
-              FILTER="${FILTER}&${part}"
+          for i in $(seq 1 15); do
+            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+            if [ "$STATUS" = "ok" ]; then
+              echo "✅ FlareSolverr ready"
+              break
             fi
+            echo "Waiting... ($i/15)"
+            sleep 4
           done
 
-          echo "filter=${FILTER}" >> $GITHUB_OUTPUT
-          echo "Filter: ${FILTER:-none}"
+      - name: Install Python Dependencies
+        run: pip install requests beautifulsoup4
 
-      - name: Download
+      - name: Download Model Directly
         run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          mkdir -p "$FOLDER"
+          python3 << 'EOF'
+          import requests, re, os, json
+          from bs4 import BeautifulSoup
 
-          SORT=""
-          case "${{ github.event.inputs.sort_by }}" in
-            "newest first") SORT="--playlist-reverse" ;;
-            "random")       SORT="--playlist-random" ;;
-          esac
+          model_url = "${{ github.event.inputs.model_url }}"
+          model_format = "${{ github.event.inputs.model_format }}"
+          uid = model_url.strip("/").split("-")[-1]
 
-          FILTER="${{ steps.filters.outputs.filter }}"
+          print(f"🌐 Fetching page {model_url} via FlareSolverr...")
 
-          for i in 1 2 3 4 5; do
-            echo "Attempt $i/5"
-            CMD=(yt-dlp
-              --output "./${FOLDER}/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
-              --format "${{ github.event.inputs.quality }}"
-              --merge-output-format mp4
-              --playlist-start "${{ github.event.inputs.start }}"
-              --playlist-end "${{ github.event.inputs.end }}"
-              $SORT
-              --retries 3 --fragment-retries 10
-              --no-check-certificate --geo-bypass --no-color --ignore-errors --newline
-            )
-            if [ -n "$FILTER" ]; then
-              CMD+=(--match-filter "$FILTER")
-            fi
-            CMD+=("${{ github.event.inputs.url }}")
-            "${CMD[@]}" && break
-            sleep 5
-          done
+          resp = requests.post("http://localhost:8191/v1", json={
+              "cmd": "request.get",
+              "url": model_url,
+              "maxTimeout": 90000
+          }, timeout=120)
 
-          echo "Downloaded files:"
-          find "$FOLDER" -type f | while read -r f; do
-            echo "  $(basename "$f") ($(stat -c %s "$f") bytes)"
-          done
+          data = resp.json()
 
-      - name: Split large files
-        run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          cd "$FOLDER"
+          if data.get("status") != "ok":
+              print(f"❌ FlareSolverr failed: {data.get('message')}")
+              exit(1)
 
-          find . -maxdepth 1 -type f | while read -r FILE; do
-            FILENAME=$(basename "$FILE")
-            SIZE=$(stat -c %s "$FILE")
-            if [ "$SIZE" -gt 104857600 ]; then
-              mkdir -p "../splits/${FILENAME}"
-              split -b 95M "$FILE" "../splits/${FILENAME}/part_"
-              rm "$FILE"
-              echo "Split: ${FILENAME}"
-            fi
-          done
+          html_content = data["solution"]["response"]
+          cookies = data["solution"].get("cookies", [])
+          user_agent = data["solution"].get("userAgent", "")
 
-      - name: Commit and push
+          print(f"✅ Got page ({len(html_content)} bytes) and {len(cookies)} cookies")
+
+          # Parse HTML for download buttons
+          soup = BeautifulSoup(html_content, "html.parser")
+          
+          download_links = []
+          for a in soup.find_all("a", href=True):
+              href = a["href"]
+              if model_format == "all":
+                  if any(ext in href.lower() for ext in [".fbx", ".obj", ".gltf", ".glb", ".blend", ".zip"]):
+                      download_links.append(href)
+              else:
+                  if f".{model_format}" in href.lower() or model_format in href.lower():
+                      download_links.append(href)
+
+          # Also look for data attributes
+          for div in soup.find_all(attrs={"data-download-url": True}):
+              download_links.append(div["data-download-url"])
+
+          if not download_links:
+              # Try direct download URL pattern
+              download_links.append(f"https://www.cgtrader.com/download/{uid}")
+
+          print(f"🔗 Found {len(download_links)} download links")
+
+          # Download files
+          session = requests.Session()
+          session.headers.update({
+              "User-Agent": user_agent or "Mozilla/5.0",
+              "Referer": model_url
+          })
+
+          # Add cookies
+          for c in cookies:
+              session.cookies.set(c.get("name", ""), c.get("value", ""), domain=c.get("domain", ""))
+
+          os.makedirs("3d-models", exist_ok=True)
+
+          for idx, link in enumerate(download_links[:5]):
+              if not link.startswith("http"):
+                  link = "https://www.cgtrader.com" + link
+
+              print(f"📥 Downloading: {link}")
+              try:
+                  dl_resp = session.get(link, timeout=120, stream=True)
+                  if dl_resp.status_code == 200:
+                      cd = dl_resp.headers.get("Content-Disposition", "")
+                      filename = f"model_{idx}.{model_format}"
+                      match = re.search(r'filename="?([^"]+)"?', cd)
+                      if match:
+                          filename = match.group(1)
+                      
+                      filepath = f"3d-models/{filename}"
+                      with open(filepath, "wb") as f:
+                          for chunk in dl_resp.iter_content(8192):
+                              f.write(chunk)
+                      size = os.path.getsize(filepath) // 1024
+                      print(f"  ✅ Saved: {filename} ({size}KB)")
+                  else:
+                      print(f"  ❌ Download failed: HTTP {dl_resp.status_code}")
+              except Exception as e:
+                  print(f"  ❌ Error: {str(e)[:50]}")
+
+          print("✅ Done!")
+          EOF
+
+      - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/ splits/ 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Downloaded videos"
-            git pull --rebase && git push
-          fi
+          git add 3d-models/ 2>/dev/null || true
+          git commit -m "📦 CGTrader 3D model" || echo "Nothing to commit"
+          git pull --rebase && git push || true
