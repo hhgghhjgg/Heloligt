@@ -1,13 +1,34 @@
-name: Download CGTrader Model (neopostmodern)
+name: Download 3D Models from Hugging Face
 
 on:
   workflow_dispatch:
     inputs:
-      model_url:
-        description: 'CGTrader free model URL'
+      repo_id:
+        description: 'Hugging Face Dataset Repo ID'
         required: true
         type: string
-        default: 'https://www.cgtrader.com/free-3d-models/character/woman/anime-character-casual-female-sleeveless-c092f010-d071-4994-97d2-586d0f24542a'
+        default: 'allenai/objaverse-xl'
+      format:
+        description: 'File format'
+        required: false
+        type: choice
+        options:
+          - 'glb'
+          - 'gltf'
+          - 'obj'
+          - 'fbx'
+          - 'all'
+        default: 'glb'
+      max_models:
+        description: 'Max number of models to download'
+        required: false
+        type: string
+        default: '3'
+      subfolder:
+        description: 'Subfolder within the dataset (leave empty if none)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -21,159 +42,84 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Clone cgtrader-downloader
-        run: |
-          git clone https://github.com/neopostmodern/cgtrader-downloader.git
-          cd cgtrader-downloader
-          echo "✅ Repository cloned"
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
       - name: Install Python Dependencies
-        run: pip install requests selenium beautifulsoup4
+        run: pip install requests
 
-      - name: Install Firefox
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y firefox
-
-      - name: Install Geckodriver
-        run: |
-          wget https://github.com/mozilla/geckodriver/releases/latest/download/geckodriver-v0.36.0-linux64.tar.gz
-          tar -xvzf geckodriver-v0.36.0-linux64.tar.gz
-          sudo mv geckodriver /usr/local/bin/
-          sudo chmod +x /usr/local/bin/geckodriver
-          echo "✅ Geckodriver installed"
-
-      - name: Download Model
+      - name: List and Download Models
+        env:
+          REPO_ID: ${{ github.event.inputs.repo_id }}
+          FORMAT: ${{ github.event.inputs.format }}
+          MAX_MODELS: ${{ github.event.inputs.max_models }}
+          SUB: ${{ github.event.inputs.subfolder }}
         run: |
           python3 << 'PYEOF'
-          import os, sys, time, re, shutil
-          from selenium import webdriver
-          from selenium.webdriver.firefox.options import Options
-          from selenium.webdriver.firefox.service import Service
-          from selenium.webdriver.common.by import By
-          from selenium.webdriver.support.ui import WebDriverWait
-          from selenium.webdriver.support import expected_conditions as EC
-          from selenium.common.exceptions import TimeoutException, NoSuchElementException
-          import requests
+          import requests, os, sys, subprocess, time
 
-          model_url = "${{ github.event.inputs.model_url }}"
-          download_dir = os.path.join(os.getcwd(), "3d-models")
-          os.makedirs(download_dir, exist_ok=True)
+          repo_id = os.environ["REPO_ID"]
+          fmt = os.environ["FORMAT"]
+          max_models = int(os.environ["MAX_MODELS"])
+          sub = os.environ["SUB"]
 
-          print(f"🎯 Model URL: {model_url}")
-          print(f"📁 Download folder: {download_dir}")
+          print(f"📡 Fetching file list from: {repo_id}")
+          api_url = f"https://huggingface.co/api/datasets/{repo_id}"
+          resp = requests.get(api_url, timeout=30)
+          if resp.status_code != 200:
+              print(f"❌ API Error: {resp.status_code}")
+              sys.exit(1)
 
-          # Firefox options
-          options = Options()
-          options.add_argument("--headless")
-          options.add_argument("--no-sandbox")
-          options.add_argument("--disable-dev-shm-usage")
-          options.add_argument("--window-size=1920,1080")
+          siblings = resp.json().get("siblings", [])
+          print(f"📊 Total files: {len(siblings)}")
 
-          # Set download preferences
-          options.set_preference("browser.download.folderList", 2)
-          options.set_preference("browser.download.dir", download_dir)
-          options.set_preference("browser.download.manager.showWhenStarting", False)
-          options.set_preference("browser.helperApps.neverAsk.saveToDisk", "application/zip,application/octet-stream,application/x-zip-compressed")
+          # Filter by format and subfolder
+          extensions = [fmt] if fmt != "all" else ["glb", "gltf", "obj", "fbx"]
 
-          driver = webdriver.Firefox(options=options)
-          
-          try:
-              print("🌐 Opening page...")
-              driver.get(model_url)
-              time.sleep(5)
+          matching = []
+          for sib in siblings:
+              fname = sib["rfilename"]
+              if sub and not fname.startswith(sub):
+                  continue
+              if any(fname.lower().endswith(f".{ext}") or fname.lower().endswith(f".{ext}.gz") for ext in extensions):
+                  matching.append(fname)
 
-              # Check if free model
-              page_source = driver.page_source
-              
-              # Scroll down to load everything
-              driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-              time.sleep(2)
+          print(f"🎯 Matching files: {len(matching)}")
 
-              # Look for download button
-              download_clicked = False
-              
-              # Try multiple selectors
-              selectors = [
-                  "a[href*='download']",
-                  "a[href*='free']",
-                  "button:contains('Download')",
-                  "button:contains('FREE')",
-                  ".download-btn",
-                  ".free-download-btn",
-                  "a.btn--download",
-                  "[data-action='download']",
-              ]
+          if not matching:
+              print("⚠️ No matching files found!")
+              sys.exit(0)
 
-              for selector in selectors:
-                  try:
-                      btn = driver.find_element(By.CSS_SELECTOR, selector)
-                      if btn:
-                          print(f"  🖱️ Clicking: {btn.text.strip()}")
-                          btn.click()
-                          download_clicked = True
+          # Pick first N files
+          to_download = matching[:max_models]
+          print(f"📥 Downloading {len(to_download)} files...")
+
+          out_dir = "3d-models"
+          os.makedirs(out_dir, exist_ok=True)
+
+          for idx, fname in enumerate(to_download):
+              url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{fname}"
+              local_name = os.path.basename(fname)
+              local_path = os.path.join(out_dir, local_name)
+
+              print(f"  [{idx+1}/{len(to_download)}] {local_name}")
+              # Use curl with retry
+              for attempt in range(3):
+                  ret = subprocess.run([
+                      "curl", "-L", "-o", local_path,
+                      "--retry", "3", "-C", "-",
+                      "--max-time", "300",
+                      url
+                  ], capture_output=True, text=True)
+                  if ret.returncode == 0:
+                      sz = os.path.getsize(local_path)
+                      print(f"    ✅ Done ({sz//1024}KB)")
+                      break
+                  else:
+                      if attempt < 2:
+                          print(f"    ⚠️ Retry {attempt+1}...")
                           time.sleep(5)
-                          break
-                  except:
-                      continue
+                      else:
+                          print(f"    ❌ Failed: {ret.stderr[:100]}")
 
-              if not download_clicked:
-                  # Try JavaScript click on any download-looking element
-                  script = """
-                  var buttons = document.querySelectorAll('a, button');
-                  for (var i = 0; i < buttons.length; i++) {
-                      var text = buttons[i].textContent.toLowerCase();
-                      var href = buttons[i].getAttribute('href') || '';
-                      if (text.includes('download') || text.includes('free') || href.includes('download')) {
-                          buttons[i].click();
-                          return true;
-                      }
-                  }
-                  return false;
-                  """
-                  download_clicked = driver.execute_script(script)
-                  if download_clicked:
-                      print("  🖱️ Clicked via JavaScript")
-                      time.sleep(5)
-
-              # Wait for download to complete
-              print("⏳ Waiting for download...")
-              time.sleep(10)
-
-              # Check if any file was downloaded
-              files = os.listdir(download_dir)
-              zip_files = [f for f in files if f.endswith('.zip') or f.endswith('.fbx') or f.endswith('.obj')]
-              
-              if zip_files:
-                  print(f"✅ Downloaded: {zip_files}")
-              else:
-                  print("⚠️ No file downloaded via browser. Trying direct link extraction...")
-                  
-                  # Extract download URL from page
-                  page_source = driver.page_source
-                  matches = re.findall(r'(https?://[^"\']+\.(?:zip|fbx|obj|glb|blend)[^"\']*)', page_source)
-                  if matches:
-                      print(f"🔗 Found {len(matches)} links in page source")
-                      for match in matches[:5]:
-                          print(f"📥 Downloading: {match[:100]}")
-                          try:
-                              resp = requests.get(match, timeout=60, stream=True)
-                              if resp.status_code == 200 and len(resp.content) > 1000:
-                                  fname = os.path.basename(match.split('?')[0]) or f"model_{uid}.zip"
-                                  fpath = os.path.join(download_dir, fname)
-                                  with open(fpath, "wb") as f:
-                                      for chunk in resp.iter_content(8192): f.write(chunk)
-                                  print(f"  ✅ Saved: {fname} ({os.path.getsize(fpath)//1024}KB)")
-                          except Exception as e:
-                              print(f"  ❌ {str(e)[:50]}")
-
-          finally:
-              driver.quit()
+          print(f"\n✅ Downloaded to: {out_dir}/")
           PYEOF
 
       - name: Commit
@@ -181,5 +127,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add 3d-models/ 2>/dev/null || true
-          git commit -m "📦 CGTrader model" || echo "Nothing"
+          git commit -m "📦 3D models from ${{ github.event.inputs.repo_id }}" || echo "Nothing"
           git pull --rebase && git push || true
