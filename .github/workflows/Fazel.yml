@@ -1,4 +1,4 @@
-name: Download Sketchfab Model (FlareSolverr + Clean IP)
+name: Download Sketchfab Model (FlareSolverr Direct)
 
 on:
   workflow_dispatch:
@@ -8,16 +8,6 @@ on:
         required: true
         type: string
         default: 'https://sketchfab.com/3d-models/maya-maid-bb6e45ab90a340129487f40dc11e2b83'
-      clean_ip:
-        description: 'Clean Cloudflare IP'
-        required: false
-        type: string
-        default: '104.19.32.49'
-      clean_port:
-        description: 'Clean IP port'
-        required: false
-        type: string
-        default: '443'
 
 permissions:
   contents: write
@@ -25,14 +15,12 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    
+
     services:
       flaresolverr:
         image: ghcr.io/flaresolverr/flaresolverr:latest
         ports:
           - 8191:8191
-        env:
-          PROXY_URL: http://${{ github.event.inputs.clean_ip }}:${{ github.event.inputs.clean_port }}
 
     steps:
       - name: Checkout
@@ -40,43 +28,131 @@ jobs:
 
       - name: Wait for FlareSolverr
         run: |
-          for i in 1 2 3 4 5 6 7 8 9 10; do
+          for i in $(seq 1 15); do
             STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
             if [ "$STATUS" = "ok" ]; then
-              echo "✅ FlareSolverr ready!"
+              echo "✅ FlareSolverr ready"
               break
             fi
-            echo "  Attempt $i/10..."
-            sleep 3
+            echo "Waiting... ($i/15)"
+            sleep 4
           done
 
-      - name: Install yt-dlp
-        run: pip install yt-dlp
+      - name: Install Python Dependencies
+        run: pip install requests beautifulsoup4
 
-      - name: Download via FlareSolverr
+      - name: Get Cookies from FlareSolverr
+        id: get_cookies
         run: |
-          mkdir -p sketchfab-models
+          python3 << 'EOF'
+          import requests, json
+
+          model_url = "${{ github.event.inputs.model_url }}"
           
-          # Get cookies from FlareSolverr
-          COOKIES=$(curl -s -X POST http://localhost:8191/v1 \
-            -H "Content-Type: application/json" \
-            -d "{\"cmd\":\"request.get\",\"url\":\"${{ github.event.inputs.model_url }}\",\"maxTimeout\":60000}" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print('\n'.join([f'{c[\"name\"]}={c[\"value\"]}' for c in d.get('solution',{}).get('cookies',[])]))" 2>/dev/null)
+          print(f"🌐 Fetching {model_url} via FlareSolverr...")
           
-          # Save cookies
-          echo "$COOKIES" > cookies.txt
+          resp = requests.post("http://localhost:8191/v1", json={
+              "cmd": "request.get",
+              "url": model_url,
+              "maxTimeout": 90000
+          }, timeout=120)
           
-          # Download with yt-dlp using cookies
-          yt-dlp \
-            --cookies cookies.txt \
-            --output "./sketchfab-models/%(title)s.%(ext)s" \
-            --format "original" \
-            "${{ github.event.inputs.model_url }}" && echo "✅ Downloaded" || echo "⚠️ Failed"
+          data = resp.json()
+          
+          if data.get("status") != "ok":
+              print(f"❌ FlareSolverr failed: {data.get('message')}")
+              exit(1)
+          
+          # Extract cookies in Netscape format
+          cookies = data["solution"].get("cookies", [])
+          user_agent = data["solution"].get("userAgent", "")
+          
+          with open("cookies.txt", "w") as f:
+              f.write("# Netscape HTTP Cookie File\n")
+              for c in cookies:
+                  domain = c.get("domain", ".sketchfab.com")
+                  name = c.get("name", "")
+                  value = c.get("value", "")
+                  path = c.get("path", "/")
+                  secure = "TRUE" if c.get("secure") else "FALSE"
+                  expiry = str(c.get("expiry", 0))
+                  f.write(f"{domain}\tTRUE\t{path}\t{secure}\t{expiry}\t{name}\t{value}\n")
+          
+          print(f"✅ Got {len(cookies)} cookies")
+          print(f"   User-Agent: {userAgent[:80]}...")
+          
+          # Save User-Agent
+          with open("user_agent.txt", "w") as f:
+              f.write(user_agent)
+          EOF
+
+      - name: Download Model
+        run: |
+          python3 << 'EOF'
+          import requests, re, json, os
+
+          model_url = "${{ github.event.inputs.model_url }}"
+          uid = model_url.rstrip("/").split("-")[-1]
+
+          # Read cookies and UA
+          user_agent = open("user_agent.txt").read().strip()
+
+          session = requests.Session()
+          session.headers.update({"User-Agent": user_agent})
+
+          # Load cookies
+          with open("cookies.txt") as f:
+              for line in f:
+                  if line.startswith("#") or not line.strip():
+                      continue
+                  parts = line.strip().split("\t")
+                  if len(parts) >= 7:
+                      session.cookies.set(parts[5], parts[6], domain=parts[0], path=parts[2])
+
+          # Try Sketchfab API
+          api_url = f"https://api.sketchfab.com/v3/models/{uid}/download"
+          print(f"📡 Calling API: {api_url}")
+
+          resp = session.get(api_url, timeout=30)
+
+          if resp.status_code == 200:
+              data = resp.json()
+              # Find glTF or original download URL
+              download_url = None
+              for key in ["gltf", "glb", "source"]:
+                  if key in data and "url" in data[key]:
+                      download_url = data[key]["url"]
+                      break
+
+              if download_url:
+                  print(f"📥 Downloading from: {download_url}")
+                  dl_resp = session.get(download_url, timeout=120, stream=True)
+                  if dl_resp.status_code == 200:
+                      filename = "model.zip"
+                      cd = dl_resp.headers.get("Content-Disposition", "")
+                      match = re.search(r'filename="?([^"]+)"?', cd)
+                      if match:
+                          filename = match.group(1)
+                      
+                      os.makedirs("sketchfab-models", exist_ok=True)
+                      filepath = f"sketchfab-models/{filename}"
+                      with open(filepath, "wb") as f:
+                          for chunk in dl_resp.iter_content(8192):
+                              f.write(chunk)
+                      print(f"✅ Saved: {filepath}")
+                  else:
+                      print(f"❌ Download failed: HTTP {dl_resp.status_code}")
+              else:
+                  print("❌ No download URL found in API response")
+          else:
+              print(f"❌ API request failed: HTTP {resp.status_code}")
+              print(resp.text[:300])
+          EOF
 
       - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sketchfab-models/
-          git commit -m "📦 Sketchfab model" || echo "Nothing"
+          git add sketchfab-models/ cookies.txt user_agent.txt 2>/dev/null || true
+          git commit -m "📦 Sketchfab model" || echo "Nothing to commit"
           git pull --rebase && git push || true
