@@ -91,7 +91,9 @@ jobs:
             for kw in "${KW[@]}"; do
               kw=$(echo "$kw" | xargs)
               if [ -n "$kw" ]; then
-                FILTER_PARTS+=("title!~=(?i)${kw}")
+                FILTER_PARTS+=("title
+
+!~=(?i)${kw}")
               fi
             done
           fi
@@ -112,6 +114,7 @@ jobs:
         run: |
           FOLDER="${{ github.event.inputs.output_folder }}"
           mkdir -p "$FOLDER"
+          touch "$FOLDER/.gitkeep"
 
           SORT=""
           case "${{ github.event.inputs.sort_by }}" in
@@ -141,8 +144,11 @@ jobs:
             sleep 5
           done
 
+          # Remove non-video files (thumbnails, images, etc.)
+          find "$FOLDER" -type f ! -name "*.mp4" ! -name "*.mkv" ! -name "*.webm" ! -name ".gitkeep" -delete 2>/dev/null || true
+
           echo "Downloaded files:"
-          find "$FOLDER" -type f | while read -r f; do
+          find "$FOLDER" -type f ! -name ".gitkeep" | while read -r f; do
             echo "  $(basename "$f") ($(stat -c %s "$f") bytes)"
           done
 
@@ -150,8 +156,7 @@ jobs:
         run: |
           FOLDER="${{ github.event.inputs.output_folder }}"
           cd "$FOLDER"
-
-          find . -maxdepth 1 -type f | while read -r FILE; do
+          find . -maxdepth 1 -type f ! -name ".gitkeep" | while read -r FILE; do
             FILENAME=$(basename "$FILE")
             SIZE=$(stat -c %s "$FILE")
             if [ "$SIZE" -gt 104857600 ]; then
@@ -162,7 +167,7 @@ jobs:
             fi
           done
 
-      - name: Commit
+      - name: Commit and Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -170,6 +175,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Downloaded videos"
+            git commit -m "📥 Downloaded videos"
             git pull --rebase && git push
           fi
