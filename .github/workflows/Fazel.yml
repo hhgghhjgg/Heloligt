@@ -1,13 +1,28 @@
-name: Download Sketchfab Model (FlareSolverr Direct)
+name: Objaverse Anime 3D Model Downloader
 
 on:
   workflow_dispatch:
     inputs:
-      model_url:
-        description: 'Sketchfab model URL'
-        required: true
+      search_keyword:
+        description: 'کلمه کلیدی برای جستجوی مدل انیمه‌ای (مثلاً anime, cartoon, character)'
+        required: false
         type: string
-        default: 'https://sketchfab.com/3d-models/maya-maid-bb6e45ab90a340129487f40dc11e2b83'
+        default: 'anime'
+      max_models:
+        description: 'حداکثر تعداد مدل برای دانلود'
+        required: false
+        type: string
+        default: '3'
+      format:
+        description: 'فرمت فایل'
+        required: false
+        type: choice
+        options:
+          - 'glb'
+          - 'gltf'
+          - 'obj'
+          - 'fbx'
+        default: 'glb'
 
 permissions:
   contents: write
@@ -15,144 +30,109 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Wait for FlareSolverr
-        run: |
-          for i in $(seq 1 15); do
-            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
-            if [ "$STATUS" = "ok" ]; then
-              echo "✅ FlareSolverr ready"
-              break
-            fi
-            echo "Waiting... ($i/15)"
-            sleep 4
-          done
-
       - name: Install Python Dependencies
-        run: pip install requests beautifulsoup4
+        run: pip install requests huggingface_hub tqdm
 
-      - name: Get Cookies from FlareSolverr
+      - name: Download Anime 3D Models
+        env:
+          SEARCH_KEYWORD: ${{ github.event.inputs.search_keyword }}
+          MAX_MODELS: ${{ github.event.inputs.max_models }}
+          FORMAT: ${{ github.event.inputs.format }}
         run: |
-          python3 << 'EOF'
-          import requests, json
+          python3 << 'PYEOF'
+          import requests, json, os, sys, time, re
+          from pathlib import Path
+          from tqdm import tqdm
 
-          model_url = "${{ github.event.inputs.model_url }}"
+          repo_id = "allenai/objaverse-xl"
+          repo_type = "dataset"
+          keyword = os.environ.get("SEARCH_KEYWORD", "anime")
+          max_models = int(os.environ.get("MAX_MODELS", "3"))
+          fmt = os.environ.get("FORMAT", "glb")
+
+          print(f"🔍 Searching for '{keyword}' models in {repo_id}")
           
-          print(f"🌐 Fetching {model_url} via FlareSolverr...")
-          
-          resp = requests.post("http://localhost:8191/v1", json={
-              "cmd": "request.get",
-              "url": model_url,
-              "maxTimeout": 90000
-          }, timeout=120)
+          # ۱. دریافت لیست فایل‌ها
+          api_url = f"https://huggingface.co/api/datasets/{repo_id}"
+          resp = requests.get(api_url, timeout=30)
+          if resp.status_code != 200:
+              print(f"❌ API failed: {resp.status_code}")
+              sys.exit(1)
           
           data = resp.json()
+          siblings = data.get("siblings", [])
+          print(f"📊 Total files in repo: {len(siblings)}")
           
-          if data.get("status") != "ok":
-              print(f"❌ FlareSolverr failed: {data.get('message')}")
-              exit(1)
+          # ۲. فیلتر فایل‌های با فرمت مورد نظر و کلمه کلیدی
+          matching = []
+          keywords = [keyword, "cartoon", "character", "person", "human", "figure"]
           
-          # Extract cookies in Netscape format
-          cookies = data["solution"].get("cookies", [])
-          user_agent = data["solution"].get("userAgent", "")
+          for sib in siblings:
+              fname = sib.get("rfilename", "").lower()
+              if fname.endswith(f".{fmt}") or fname.endswith(f".{fmt}.gz"):
+                  if any(kw in fname for kw in keywords):
+                      matching.append(sib)
+              elif fmt == "glb" and (fname.endswith(".glb") or fname.endswith(".glb.gz")):
+                  if any(kw in fname for kw in keywords):
+                      matching.append(sib)
+              elif fmt == "gltf" and (fname.endswith(".gltf") or fname.endswith(".gltf.gz")):
+                  if any(kw in fname for kw in keywords):
+                      matching.append(sib)
           
-          with open("cookies.txt", "w") as f:
-              f.write("# Netscape HTTP Cookie File\n")
-              for c in cookies:
-                  domain = c.get("domain", ".sketchfab.com")
-                  name = c.get("name", "")
-                  value = c.get("value", "")
-                  path = c.get("path", "/")
-                  secure = "TRUE" if c.get("secure") else "FALSE"
-                  expiry = str(c.get("expiry", 0))
-                  f.write(f"{domain}\tTRUE\t{path}\t{secure}\t{expiry}\t{name}\t{value}\n")
+          print(f"🎯 Found {len(matching)} matching models")
           
-          print(f"✅ Got {len(cookies)} cookies")
-          print(f"   User-Agent: {user_agent[:80] if user_agent else 'N/A'}...")
+          if len(matching) == 0:
+              print("⚠️ No exact matches. Trying broad search...")
+              for sib in siblings:
+                  fname = sib.get("rfilename", "").lower()
+                  if fname.endswith(f".{fmt}") or fname.endswith(f".{fmt}.gz"):
+                      matching.append(sib)
+              print(f"🎯 Broad search found {len(matching)} models")
           
-          # Save User-Agent
-          with open("user_agent.txt", "w") as f:
-              f.write(user_agent or "")
-          EOF
-
-      - name: Download Model
-        run: |
-          python3 << 'EOF'
-          import requests, re, json, os
-
-          model_url = "${{ github.event.inputs.model_url }}"
-          uid = model_url.rstrip("/").split("-")[-1]
-
-          # Read cookies and UA
-          user_agent = open("user_agent.txt").read().strip()
-
-          session = requests.Session()
-          if user_agent:
-              session.headers.update({"User-Agent": user_agent})
-
-          # Load cookies
-          with open("cookies.txt") as f:
-              for line in f:
-                  if line.startswith("#") or not line.strip():
-                      continue
-                  parts = line.strip().split("\t")
-                  if len(parts) >= 7:
-                      session.cookies.set(parts[5], parts[6], domain=parts[0], path=parts[2])
-
-          # Try Sketchfab API
-          api_url = f"https://api.sketchfab.com/v3/models/{uid}/download"
-          print(f"📡 Calling API: {api_url}")
-
-          resp = session.get(api_url, timeout=30)
-
-          if resp.status_code == 200:
-              data = resp.json()
-              # Find glTF or original download URL
-              download_url = None
-              for key in ["gltf", "glb", "source"]:
-                  if key in data and "url" in data[key]:
-                      download_url = data[key]["url"]
-                      break
-
-              if download_url:
-                  print(f"📥 Downloading from: {download_url}")
-                  dl_resp = session.get(download_url, timeout=120, stream=True)
+          # ۳. انتخاب چند مدل
+          selected = matching[:max_models]
+          print(f"📥 Downloading {len(selected)} models...")
+          
+          output_dir = Path("objaverse-models")
+          output_dir.mkdir(parents=True, exist_ok=True)
+          
+          downloaded = []
+          for sib in tqdm(selected, desc="Downloading"):
+              fname = sib["rfilename"]
+              download_url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{fname}"
+              local_path = output_dir / Path(fname).name
+              
+              try:
+                  dl_resp = requests.get(download_url, timeout=120, stream=True)
                   if dl_resp.status_code == 200:
-                      filename = "model.zip"
-                      cd = dl_resp.headers.get("Content-Disposition", "")
-                      match = re.search(r'filename="?([^"]+)"?', cd)
-                      if match:
-                          filename = match.group(1)
-                      
-                      os.makedirs("sketchfab-models", exist_ok=True)
-                      filepath = f"sketchfab-models/{filename}"
-                      with open(filepath, "wb") as f:
+                      with open(local_path, "wb") as f:
                           for chunk in dl_resp.iter_content(8192):
                               f.write(chunk)
-                      print(f"✅ Saved: {filepath}")
+                      size = local_path.stat().st_size // 1024
+                      print(f"  ✅ {Path(fname).name} ({size}KB)")
+                      downloaded.append(str(local_path))
                   else:
-                      print(f"❌ Download failed: HTTP {dl_resp.status_code}")
-              else:
-                  print("❌ No download URL found in API response")
-          else:
-              print(f"❌ API request failed: HTTP {resp.status_code}")
-              print(resp.text[:300])
-          EOF
+                      print(f"  ❌ {fname}: HTTP {dl_resp.status_code}")
+              except Exception as e:
+                  print(f"  ❌ {fname}: {str(e)[:50]}")
+          
+          print(f"\n✅ Downloaded {len(downloaded)} models to {output_dir}/")
+          PYEOF
 
-      - name: Commit
+      - name: Commit and Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sketchfab-models/ cookies.txt user_agent.txt 2>/dev/null || true
-          git commit -m "📦 Sketchfab model" || echo "Nothing to commit"
-          git pull --rebase && git push || true
+          git add objaverse-models/
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "📦 Objaverse anime 3D models (${{ github.event.inputs.format }}) | $(date +%Y-%m-%d_%H:%M)"
+            git pull --rebase && git push
+          fi
