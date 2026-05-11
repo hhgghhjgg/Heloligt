@@ -1,13 +1,13 @@
-name: Download CGTrader with Puppeteer
+name: Download CGTrader Model (neopostmodern)
 
 on:
   workflow_dispatch:
     inputs:
       model_url:
-        description: 'CGTrader model URL'
+        description: 'CGTrader free model URL'
         required: true
         type: string
-        default: 'https://www.cgtrader.com/3d-models/character/woman/anime-character-casual-female-sleeveless-c092f010-d071-4994-97d2-586d0f24542a'
+        default: 'https://www.cgtrader.com/free-3d-models/character/woman/anime-character-casual-female-sleeveless-c092f010-d071-4994-97d2-586d0f24542a'
 
 permissions:
   contents: write
@@ -15,149 +15,166 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Puppeteer
-        run: npm init -y && npm install puppeteer
-
-      - name: Download Model via Puppeteer
+      - name: Clone cgtrader-downloader
         run: |
-          node << 'NODEEOF'
-          const puppeteer = require('puppeteer');
-          const fs = require('fs');
-          const path = require('path');
-          const https = require('https');
-          const http = require('http');
+          git clone https://github.com/neopostmodern/cgtrader-downloader.git
+          cd cgtrader-downloader
+          echo "✅ Repository cloned"
 
-          const MODEL_URL = '${{ github.event.inputs.model_url }}';
-          const uid = MODEL_URL.split('-').pop().replace('/', '');
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-          (async () => {
-            console.log('🚀 Launching browser...');
-            const browser = await puppeteer.launch({
-              headless: 'new',
-              args: ['--no-sandbox', '--disable-setuid-sandbox']
-            });
+      - name: Install Python Dependencies
+        run: pip install requests selenium beautifulsoup4
 
-            const page = await browser.newPage();
+      - name: Install Firefox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y firefox
 
-            // Capture download links
-            const downloadLinks = [];
+      - name: Install Geckodriver
+        run: |
+          wget https://github.com/mozilla/geckodriver/releases/latest/download/geckodriver-v0.36.0-linux64.tar.gz
+          tar -xvzf geckodriver-v0.36.0-linux64.tar.gz
+          sudo mv geckodriver /usr/local/bin/
+          sudo chmod +x /usr/local/bin/geckodriver
+          echo "✅ Geckodriver installed"
 
-            await page.setRequestInterception(true);
-            page.on('request', (req) => {
-              const url = req.url();
-              if (url.includes('download') || url.includes('.zip') || url.includes('.fbx') || url.includes('.obj') || url.includes('.glb')) {
-                downloadLinks.push(url);
-                console.log('  🔗 Captured:', url.substring(0, 120));
-              }
-              req.continue();
-            });
+      - name: Download Model
+        run: |
+          python3 << 'PYEOF'
+          import os, sys, time, re, shutil
+          from selenium import webdriver
+          from selenium.webdriver.firefox.options import Options
+          from selenium.webdriver.firefox.service import Service
+          from selenium.webdriver.common.by import By
+          from selenium.webdriver.support.ui import WebDriverWait
+          from selenium.webdriver.support import expected_conditions as EC
+          from selenium.common.exceptions import TimeoutException, NoSuchElementException
+          import requests
 
-            page.on('response', async (resp) => {
-              const url = resp.url();
-              const headers = resp.headers();
-              const ct = headers['content-type'] || '';
-              const cd = headers['content-disposition'] || '';
+          model_url = "${{ github.event.inputs.model_url }}"
+          download_dir = os.path.join(os.getcwd(), "3d-models")
+          os.makedirs(download_dir, exist_ok=True)
+
+          print(f"🎯 Model URL: {model_url}")
+          print(f"📁 Download folder: {download_dir}")
+
+          # Firefox options
+          options = Options()
+          options.add_argument("--headless")
+          options.add_argument("--no-sandbox")
+          options.add_argument("--disable-dev-shm-usage")
+          options.add_argument("--window-size=1920,1080")
+
+          # Set download preferences
+          options.set_preference("browser.download.folderList", 2)
+          options.set_preference("browser.download.dir", download_dir)
+          options.set_preference("browser.download.manager.showWhenStarting", False)
+          options.set_preference("browser.helperApps.neverAsk.saveToDisk", "application/zip,application/octet-stream,application/x-zip-compressed")
+
+          driver = webdriver.Firefox(options=options)
+          
+          try:
+              print("🌐 Opening page...")
+              driver.get(model_url)
+              time.sleep(5)
+
+              # Check if free model
+              page_source = driver.page_source
               
-              if ((ct.includes('zip') || ct.includes('octet-stream') || cd.includes('attachment') || cd.includes('filename')) && resp.status() === 200) {
-                console.log('  📥 Download response:', url.substring(0, 120));
-                if (!downloadLinks.includes(url)) {
-                  downloadLinks.push(url);
-                }
-              }
-            });
+              # Scroll down to load everything
+              driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+              time.sleep(2)
 
-            console.log('🌐 Opening page...');
-            await page.goto(MODEL_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-            console.log('✅ Page loaded');
+              # Look for download button
+              download_clicked = False
+              
+              # Try multiple selectors
+              selectors = [
+                  "a[href*='download']",
+                  "a[href*='free']",
+                  "button:contains('Download')",
+                  "button:contains('FREE')",
+                  ".download-btn",
+                  ".free-download-btn",
+                  "a.btn--download",
+                  "[data-action='download']",
+              ]
 
-            // Try clicking download buttons
-            const buttons = await page.$$('a, button');
-            for (const btn of buttons) {
-              const text = await page.evaluate(el => el.textContent, btn);
-              const href = await page.evaluate(el => el.getAttribute('href'), btn);
-              if (text && (text.includes('Download') || text.includes('FREE') || text.includes('Buy'))) {
-                console.log('  🖱️ Clicking:', text.trim());
-                try {
-                  await btn.click();
-                  await new Promise(r => setTimeout(r, 2000));
-                } catch(e) {}
-              }
-              if (href && (href.includes('download') || href.includes('.zip') || href.includes('.fbx'))) {
-                downloadLinks.push(href.startsWith('http') ? href : 'https://www.cgtrader.com' + href);
-              }
-            }
+              for selector in selectors:
+                  try:
+                      btn = driver.find_element(By.CSS_SELECTOR, selector)
+                      if btn:
+                          print(f"  🖱️ Clicking: {btn.text.strip()}")
+                          btn.click()
+                          download_clicked = True
+                          time.sleep(5)
+                          break
+                  except:
+                      continue
 
-            // Wait for requests
-            await new Promise(r => setTimeout(r, 3000));
+              if not download_clicked:
+                  # Try JavaScript click on any download-looking element
+                  script = """
+                  var buttons = document.querySelectorAll('a, button');
+                  for (var i = 0; i < buttons.length; i++) {
+                      var text = buttons[i].textContent.toLowerCase();
+                      var href = buttons[i].getAttribute('href') || '';
+                      if (text.includes('download') || text.includes('free') || href.includes('download')) {
+                          buttons[i].click();
+                          return true;
+                      }
+                  }
+                  return false;
+                  """
+                  download_clicked = driver.execute_script(script)
+                  if download_clicked:
+                      print("  🖱️ Clicked via JavaScript")
+                      time.sleep(5)
 
-            // Unique links
-            const uniqueLinks = [...new Set(downloadLinks)];
-            console.log(`\n🔗 Found ${uniqueLinks.length} download links`);
+              # Wait for download to complete
+              print("⏳ Waiting for download...")
+              time.sleep(10)
 
-            // Create output folder
-            const outDir = '3d-models';
-            if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+              # Check if any file was downloaded
+              files = os.listdir(download_dir)
+              zip_files = [f for f in files if f.endswith('.zip') or f.endswith('.fbx') or f.endswith('.obj')]
+              
+              if zip_files:
+                  print(f"✅ Downloaded: {zip_files}")
+              else:
+                  print("⚠️ No file downloaded via browser. Trying direct link extraction...")
+                  
+                  # Extract download URL from page
+                  page_source = driver.page_source
+                  matches = re.findall(r'(https?://[^"\']+\.(?:zip|fbx|obj|glb|blend)[^"\']*)', page_source)
+                  if matches:
+                      print(f"🔗 Found {len(matches)} links in page source")
+                      for match in matches[:5]:
+                          print(f"📥 Downloading: {match[:100]}")
+                          try:
+                              resp = requests.get(match, timeout=60, stream=True)
+                              if resp.status_code == 200 and len(resp.content) > 1000:
+                                  fname = os.path.basename(match.split('?')[0]) or f"model_{uid}.zip"
+                                  fpath = os.path.join(download_dir, fname)
+                                  with open(fpath, "wb") as f:
+                                      for chunk in resp.iter_content(8192): f.write(chunk)
+                                  print(f"  ✅ Saved: {fname} ({os.path.getsize(fpath)//1024}KB)")
+                          except Exception as e:
+                              print(f"  ❌ {str(e)[:50]}")
 
-            let downloaded = false;
-
-            const cookies = await page.cookies();
-            const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-            const ua = await page.evaluate(() => navigator.userAgent);
-
-            for (const durl of uniqueLinks) {
-              console.log(`📥 Trying: ${durl.substring(0, 120)}`);
-              try {
-                const downloadFile = (url) => new Promise((resolve, reject) => {
-                  const protocol = url.startsWith('https') ? https : http;
-                  protocol.get(url, { headers: { 'User-Agent': ua, 'Cookie': cookieStr } }, (res) => {
-                    if (res.statusCode === 302 || res.statusCode === 301) {
-                      console.log(`  🔄 Redirect to: ${res.headers.location}`);
-                      return resolve(downloadFile(res.headers.location));
-                    }
-                    if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
-
-                    const cd = res.headers['content-disposition'] || '';
-                    let fname = `model_${uid}.zip`;
-                    const m = cd.match(/filename="?([^"]+)"?/);
-                    if (m) fname = m[1];
-                    fname = fname.replace(/[\\/*?:"<>|]/g, '_');
-
-                    const fpath = path.join(outDir, fname);
-                    const file = fs.createWriteStream(fpath);
-                    res.pipe(file);
-                    file.on('finish', () => {
-                      const sz = fs.statSync(fpath).size;
-                      console.log(`  ✅ Saved: ${fname} (${(sz/1024).toFixed(0)}KB)`);
-                      file.close();
-                      resolve(fname);
-                    });
-                    file.on('error', reject);
-                  }).on('error', reject);
-                });
-
-                const fname = await downloadFile(durl);
-                downloaded = true;
-                break;
-              } catch(e) {
-                console.log(`  ❌ ${e.message}`);
-              }
-            }
-
-            if (!downloaded) console.log('❌ Could not download any file.');
-            await browser.close();
-          })();
-          NODEEOF
+          finally:
+              driver.quit()
+          PYEOF
 
       - name: Commit
         run: |
