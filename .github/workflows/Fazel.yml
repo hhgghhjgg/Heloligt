@@ -42,7 +42,6 @@ jobs:
         run: pip install requests beautifulsoup4
 
       - name: Get Cookies from FlareSolverr
-        id: get_cookies
         run: |
           python3 << 'EOF'
           import requests, json
@@ -79,11 +78,11 @@ jobs:
                   f.write(f"{domain}\tTRUE\t{path}\t{secure}\t{expiry}\t{name}\t{value}\n")
           
           print(f"✅ Got {len(cookies)} cookies")
-          print(f"   User-Agent: {userAgent[:80]}...")
+          print(f"   User-Agent: {user_agent[:80] if user_agent else 'N/A'}...")
           
           # Save User-Agent
           with open("user_agent.txt", "w") as f:
-              f.write(user_agent)
+              f.write(user_agent or "")
           EOF
 
       - name: Download Model
@@ -98,7 +97,8 @@ jobs:
           user_agent = open("user_agent.txt").read().strip()
 
           session = requests.Session()
-          session.headers.update({"User-Agent": user_agent})
+          if user_agent:
+              session.headers.update({"User-Agent": user_agent})
 
           # Load cookies
           with open("cookies.txt") as f:
