@@ -1,4 +1,4 @@
-name: Download CGTrader 3D Model
+name: Download CGTrader with JS Execution
 
 on:
   workflow_dispatch:
@@ -31,99 +31,106 @@ jobs:
             sleep 4
           done
       - name: Install Dependencies
-        run: pip install requests beautifulsoup4
-      - name: Download Model
+        run: pip install requests
+      - name: Extract Download Link
         run: |
           python3 << 'PYEOF'
           import requests, re, os, json
-          from bs4 import BeautifulSoup
 
           model_url = "${{ github.event.inputs.model_url }}"
           uid = model_url.rstrip("/").split("-")[-1]
+          print(f"🎯 Model UID: {uid}")
 
-          print(f"🕷️ Crawling: {model_url}")
+          # --- ۱. تحلیل شبکه‌ای صفحه با مرورگر ---
+          # به FlareSolverr می‌گیم کل فعالیت شبکه رو هم ثبت کنه
           r = requests.post("http://localhost:8191/v1", json={
-              "cmd": "request.get", "url": model_url, "maxTimeout": 90000
-          }, timeout=120)
-          d = r.json()
-          if d.get("status") != "ok": print("❌ FlareSolverr failed"); exit(1)
+              "cmd": "request.get",
+              "url": model_url,
+              "maxTimeout": 120000,
+              "returnOnlyCookies": False,
+              "download": True,
+              "returnRawHtml": True
+          }, timeout=180)
 
-          html = d["solution"]["response"]
+          d = r.json()
+          if d.get("status") != "ok":
+              print(f"❌ FlareSolverr failed: {d.get('message')}")
+              exit(1)
+
+          html = d["solution"].get("response", "")
           cookies = d["solution"].get("cookies", [])
           ua = d["solution"].get("userAgent", "")
+          print(f"✅ Page loaded: {len(html)} bytes, {len(cookies)} cookies")
 
           ses = requests.Session()
-          ses.headers.update({"User-Agent": ua})
+          ses.headers.update({"User-Agent": ua, "Accept": "*/*"})
           for c in cookies: ses.cookies.set(c["name"], c["value"])
 
-          soup = BeautifulSoup(html, "html.parser")
+          # --- ۲. استخراج API Key از HTML ---
+          apikeys = re.findall(r'[a-f0-9]{32}', html)
+          print(f"🔑 Found {len(apikeys)} potential API keys")
 
-          # ۱. پیدا کردن JSON-LD schema
-          download_urls = []
-          for script in soup.find_all("script", type="application/ld+json"):
-              try:
-                  data = json.loads(script.string)
-                  if isinstance(data, dict) and "offers" in data:
-                      offers = data["offers"] if isinstance(data["offers"], list) else [data["offers"]]
-                      for offer in offers:
-                          if "downloadUrl" in offer:
-                              download_urls.append(offer["downloadUrl"])
-                          if "url" in offer:
-                              download_urls.append(offer["url"])
-              except: pass
-
-          # ۲. پیدا کردن همه لینک‌های دانلود از تگ‌های a
-          for a in soup.find_all("a", href=True):
-              href = a["href"]
-              if any(x in href.lower() for x in [".fbx", ".obj", ".gltf", ".glb", ".blend", ".zip",
-                  "/download/", "downloads", "files", "asset"]):
-                  if not href.startswith("http"): href = "https://www.cgtrader.com" + href
-                  download_urls.append(href)
-
-          # ۳. جستجوی regex برای الگوهای دانلود
+          # --- ۳. استخراج تمام لینک‌های فایل از HTML ---
+          file_links = []
           patterns = [
               r'"downloadUrl"\s*:\s*"([^"]+)"',
-              r'"file"\s*:\s*"([^"]+)"',
               r'"(https?://[^"]+\.(?:fbx|obj|gltf|glb|blend|zip|rar)[^"]*)"',
+              r'"file"\s*:\s*"([^"]+)"',
+              r'"url"\s*:\s*"(https?://[^"]+/(?:download|files|assets)/[^"]+)"',
+              r'href="(/(?:download|files)/[^"]+)"',
           ]
           for p in patterns:
-              matches = re.findall(p, html)
-              download_urls.extend(matches)
+              matches = re.findall(p, html, re.IGNORECASE)
+              file_links.extend(matches)
+
+          # --- ۴. حدس API و تلاش برای دانلود ---
+          possible_endpoints = [
+              f"https://www.cgtrader.com/api/v1/3d-models/{uid}/download",
+              f"https://www.cgtrader.com/api/models/{uid}/files",
+              f"https://www.cgtrader.com/download/{uid}",
+              f"https://download.cgtrader.com/{uid}",
+              f"https://www.cgtrader.com/3d-models/download/{uid}",
+          ]
+          
+          for apikey in apikeys[:5]:
+              possible_endpoints.append(f"https://www.cgtrader.com/api/models/{uid}/download?key={apikey}")
+
+          all_urls = list(set(file_links + possible_endpoints))
+          print(f"🔗 Testing {len(all_urls)} URLs...")
 
           os.makedirs("3d-models", exist_ok=True)
           downloaded = False
 
-          # حذف تکراری‌ها
-          download_urls = list(set(download_urls))
-          print(f"🔗 Found {len(download_urls)} unique links")
-
-          for idx, durl in enumerate(download_urls[:20]):
-              print(f"📥 [{idx+1}] {durl[:150]}")
+          for idx, durl in enumerate(all_urls[:30]):
+              if not durl.startswith("http"): durl = "https://www.cgtrader.com" + durl
+              print(f"📥 [{idx+1}] {durl[:120]}")
+              
               try:
                   dr = ses.get(durl, timeout=60, stream=True)
-                  ct = dr.headers.get("Content-Type", "")
                   cl = int(dr.headers.get("Content-Length", "0"))
+                  ct = dr.headers.get("Content-Type", "")
                   
-                  if dr.status_code == 200 and cl > 1000:
-                      cd = dr.headers.get("Content-Disposition", "")
-                      fname = f"model_{uid}_{idx}.zip"
-                      m = re.search(r'filename="?([^"]+)"?', cd)
-                      if m: fname = m.group(1)
-                      fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
-                      
-                      path = f"3d-models/{fname}"
-                      with open(path, "wb") as f:
-                          for chunk in dr.iter_content(8192): f.write(chunk)
-                      print(f"  ✅ Saved: {fname} ({os.path.getsize(path)//1024}KB)")
-                      downloaded = True
-                      break
+                  if dr.status_code == 200 and cl > 5000:
+                      if "zip" in ct or "octet" in ct or "model" in ct or any(ext in durl.lower() for ext in ['.fbx','.obj','.glb','.blend']):
+                          cd = dr.headers.get("Content-Disposition", "")
+                          fname = f"model_{uid}.zip"
+                          m = re.search(r'filename="?([^"]+)"?', cd)
+                          if m: fname = m.group(1)
+                          fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
+                          
+                          path = f"3d-models/{fname}"
+                          with open(path, "wb") as f:
+                              for chunk in dr.iter_content(8192): f.write(chunk)
+                          print(f"  ✅ Saved: {fname} ({os.path.getsize(path)//1024}KB)")
+                          downloaded = True
+                          break
                   else:
-                      print(f"  ⚠️ HTTP {dr.status_code}, size={cl}, type={ct[:50]}")
+                      print(f"  ⚠️ HTTP {dr.status_code}, size={cl}")
               except Exception as e:
-                  print(f"  ❌ {str(e)[:60]}")
+                  print(f"  ❌ {str(e)[:50]}")
 
           if not downloaded:
-              print("❌ Could not download any file.")
+              print("❌ Could not find download link.")
           PYEOF
       - name: Commit
         run: |
