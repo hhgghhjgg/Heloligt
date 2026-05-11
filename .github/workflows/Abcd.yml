@@ -1,4 +1,4 @@
-name: Download CGTrader 3D Model (FlareSolverr Direct)
+name: Download CGTrader 3D Model
 
 on:
   workflow_dispatch:
@@ -8,17 +8,6 @@ on:
         required: true
         type: string
         default: 'https://www.cgtrader.com/3d-models/character/woman/anime-character-casual-female-sleeveless-c092f010-d071-4994-97d2-586d0f24542a'
-      model_format:
-        description: 'فرمت فایل'
-        required: false
-        type: choice
-        options:
-          - 'fbx'
-          - 'obj'
-          - 'gltf'
-          - 'blend'
-          - 'all'
-        default: 'fbx'
 
 permissions:
   contents: write
@@ -26,130 +15,104 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-
     services:
       flaresolverr:
         image: ghcr.io/flaresolverr/flaresolverr:latest
         ports:
           - 8191:8191
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Wait for FlareSolverr
         run: |
           for i in $(seq 1 15); do
             STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
-            if [ "$STATUS" = "ok" ]; then
-              echo "✅ FlareSolverr ready"
-              break
-            fi
-            echo "Waiting... ($i/15)"
+            if [ "$STATUS" = "ok" ]; then echo "✅ Ready"; break; fi
             sleep 4
           done
-
-      - name: Install Python Dependencies
+      - name: Install Dependencies
         run: pip install requests beautifulsoup4
-
-      - name: Download Model Directly
+      - name: Download Model
         run: |
-          python3 << 'EOF'
+          python3 << 'PYEOF'
           import requests, re, os, json
           from bs4 import BeautifulSoup
 
           model_url = "${{ github.event.inputs.model_url }}"
-          model_format = "${{ github.event.inputs.model_format }}"
-          uid = model_url.strip("/").split("-")[-1]
+          uid = model_url.rstrip("/").split("-")[-1]
 
-          print(f"🌐 Fetching page {model_url} via FlareSolverr...")
-
-          resp = requests.post("http://localhost:8191/v1", json={
-              "cmd": "request.get",
-              "url": model_url,
-              "maxTimeout": 90000
+          print(f"🕷️ Crawling: {model_url}")
+          r = requests.post("http://localhost:8191/v1", json={
+              "cmd": "request.get", "url": model_url, "maxTimeout": 90000
           }, timeout=120)
+          d = r.json()
+          if d.get("status") != "ok": print("❌ FlareSolverr failed"); exit(1)
 
-          data = resp.json()
+          html = d["solution"]["response"]
+          cookies = d["solution"].get("cookies", [])
+          ua = d["solution"].get("userAgent", "")
+          print(f"✅ Page: {len(html)} bytes, {len(cookies)} cookies")
 
-          if data.get("status") != "ok":
-              print(f"❌ FlareSolverr failed: {data.get('message')}")
-              exit(1)
+          soup = BeautifulSoup(html, "html.parser")
+          ses = requests.Session()
+          ses.headers.update({"User-Agent": ua})
+          for c in cookies: ses.cookies.set(c["name"], c["value"])
 
-          html_content = data["solution"]["response"]
-          cookies = data["solution"].get("cookies", [])
-          user_agent = data["solution"].get("userAgent", "")
-
-          print(f"✅ Got page ({len(html_content)} bytes) and {len(cookies)} cookies")
-
-          # Parse HTML for download buttons
-          soup = BeautifulSoup(html_content, "html.parser")
-          
-          download_links = []
+          # --- 1. Find download links in HTML ---
+          download_urls = []
           for a in soup.find_all("a", href=True):
               href = a["href"]
-              if model_format == "all":
-                  if any(ext in href.lower() for ext in [".fbx", ".obj", ".gltf", ".glb", ".blend", ".zip"]):
-                      download_links.append(href)
-              else:
-                  if f".{model_format}" in href.lower() or model_format in href.lower():
-                      download_links.append(href)
+              if any(x in href.lower() for x in [".fbx", ".obj", ".gltf", ".glb", ".blend", ".zip", "/download/"]):
+                  if not href.startswith("http"): href = "https://www.cgtrader.com" + href
+                  download_urls.append(href)
+              # Capture inline schema
+              if "download" in href.lower(): download_urls.append(href)
 
-          # Also look for data attributes
-          for div in soup.find_all(attrs={"data-download-url": True}):
-              download_links.append(div["data-download-url"])
+          # --- 2. Look inside JSON-LD / React hydration ---
+          for script in soup.find_all("script"):
+              if script.string and '"downloadUrl"' in script.string:
+                  matches = re.findall(r'"downloadUrl"\s*:\s*"([^"]+)"', script.string)
+                  download_urls.extend(matches)
 
-          if not download_links:
-              # Try direct download URL pattern
-              download_links.append(f"https://www.cgtrader.com/download/{uid}")
+          # --- 3. Try API guess ---
+          api_guesses = [
+              f"https://www.cgtrader.com/api/models/{uid}/download",
+              f"https://api.cgtrader.com/v1/3d-models/{uid}/download"
+          ]
+          download_urls.extend(api_guesses)
 
-          print(f"🔗 Found {len(download_links)} download links")
-
-          # Download files
-          session = requests.Session()
-          session.headers.update({
-              "User-Agent": user_agent or "Mozilla/5.0",
-              "Referer": model_url
-          })
-
-          # Add cookies
-          for c in cookies:
-              session.cookies.set(c.get("name", ""), c.get("value", ""), domain=c.get("domain", ""))
-
+          # --- 4. Try every found URL ---
           os.makedirs("3d-models", exist_ok=True)
-
-          for idx, link in enumerate(download_links[:5]):
-              if not link.startswith("http"):
-                  link = "https://www.cgtrader.com" + link
-
-              print(f"📥 Downloading: {link}")
+          downloaded = False
+          for idx, durl in enumerate(download_urls[:10]):
+              if downloaded: break
+              print(f"📥 [{idx+1}] Trying: {durl[:120]}")
               try:
-                  dl_resp = session.get(link, timeout=120, stream=True)
-                  if dl_resp.status_code == 200:
-                      cd = dl_resp.headers.get("Content-Disposition", "")
-                      filename = f"model_{idx}.{model_format}"
-                      match = re.search(r'filename="?([^"]+)"?', cd)
-                      if match:
-                          filename = match.group(1)
-                      
-                      filepath = f"3d-models/{filename}"
-                      with open(filepath, "wb") as f:
-                          for chunk in dl_resp.iter_content(8192):
-                              f.write(chunk)
-                      size = os.path.getsize(filepath) // 1024
-                      print(f"  ✅ Saved: {filename} ({size}KB)")
+                  dr = ses.get(durl, timeout=60, stream=True)
+                  if dr.status_code == 200 and int(dr.headers.get("Content-Length", "0")) > 1000:
+                      cd = dr.headers.get("Content-Disposition", "")
+                      fname = f"model_{uid}.zip"
+                      m = re.search(r'filename="?([^"]+)"?', cd)
+                      if m: fname = m.group(1)
+                      path = f"3d-models/{fname}"
+                      with open(path, "wb") as f:
+                          for chunk in dr.iter_content(8192): f.write(chunk)
+                      print(f"  ✅ Saved: {fname} ({os.path.getsize(path)//1024}KB)")
+                      downloaded = True
                   else:
-                      print(f"  ❌ Download failed: HTTP {dl_resp.status_code}")
+                      print(f"  ⚠️ HTTP {dr.status_code} / size={dr.headers.get('Content-Length','?')}")
               except Exception as e:
-                  print(f"  ❌ Error: {str(e)[:50]}")
+                  print(f"  ❌ {str(e)[:60]}")
 
-          print("✅ Done!")
-          EOF
-
+          if not downloaded:
+              print("❌ Could not download any file.")
+          else:
+              print("✅ Done!")
+          PYEOF
       - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add 3d-models/ 2>/dev/null || true
-          git commit -m "📦 CGTrader 3D model" || echo "Nothing to commit"
+          git commit -m "📦 CGTrader model" || echo "Nothing"
           git pull --rebase && git push || true
