@@ -1,4 +1,4 @@
-name: Download CGTrader with JS Execution
+name: Download CGTrader with Puppeteer
 
 on:
   workflow_dispatch:
@@ -15,123 +15,150 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
+    timeout-minutes: 10
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Wait for FlareSolverr
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Puppeteer
+        run: npm init -y && npm install puppeteer
+
+      - name: Download Model via Puppeteer
         run: |
-          for i in $(seq 1 15); do
-            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
-            if [ "$STATUS" = "ok" ]; then echo "✅ Ready"; break; fi
-            sleep 4
-          done
-      - name: Install Dependencies
-        run: pip install requests
-      - name: Extract Download Link
-        run: |
-          python3 << 'PYEOF'
-          import requests, re, os, json
+          node << 'NODEEOF'
+          const puppeteer = require('puppeteer');
+          const fs = require('fs');
+          const path = require('path');
+          const https = require('https');
+          const http = require('http');
 
-          model_url = "${{ github.event.inputs.model_url }}"
-          uid = model_url.rstrip("/").split("-")[-1]
-          print(f"🎯 Model UID: {uid}")
+          const MODEL_URL = '${{ github.event.inputs.model_url }}';
+          const uid = MODEL_URL.split('-').pop().replace('/', '');
 
-          # --- ۱. تحلیل شبکه‌ای صفحه با مرورگر ---
-          # به FlareSolverr می‌گیم کل فعالیت شبکه رو هم ثبت کنه
-          r = requests.post("http://localhost:8191/v1", json={
-              "cmd": "request.get",
-              "url": model_url,
-              "maxTimeout": 120000,
-              "returnOnlyCookies": False,
-              "download": True,
-              "returnRawHtml": True
-          }, timeout=180)
+          (async () => {
+            console.log('🚀 Launching browser...');
+            const browser = await puppeteer.launch({
+              headless: 'new',
+              args: ['--no-sandbox', '--disable-setuid-sandbox']
+            });
 
-          d = r.json()
-          if d.get("status") != "ok":
-              print(f"❌ FlareSolverr failed: {d.get('message')}")
-              exit(1)
+            const page = await browser.newPage();
 
-          html = d["solution"].get("response", "")
-          cookies = d["solution"].get("cookies", [])
-          ua = d["solution"].get("userAgent", "")
-          print(f"✅ Page loaded: {len(html)} bytes, {len(cookies)} cookies")
+            // Capture download links
+            const downloadLinks = [];
 
-          ses = requests.Session()
-          ses.headers.update({"User-Agent": ua, "Accept": "*/*"})
-          for c in cookies: ses.cookies.set(c["name"], c["value"])
+            await page.setRequestInterception(true);
+            page.on('request', (req) => {
+              const url = req.url();
+              if (url.includes('download') || url.includes('.zip') || url.includes('.fbx') || url.includes('.obj') || url.includes('.glb')) {
+                downloadLinks.push(url);
+                console.log('  🔗 Captured:', url.substring(0, 120));
+              }
+              req.continue();
+            });
 
-          # --- ۲. استخراج API Key از HTML ---
-          apikeys = re.findall(r'[a-f0-9]{32}', html)
-          print(f"🔑 Found {len(apikeys)} potential API keys")
-
-          # --- ۳. استخراج تمام لینک‌های فایل از HTML ---
-          file_links = []
-          patterns = [
-              r'"downloadUrl"\s*:\s*"([^"]+)"',
-              r'"(https?://[^"]+\.(?:fbx|obj|gltf|glb|blend|zip|rar)[^"]*)"',
-              r'"file"\s*:\s*"([^"]+)"',
-              r'"url"\s*:\s*"(https?://[^"]+/(?:download|files|assets)/[^"]+)"',
-              r'href="(/(?:download|files)/[^"]+)"',
-          ]
-          for p in patterns:
-              matches = re.findall(p, html, re.IGNORECASE)
-              file_links.extend(matches)
-
-          # --- ۴. حدس API و تلاش برای دانلود ---
-          possible_endpoints = [
-              f"https://www.cgtrader.com/api/v1/3d-models/{uid}/download",
-              f"https://www.cgtrader.com/api/models/{uid}/files",
-              f"https://www.cgtrader.com/download/{uid}",
-              f"https://download.cgtrader.com/{uid}",
-              f"https://www.cgtrader.com/3d-models/download/{uid}",
-          ]
-          
-          for apikey in apikeys[:5]:
-              possible_endpoints.append(f"https://www.cgtrader.com/api/models/{uid}/download?key={apikey}")
-
-          all_urls = list(set(file_links + possible_endpoints))
-          print(f"🔗 Testing {len(all_urls)} URLs...")
-
-          os.makedirs("3d-models", exist_ok=True)
-          downloaded = False
-
-          for idx, durl in enumerate(all_urls[:30]):
-              if not durl.startswith("http"): durl = "https://www.cgtrader.com" + durl
-              print(f"📥 [{idx+1}] {durl[:120]}")
+            page.on('response', async (resp) => {
+              const url = resp.url();
+              const headers = resp.headers();
+              const ct = headers['content-type'] || '';
+              const cd = headers['content-disposition'] || '';
               
-              try:
-                  dr = ses.get(durl, timeout=60, stream=True)
-                  cl = int(dr.headers.get("Content-Length", "0"))
-                  ct = dr.headers.get("Content-Type", "")
-                  
-                  if dr.status_code == 200 and cl > 5000:
-                      if "zip" in ct or "octet" in ct or "model" in ct or any(ext in durl.lower() for ext in ['.fbx','.obj','.glb','.blend']):
-                          cd = dr.headers.get("Content-Disposition", "")
-                          fname = f"model_{uid}.zip"
-                          m = re.search(r'filename="?([^"]+)"?', cd)
-                          if m: fname = m.group(1)
-                          fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
-                          
-                          path = f"3d-models/{fname}"
-                          with open(path, "wb") as f:
-                              for chunk in dr.iter_content(8192): f.write(chunk)
-                          print(f"  ✅ Saved: {fname} ({os.path.getsize(path)//1024}KB)")
-                          downloaded = True
-                          break
-                  else:
-                      print(f"  ⚠️ HTTP {dr.status_code}, size={cl}")
-              except Exception as e:
-                  print(f"  ❌ {str(e)[:50]}")
+              if ((ct.includes('zip') || ct.includes('octet-stream') || cd.includes('attachment') || cd.includes('filename')) && resp.status() === 200) {
+                console.log('  📥 Download response:', url.substring(0, 120));
+                if (!downloadLinks.includes(url)) {
+                  downloadLinks.push(url);
+                }
+              }
+            });
 
-          if not downloaded:
-              print("❌ Could not find download link.")
-          PYEOF
+            console.log('🌐 Opening page...');
+            await page.goto(MODEL_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+            console.log('✅ Page loaded');
+
+            // Try clicking download buttons
+            const buttons = await page.$$('a, button');
+            for (const btn of buttons) {
+              const text = await page.evaluate(el => el.textContent, btn);
+              const href = await page.evaluate(el => el.getAttribute('href'), btn);
+              if (text && (text.includes('Download') || text.includes('FREE') || text.includes('Buy'))) {
+                console.log('  🖱️ Clicking:', text.trim());
+                try {
+                  await btn.click();
+                  await new Promise(r => setTimeout(r, 2000));
+                } catch(e) {}
+              }
+              if (href && (href.includes('download') || href.includes('.zip') || href.includes('.fbx'))) {
+                downloadLinks.push(href.startsWith('http') ? href : 'https://www.cgtrader.com' + href);
+              }
+            }
+
+            // Wait for requests
+            await new Promise(r => setTimeout(r, 3000));
+
+            // Unique links
+            const uniqueLinks = [...new Set(downloadLinks)];
+            console.log(`\n🔗 Found ${uniqueLinks.length} download links`);
+
+            // Create output folder
+            const outDir = '3d-models';
+            if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+            let downloaded = false;
+
+            const cookies = await page.cookies();
+            const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+            const ua = await page.evaluate(() => navigator.userAgent);
+
+            for (const durl of uniqueLinks) {
+              console.log(`📥 Trying: ${durl.substring(0, 120)}`);
+              try {
+                const downloadFile = (url) => new Promise((resolve, reject) => {
+                  const protocol = url.startsWith('https') ? https : http;
+                  protocol.get(url, { headers: { 'User-Agent': ua, 'Cookie': cookieStr } }, (res) => {
+                    if (res.statusCode === 302 || res.statusCode === 301) {
+                      console.log(`  🔄 Redirect to: ${res.headers.location}`);
+                      return resolve(downloadFile(res.headers.location));
+                    }
+                    if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
+
+                    const cd = res.headers['content-disposition'] || '';
+                    let fname = `model_${uid}.zip`;
+                    const m = cd.match(/filename="?([^"]+)"?/);
+                    if (m) fname = m[1];
+                    fname = fname.replace(/[\\/*?:"<>|]/g, '_');
+
+                    const fpath = path.join(outDir, fname);
+                    const file = fs.createWriteStream(fpath);
+                    res.pipe(file);
+                    file.on('finish', () => {
+                      const sz = fs.statSync(fpath).size;
+                      console.log(`  ✅ Saved: ${fname} (${(sz/1024).toFixed(0)}KB)`);
+                      file.close();
+                      resolve(fname);
+                    });
+                    file.on('error', reject);
+                  }).on('error', reject);
+                });
+
+                const fname = await downloadFile(durl);
+                downloaded = true;
+                break;
+              } catch(e) {
+                console.log(`  ❌ ${e.message}`);
+              }
+            }
+
+            if (!downloaded) console.log('❌ Could not download any file.');
+            await browser.close();
+          })();
+          NODEEOF
+
       - name: Commit
         run: |
           git config user.name "github-actions[bot]"
