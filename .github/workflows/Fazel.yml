@@ -1,138 +1,175 @@
-name: Objaverse Anime 3D Model Downloader
+name: دانلودر پورن هاب
 
 on:
   workflow_dispatch:
     inputs:
-      search_keyword:
-        description: 'کلمه کلیدی برای جستجوی مدل انیمه‌ای (مثلاً anime, cartoon, character)'
+      url:
+        description: 'URL of the video, search, or playlist'
+        required: true
+        type: string
+      output_folder:
+        description: 'Folder where the video will be saved'
         required: false
         type: string
-        default: 'anime'
-      max_models:
-        description: 'حداکثر تعداد مدل برای دانلود'
+        default: 'downloads'
+      quality:
+        description: 'Video quality'
+        required: true
+        type: string
+        default: 'bestvideo[height<=240]+bestaudio/best[height<=240][ext=mp4]/best[height<=240]'
+      category_filter:
+        description: 'Category / tag filter – leave empty for none'
         required: false
         type: string
-        default: '3'
-      format:
-        description: 'فرمت فایل'
+        default: ''
+      sort_by:
+        description: 'Sort order'
         required: false
         type: choice
         options:
-          - 'glb'
-          - 'gltf'
-          - 'obj'
-          - 'fbx'
-        default: 'glb'
+          - 'none (default)'
+          - 'newest first'
+          - 'oldest first'
+          - 'random'
+        default: 'none (default)'
+      exclude_keywords:
+        description: 'Keywords to exclude (comma)'
+        required: false
+        type: string
+        default: ''
+      max_duration_minutes:
+        description: 'Max duration in minutes (0=no limit)'
+        required: false
+        type: string
+        default: '0'
+      start:
+        description: 'Start from video #'
+        required: false
+        type: string
+        default: '1'
+      end:
+        description: 'End at video #'
+        required: false
+        type: string
+        default: '5'
 
 permissions:
   contents: write
 
 jobs:
-  download:
+  download-and-maybe-split:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Python Dependencies
-        run: pip install requests huggingface_hub tqdm
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-      - name: Download Anime 3D Models
-        env:
-          SEARCH_KEYWORD: ${{ github.event.inputs.search_keyword }}
-          MAX_MODELS: ${{ github.event.inputs.max_models }}
-          FORMAT: ${{ github.event.inputs.format }}
+      - name: Install yt-dlp
+        run: pip install yt-dlp
+
+      - name: Build filter
+        id: filters
         run: |
-          python3 << 'PYEOF'
-          import requests, json, os, sys, time, re
-          from pathlib import Path
-          from tqdm import tqdm
+          FILTER_PARTS=()
 
-          repo_id = "allenai/objaverse-xl"
-          repo_type = "dataset"
-          keyword = os.environ.get("SEARCH_KEYWORD", "anime")
-          max_models = int(os.environ.get("MAX_MODELS", "3"))
-          fmt = os.environ.get("FORMAT", "glb")
+          if [ "${{ github.event.inputs.max_duration_minutes }}" != "0" ]; then
+            SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
+            FILTER_PARTS+=("duration<${SEC}")
+          fi
 
-          print(f"🔍 Searching for '{keyword}' models in {repo_id}")
-          
-          # ۱. دریافت لیست فایل‌ها
-          api_url = f"https://huggingface.co/api/datasets/{repo_id}"
-          resp = requests.get(api_url, timeout=30)
-          if resp.status_code != 200:
-              print(f"❌ API failed: {resp.status_code}")
-              sys.exit(1)
-          
-          data = resp.json()
-          siblings = data.get("siblings", [])
-          print(f"📊 Total files in repo: {len(siblings)}")
-          
-          # ۲. فیلتر فایل‌های با فرمت مورد نظر و کلمه کلیدی
-          matching = []
-          keywords = [keyword, "cartoon", "character", "person", "human", "figure"]
-          
-          for sib in siblings:
-              fname = sib.get("rfilename", "").lower()
-              if fname.endswith(f".{fmt}") or fname.endswith(f".{fmt}.gz"):
-                  if any(kw in fname for kw in keywords):
-                      matching.append(sib)
-              elif fmt == "glb" and (fname.endswith(".glb") or fname.endswith(".glb.gz")):
-                  if any(kw in fname for kw in keywords):
-                      matching.append(sib)
-              elif fmt == "gltf" and (fname.endswith(".gltf") or fname.endswith(".gltf.gz")):
-                  if any(kw in fname for kw in keywords):
-                      matching.append(sib)
-          
-          print(f"🎯 Found {len(matching)} matching models")
-          
-          if len(matching) == 0:
-              print("⚠️ No exact matches. Trying broad search...")
-              for sib in siblings:
-                  fname = sib.get("rfilename", "").lower()
-                  if fname.endswith(f".{fmt}") or fname.endswith(f".{fmt}.gz"):
-                      matching.append(sib)
-              print(f"🎯 Broad search found {len(matching)} models")
-          
-          # ۳. انتخاب چند مدل
-          selected = matching[:max_models]
-          print(f"📥 Downloading {len(selected)} models...")
-          
-          output_dir = Path("objaverse-models")
-          output_dir.mkdir(parents=True, exist_ok=True)
-          
-          downloaded = []
-          for sib in tqdm(selected, desc="Downloading"):
-              fname = sib["rfilename"]
-              download_url = f"https://huggingface.co/datasets/{repo_id}/resolve/main/{fname}"
-              local_path = output_dir / Path(fname).name
-              
-              try:
-                  dl_resp = requests.get(download_url, timeout=120, stream=True)
-                  if dl_resp.status_code == 200:
-                      with open(local_path, "wb") as f:
-                          for chunk in dl_resp.iter_content(8192):
-                              f.write(chunk)
-                      size = local_path.stat().st_size // 1024
-                      print(f"  ✅ {Path(fname).name} ({size}KB)")
-                      downloaded.append(str(local_path))
-                  else:
-                      print(f"  ❌ {fname}: HTTP {dl_resp.status_code}")
-              except Exception as e:
-                  print(f"  ❌ {fname}: {str(e)[:50]}")
-          
-          print(f"\n✅ Downloaded {len(downloaded)} models to {output_dir}/")
-          PYEOF
+          if [ -n "${{ github.event.inputs.category_filter }}" ]; then
+            FILTER_PARTS+=("title~=(?i)${{ github.event.inputs.category_filter }}")
+          fi
+
+          if [ -n "${{ github.event.inputs.exclude_keywords }}" ]; then
+            IFS=',' read -ra KW <<< "${{ github.event.inputs.exclude_keywords }}"
+            for kw in "${KW[@]}"; do
+              kw=$(echo "$kw" | xargs)
+              if [ -n "$kw" ]; then
+                FILTER_PARTS+=("title!~=(?i)${kw}")
+              fi
+            done
+          fi
+
+          FILTER=""
+          for part in "${FILTER_PARTS[@]}"; do
+            if [ -z "$FILTER" ]; then
+              FILTER="$part"
+            else
+              FILTER="${FILTER}&${part}"
+            fi
+          done
+
+          echo "filter=${FILTER}" >> $GITHUB_OUTPUT
+          echo "Filter: ${FILTER:-none}"
+
+      - name: Download
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          mkdir -p "$FOLDER"
+          touch "$FOLDER/.gitkeep"
+
+          SORT=""
+          case "${{ github.event.inputs.sort_by }}" in
+            "newest first") SORT="--playlist-reverse" ;;
+            "random")       SORT="--playlist-random" ;;
+          esac
+
+          FILTER="${{ steps.filters.outputs.filter }}"
+
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i/5"
+            CMD=(yt-dlp
+              --output "./${FOLDER}/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
+              --format "${{ github.event.inputs.quality }}"
+              --merge-output-format mp4
+              --playlist-start "${{ github.event.inputs.start }}"
+              --playlist-end "${{ github.event.inputs.end }}"
+              $SORT
+              --retries 3 --fragment-retries 10
+              --no-check-certificate --geo-bypass --no-color --ignore-errors --newline
+            )
+            if [ -n "$FILTER" ]; then
+              CMD+=(--match-filter "$FILTER")
+            fi
+            CMD+=("${{ github.event.inputs.url }}")
+            "${CMD[@]}" && break
+            sleep 5
+          done
+
+          echo "Downloaded files:"
+          find "$FOLDER" -type f ! -name ".gitkeep" | while read -r f; do
+            echo "  $(basename "$f") ($(stat -c %s "$f") bytes)"
+          done
+
+      - name: Split large files
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          cd "$FOLDER"
+          find . -maxdepth 1 -type f ! -name ".gitkeep" | while read -r FILE; do
+            FILENAME=$(basename "$FILE")
+            SIZE=$(stat -c %s "$FILE")
+            if [ "$SIZE" -gt 104857600 ]; then
+              mkdir -p "../splits/${FILENAME}"
+              split -b 95M "$FILE" "../splits/${FILENAME}/part_"
+              rm "$FILE"
+              echo "Split: ${FILENAME}"
+            fi
+          done
 
       - name: Commit and Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add objaverse-models/
+          git add downloads/ splits/ 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "Nothing to commit"
+            echo "No changes to commit"
           else
-            git commit -m "📦 Objaverse anime 3D models (${{ github.event.inputs.format }}) | $(date +%Y-%m-%d_%H:%M)"
+            git commit -m "Downloaded videos"
             git pull --rebase && git push
           fi
