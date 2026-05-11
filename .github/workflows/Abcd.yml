@@ -1,143 +1,165 @@
-name: Generate 3D Character with CharacterGen
+name: دانلودر پورن هاب
 
 on:
   workflow_dispatch:
     inputs:
-      prompt:
-        description: 'Describe your character'
+      url:
+        description: 'URL of the video, search, or playlist'
         required: true
         type: string
-        default: 'A cute anime girl with long blue hair, wearing a school uniform, standing pose'
-      texture_resolution:
-        description: 'Texture resolution'
+      output_folder:
+        description: 'Folder where the video will be saved'
+        required: false
+        type: string
+        default: 'downloads'
+      quality:
+        description: 'Video quality'
+        required: true
+        type: string
+        default: 'bestvideo[height<=240]+bestaudio/best[height<=240][ext=mp4]/best[height<=240]'
+      sort_by:
+        description: 'Sort order'
         required: false
         type: choice
         options:
-          - '1024'
-          - '2048'
-          - '4096'
-        default: '2048'
-      output_format:
-        description: 'Output format'
+          - 'none (default)'
+          - 'newest first'
+          - 'oldest first'
+          - 'random'
+        default: 'none (default)'
+      exclude_keywords:
+        description: 'Keywords to exclude (comma)'
         required: false
-        type: choice
-        options:
-          - 'glb'
-          - 'obj'
-          - 'fbx'
-        default: 'glb'
+        type: string
+        default: ''
+      max_duration_minutes:
+        description: 'Max duration in minutes (0=no limit)'
+        required: false
+        type: string
+        default: '0'
+      start:
+        description: 'Start from video #'
+        required: false
+        type: string
+        default: '1'
+      end:
+        description: 'End at video #'
+        required: false
+        type: string
+        default: '5'
 
 permissions:
   contents: write
 
 jobs:
-  generate:
+  download-and-maybe-split:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
-        run: pip install requests huggingface_hub gradio_client
+      - name: Install yt-dlp
+        run: pip install yt-dlp
 
-      - name: Generate Character
-        env:
-          PROMPT: ${{ github.event.inputs.prompt }}
-          TEX_RES: ${{ github.event.inputs.texture_resolution }}
-          FORMAT: ${{ github.event.inputs.output_format }}
+      - name: Build filter
+        id: filters
         run: |
-          python3 << 'PYEOF'
-          import requests, os, json, time, base64
-          from gradio_client import Client
+          FILTER_PARTS=()
 
-          prompt = os.environ["PROMPT"]
-          tex_res = int(os.environ["TEX_RES"])
-          fmt = os.environ["FORMAT"]
+          if [ "${{ github.event.inputs.max_duration_minutes }}" != "0" ]; then
+            SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
+            FILTER_PARTS+=("duration<${SEC}")
+          fi
 
-          print(f"🎨 Generating: {prompt}")
-          print(f"📐 Texture: {tex_res}px, Format: {fmt}")
+          if [ -n "${{ github.event.inputs.exclude_keywords }}" ]; then
+            IFS=',' read -ra KW <<< "${{ github.event.inputs.exclude_keywords }}"
+            for kw in "${KW[@]}"; do
+              kw=$(echo "$kw" | xargs)
+              if [ -n "$kw" ]; then
+                FILTER_PARTS+=("title!~=(?i)${kw}")
+              fi
+            done
+          fi
 
-          # Use CharacterGen Space on Hugging Face
-          space_url = "https://vast-ai-charactergen.hf.space/"
+          FILTER=""
+          for part in "${FILTER_PARTS[@]}"; do
+            if [ -z "$FILTER" ]; then
+              FILTER="$part"
+            else
+              FILTER="${FILTER}&${part}"
+            fi
+          done
 
-          try:
-              client = Client(space_url)
-              print(f"✅ Connected to CharacterGen")
+          echo "filter=${FILTER}" >> $GITHUB_OUTPUT
+          echo "Filter: ${FILTER:-none}"
 
-              # Generate 3D model
-              result = client.predict(
-                  prompt=prompt,
-                  texture_resolution=tex_res,
-                  output_format=fmt,
-                  api_name="/predict"
-              )
+      - name: Download
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          mkdir -p "$FOLDER"
 
-              print(f"🔗 Result: {result}")
+          SORT=""
+          case "${{ github.event.inputs.sort_by }}" in
+            "newest first") SORT="--playlist-reverse" ;;
+            "random")       SORT="--playlist-random" ;;
+          esac
 
-              # The result is usually a file path or dict
-              out_dir = "generated-3d-models"
-              os.makedirs(out_dir, exist_ok=True)
+          FILTER="${{ steps.filters.outputs.filter }}"
 
-              if isinstance(result, str) and os.path.exists(result):
-                  import shutil
-                  fname = f"character.{fmt}"
-                  shutil.copy(result, os.path.join(out_dir, fname))
-                  print(f"✅ Saved: {fname}")
-              elif isinstance(result, dict):
-                  for key in ["result", "output", "file", "model"]:
-                      if key in result:
-                          path = result[key]
-                          if isinstance(path, str):
-                              if path.startswith("http"):
-                                  # Download
-                                  r = requests.get(path, timeout=60)
-                                  fname = f"character.{fmt}"
-                                  fpath = os.path.join(out_dir, fname)
-                                  with open(fpath, "wb") as f:
-                                      f.write(r.content)
-                                  print(f"✅ Downloaded: {fname} ({len(r.content)//1024}KB)")
-                              elif os.path.exists(path):
-                                  import shutil
-                                  shutil.copy(path, os.path.join(out_dir, f"character.{fmt}"))
-                                  print(f"✅ Saved: character.{fmt}")
-              else:
-                  print(f"⚠️ Unexpected result type: {type(result)}")
-                  print(f"  Raw: {str(result)[:500]}")
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i/5"
+            CMD=(yt-dlp
+              --output "./${FOLDER}/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
+              --format "${{ github.event.inputs.quality }}"
+              --merge-output-format mp4
+              --playlist-start "${{ github.event.inputs.start }}"
+              --playlist-end "${{ github.event.inputs.end }}"
+              $SORT
+              --retries 3 --fragment-retries 10
+              --no-check-certificate --geo-bypass --no-color --ignore-errors --newline
+            )
+            if [ -n "$FILTER" ]; then
+              CMD+=(--match-filter "$FILTER")
+            fi
+            CMD+=("${{ github.event.inputs.url }}")
+            "${CMD[@]}" && break
+            sleep 5
+          done
 
-          except Exception as e:
-              print(f"⚠️ Space failed: {str(e)[:100]}")
-              print("🔄 Attempting API-only approach...")
+          find "$FOLDER" -type f | while read -r f; do
+            echo "  $(basename "$f") ($(stat -c %s "$f") bytes)"
+          done
 
-              # Fallback: direct API call
-              api_url = "https://api-inference.huggingface.co/models/VAST-AI/CharacterGen"
-              headers = {"Authorization": "Bearer ${{ secrets.HF_TOKEN }}"}
+      - name: Split large files
+        run: |
+          FOLDER="${{ github.event.inputs.output_folder }}"
+          cd "$FOLDER"
 
-              resp = requests.post(api_url, json={"inputs": prompt}, timeout=120)
-
-              if resp.status_code == 200:
-                  out_dir = "generated-3d-models"
-                  os.makedirs(out_dir, exist_ok=True)
-                  fname = f"character.{fmt}"
-                  fpath = os.path.join(out_dir, fname)
-                  with open(fpath, "wb") as f:
-                      f.write(resp.content)
-                  print(f"✅ Generated via API: {fname} ({len(resp.content)//1024}KB)")
-              else:
-                  print(f"❌ API failed: {resp.status_code}")
-                  print(resp.text[:300])
-          PYEOF
+          find . -maxdepth 1 -type f | while read -r FILE; do
+            FILENAME=$(basename "$FILE")
+            SIZE=$(stat -c %s "$FILE")
+            if [ "$SIZE" -gt 104857600 ]; then
+              mkdir -p "../splits/${FILENAME}"
+              split -b 95M "$FILE" "../splits/${FILENAME}/part_"
+              rm "$FILE"
+              echo "Split: ${FILENAME}"
+            fi
+          done
 
       - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add generated-3d-models/ 2>/dev/null || true
-          git commit -m "🎨 Generated 3D character: ${{ github.event.inputs.prompt }}" || echo "Nothing"
-          git pull --rebase && git push || true
+          git add downloads/ splits/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Downloaded videos"
+            git pull --rebase && git push
+          fi
