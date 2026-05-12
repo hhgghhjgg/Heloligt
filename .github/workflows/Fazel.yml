@@ -1,13 +1,12 @@
-name: Download 3D Model - Hybrid FlareSolverr + Requests
+name: مخصوص دانلود از لینک download.php?id=116659
 
 on:
   workflow_dispatch:
     inputs:
-      model_page:
-        description: 'لینک صفحه مدل'
+      download_link:
+        description: 'لینک دانلود (پیش‌فرض برای مدل 116659)'
         required: true
-        type: string
-        default: 'https://open3dmodel.com/3d-models/3d-model-cute-anime-school-girl_116659.html'
+        default: 'https://open3dmodel.com/download.php?id=116659'
 
 permissions:
   contents: write
@@ -15,159 +14,184 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Wait for FlareSolverr
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install all Chromium dependencies
         run: |
-          for i in $(seq 1 15); do
-            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))")
-            [ "$STATUS" = "ok" ] && echo "✅ Ready" && break
-            sleep 4
-          done
+          sudo apt-get update
+          sudo apt-get install -y \
+            ca-certificates \
+            fonts-liberation \
+            libasound2t64 \
+            libatk-bridge2.0-0t64 \
+            libatk1.0-0t64 \
+            libcups2t64 \
+            libdbus-1-3 \
+            libdrm2 \
+            libgbm1 \
+            libgtk-3-0t64 \
+            libnspr4 \
+            libnss3 \
+            libu2f-udev \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxkbcommon0 \
+            libxrandr2 \
+            xdg-utils
 
-      - name: Install Python deps
-        run: pip install requests beautifulsoup4
-
-      - name: Download Model (Smart Extraction + Cookies)
+      - name: Install Puppeteer
         run: |
-          python3 << 'PYEOF'
-          import requests, os, re, sys, time
-          from bs4 import BeautifulSoup
-          from urllib.parse import urljoin, urlparse
+          npm init -y
+          npm install puppeteer
 
-          model_page = "${{ inputs.model_page }}"
-          FLARE = "http://localhost:8191/v1"
+      - name: Download model (specialized for download.php)
+        env:
+          DOWNLOAD_LINK: ${{ inputs.download_link }}
+        run: |
+          node --max-old-space-size=4096 << 'SCRIPT_EOF'
+          const puppeteer = require("puppeteer");
+          const fs = require("fs");
+          const path = require("path");
 
-          # ─── 1. Get page with FlareSolverr ─────────────────────
-          print(f"🌐 Getting model page: {model_page}")
-          r = requests.post(FLARE, json={
-              "cmd": "request.get",
-              "url": model_page,
-              "maxTimeout": 60000
-          }, timeout=120)
+          const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-          if r.status_code != 200:
-              print("❌ FlareSolverr failed")
-              sys.exit(1)
+          (async () => {
+            const downloadLink = process.env.DOWNLOAD_LINK;
+            const downloadDir = path.resolve("3d-models");
+            if (!fs.existsSync(downloadDir)) {
+              fs.mkdirSync(downloadDir, { recursive: true });
+            }
 
-          data = r.json()
-          if data.get("status") != "ok":
-              print("❌ Challenge not solved")
-              sys.exit(1)
+            let browser = null;
+            let page = null;
 
-          html = data["solution"]["response"]
-          cookies = data["solution"].get("cookies", [])
-          ua = data["solution"].get("userAgent", "Mozilla/5.0")
+            try {
+              console.log("🚀 Launching Chromium browser...");
+              browser = await puppeteer.launch({
+                headless: "new",
+                args: [
+                  "--no-sandbox",
+                  "--disable-setuid-sandbox",
+                  "--disable-dev-shm-usage",
+                  "--disable-accelerated-2d-canvas",
+                  "--no-first-run",
+                  "--no-zygote",
+                  "--disable-gpu",
+                  "--disable-web-security",
+                  "--disable-features=IsolateOrigins,site-per-process"
+                ]
+              });
 
-          print("✅ Page fetched. Cookies:", len(cookies), "UA:", ua[:50])
+              page = await browser.newPage();
+              await page.setUserAgent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+              );
 
-          # ─── 2. Extract download link ─────────────────────────
-          soup = BeautifulSoup(html, "html.parser")
-          download_url = None
+              // تنظیم دانلود
+              const client = await page.target().createCDPSession();
+              await client.send("Browser.setDownloadBehavior", {
+                behavior: "allow",
+                downloadPath: downloadDir,
+                eventsEnabled: true
+              });
 
-          # Search for links that look like download
-          for a in soup.find_all("a", href=True):
-              href = a["href"].strip()
-              text = a.get_text(strip=True).lower()
-              if any(k in href for k in ["download.php", "edd_action", "token_id"]) or \
-                 "download" in text or "free download" in text:
-                  download_url = urljoin(model_page, href)
-                  print(f"🔗 Found: {text[:60]} -> {download_url[:100]}...")
-                  break
+              // مانیتورینگ دانلود
+              const downloadPromises = [];
+              client.on("Browser.downloadProgress", (event) => {
+                if (event.state === "completed") {
+                  console.log(`✅ Download completed: ${event.guid}`);
+                } else if (event.state === "canceled") {
+                  console.log(`❌ Download canceled: ${event.guid}`);
+                }
+                // ذخیره وعده‌ها برای همگام‌سازی
+                downloadPromises.push(event);
+              });
 
-          # If not found by text, try href pattern
-          if not download_url:
-              for a in soup.find_all("a", href=True):
-                  href = a["href"].strip()
-                  if "download" in href.lower() or "token_id=" in href or "key=" in href:
-                      download_url = urljoin(model_page, href)
-                      print(f"🔗 Found by href: {download_url[:120]}...")
-                      break
+              console.log(`🌐 Navigating to: ${downloadLink}`);
+              await page.goto(downloadLink, {
+                waitUntil: "networkidle2",
+                timeout: 60000
+              });
 
-          if not download_url:
-              print("❌ No download link found")
-              sys.exit(1)
+              console.log("⏳ Waiting for JavaScript redirects...");
+              // صبر طولانی برای اجرای کامل JS و شروع دانلود
+              await wait(10000);
 
-          # ─── 3. Download the real file with cookies ───────────
-          print(f"📥 Downloading: {download_url}")
-          ses = requests.Session()
-          ses.headers.update({
-              "User-Agent": ua,
-              "Referer": model_page,
-              "Accept": "*/*",
-              "Accept-Language": "en-US,en;q=0.9",
-              "Connection": "keep-alive"
-          })
+              // گرفتن اسکرین‌شات برای بررسی وضعیت
+              await page.screenshot({ path: "download_page.png" });
+              console.log("📸 Screenshot saved as download_page.png");
 
-          # Set cookies from FlareSolverr
-          for c in cookies:
-              ses.cookies.set(c["name"], c["value"], domain=c.get("domain"))
+              // صبر اضافی برای تکمیل دانلود
+              await wait(15000);
 
-          # Send request
-          resp = ses.get(download_url, timeout=120, stream=True, allow_redirects=True)
+            } catch (error) {
+              console.error("❌ Error:", error.message);
+              if (page) {
+                try { await page.screenshot({ path: "debug_error.png" }); } catch (e) {}
+              }
+            } finally {
+              if (browser) {
+                await browser.close();
+                console.log("✔️ Browser closed");
+              }
+            }
 
-          if resp.status_code != 200:
-              print(f"❌ HTTP {resp.status_code}")
-              sys.exit(1)
+            // بررسی فایل‌های دانلود شده
+            if (fs.existsSync(downloadDir)) {
+              const files = fs.readdirSync(downloadDir).filter(f => {
+                const p = path.join(downloadDir, f);
+                return fs.statSync(p).isFile();
+              });
+              console.log(`\n📁 Files in 3d-models (${files.length}):`);
 
-          # Check if response is actually a file or HTML
-          content_type = resp.headers.get("Content-Type", "").lower()
-          cd = resp.headers.get("Content-Disposition", "")
+              let downloadedSomething = false;
+              for (const file of files) {
+                const fp = path.join(downloadDir, file);
+                const sizeKB = Math.round(fs.statSync(fp).size / 1024);
+                console.log(`  📦 ${file} (${sizeKB} KB)`);
+                if (sizeKB > 100) downloadedSomething = true;
+              }
 
-          # Read first bytes to detect HTML
-          first_chunk = resp.raw.peek(512)[:512]
-          is_html = b"<!DOCTYPE" in first_chunk or b"<html" in first_chunk
+              if (!downloadedSomething) {
+                console.log("\n⚠️ Download did not start or file is very small.");
+              }
+            } else {
+              console.log("⚠️ 3d-models directory not found.");
+            }
 
-          if is_html and "text/html" in content_type:
-              print("❌ Response is HTML, not a file. Server rejected the request.")
-              print("First bytes:", first_chunk[:200])
-              sys.exit(1)
+            console.log("\n✨ Script finished!");
+          })();
+          SCRIPT_EOF
 
-          # Determine filename
-          fname = None
-          if cd:
-              match = re.search(r'filename="?([^";\s]+)"?', cd)
-              if match:
-                  fname = match.group(1)
-          if not fname:
-              # Use basename from URL
-              fname = os.path.basename(urlparse(download_url).path)
-              if not fname or fname == "":
-                  fname = "model.zip"  # fallback
-
-          # Clean filename
-          fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
-
-          os.makedirs("3d-models", exist_ok=True)
-          fpath = os.path.join("3d-models", fname)
-
-          with open(fpath, "wb") as f:
-              f.write(first_chunk)  # write the peeked bytes
-              for chunk in resp.iter_content(8192):
-                  f.write(chunk)
-
-          size_kb = os.path.getsize(fpath) // 1024
-          print(f"✅ Saved: {fname} ({size_kb}KB)")
-          PYEOF
-
-      - name: Commit model
+      - name: Commit all files (even HTML for debugging)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p 3d-models
           git add 3d-models/ 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "Nothing to commit"
-            ls -lah 3d-models/
+            echo "No files to commit"
           else
-            git commit -m "📦 Downloaded 3D model"
+            git commit -m "📦 Attempted download from download.php?id=${{ inputs.download_link }}"
             git pull --rebase && git push
-            echo "✅ Pushed!"
           fi
+
+      - name: Upload debug screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: download-page-screenshots
+          path: |
+            download_page.png
+            debug_error.png
+          retention-days: 3
