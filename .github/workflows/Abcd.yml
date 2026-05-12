@@ -1,16 +1,13 @@
-name: Download 3D Models from Open3DModel
+name: Download 3D Model - Hybrid FlareSolverr + Requests v2
 
 on:
   workflow_dispatch:
     inputs:
-      page_url:
-        description: 'URL of the page'
+      model_page:
+        description: 'لینک صفحه مدل'
         required: true
-        default: 'https://open3dmodel.com/3d-models/anime'
-      max_models:
-        description: 'Max models to download'
-        required: false
-        default: '3'
+        type: string
+        default: 'https://open3dmodel.com/3d-models/3d-model-cute-anime-school-girl_116659.html'
 
 permissions:
   contents: write
@@ -24,123 +21,150 @@ jobs:
         ports:
           - 8191:8191
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install Python dependencies
-        run: pip install requests beautifulsoup4
 
       - name: Wait for FlareSolverr
         run: |
           for i in $(seq 1 15); do
-            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
-            if [ "$STATUS" = "ok" ]; then
-              echo "✅ FlareSolverr ready"
-              break
-            fi
+            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))")
+            [ "$STATUS" = "ok" ] && echo "✅ Ready" && break
             sleep 4
           done
 
-      - name: Download Models
+      - name: Install Python deps
+        run: pip install requests beautifulsoup4
+
+      - name: Download Model (Fixed peek error)
         run: |
           python3 << 'PYEOF'
-          import requests, os, re, sys, time
+          import requests, os, re, sys
           from bs4 import BeautifulSoup
           from urllib.parse import urljoin, urlparse
 
-          page_url = "${{ inputs.page_url }}"
-          max_models = int("${{ inputs.max_models }}")
-          FLARE_URL = "http://localhost:8191/v1"
+          model_page = "${{ inputs.model_page }}"
+          FLARE = "http://localhost:8191/v1"
 
-          def fetch_page(url):
-              r = requests.post(FLARE_URL, json={"cmd": "request.get", "url": url, "maxTimeout": 60000}, timeout=120)
-              data = r.json()
-              if data.get("status") == "ok":
-                  return data["solution"]["response"]
-              return None
+          # 1. FlareSolverr
+          print(f"🌐 Getting page: {model_page}")
+          r = requests.post(FLARE, json={
+              "cmd": "request.get",
+              "url": model_page,
+              "maxTimeout": 60000
+          }, timeout=120)
 
-          def extract_download_links(html, base_url):
-              soup = BeautifulSoup(html, "html.parser")
-              links = set()
-              extensions = ['.zip', '.rar', '.7z', '.fbx', '.obj', '.glb', '.gltf', '.stl', '.blend', '.max', '.c4d', '.ma', '.mb']
-              for a in soup.find_all("a", href=True):
-                  full = urljoin(base_url, a["href"])
-                  path = urlparse(full).path.lower()
-                  if any(path.endswith(ext) for ext in extensions) or 'download' in a["href"].lower():
-                      links.add(full)
-              return list(links)
+          if r.status_code != 200:
+              print("❌ FlareSolverr failed")
+              sys.exit(1)
 
-          print(f"🌐 Page: {page_url}")
-          html = fetch_page(page_url)
-          if not html:
-              print("❌ Failed"); sys.exit(1)
-          print(f"✅ Loaded ({len(html)} bytes)")
+          data = r.json()
+          if data.get("status") != "ok":
+              print("❌ Challenge failed")
+              sys.exit(1)
 
+          html = data["solution"]["response"]
+          cookies = data["solution"].get("cookies", [])
+          ua = data["solution"].get("userAgent", "Mozilla/5.0")
+          print(f"✅ Fetched. Cookies: {len(cookies)}")
+
+          # 2. Extract download link
           soup = BeautifulSoup(html, "html.parser")
-          all_links = set()
+          download_url = None
+
           for a in soup.find_all("a", href=True):
-              all_links.add(urljoin(page_url, a["href"]))
-
-          # Find model pages
-          # Model pages have .html in URL
-          # Category pages DO NOT have .html (they're just /anime, /wood, etc.)
-          model_pages = set()
-          for link in all_links:
-              if '.html' in link:
-                  model_pages.add(link)
-
-          print(f"📄 Found {len(model_pages)} model pages")
-
-          # Show first few
-          for mp in list(model_pages)[:5]:
-              print(f"   {mp}")
-
-          download_urls = set()
-
-          # Visit model pages to find download links
-          for model_url in list(model_pages)[:max_models*3]:
-              if len(download_urls) >= max_models:
+              href = a["href"].strip()
+              text = a.get_text(strip=True).lower()
+              if any(k in href for k in ["download.php", "edd_action", "token_id"]) or "download" in text:
+                  download_url = urljoin(model_page, href)
+                  print(f"🔗 Found: {download_url[:120]}...")
                   break
-              print(f"  ➡️ {model_url.split('/')[-1][:80]}")
-              m_html = fetch_page(model_url)
-              if m_html:
-                  dlinks = extract_download_links(m_html, model_url)
-                  for dl in dlinks:
-                      download_urls.add(dl)
-              time.sleep(2)
 
-          download_urls = list(download_urls)[:max_models]
-          print(f"📥 {len(download_urls)} download links")
+          if not download_url:
+              for a in soup.find_all("a", href=True):
+                  href = a["href"].strip()
+                  if "token_id=" in href or "key=" in href or "/download/" in href:
+                      download_url = urljoin(model_page, href)
+                      print(f"🔗 Fallback found: {download_url[:120]}...")
+                      break
 
-          if not download_urls:
-              print("❌ No links found"); sys.exit(0)
+          if not download_url:
+              print("❌ No download link found")
+              sys.exit(1)
 
+          # 3. Download with cookies
+          print(f"📥 Downloading: {download_url}")
+          ses = requests.Session()
+          ses.headers.update({
+              "User-Agent": ua,
+              "Referer": model_page,
+              "Accept": "*/*",
+              "Accept-Language": "en-US,en;q=0.9",
+              "Connection": "keep-alive"
+          })
+
+          for c in cookies:
+              ses.cookies.set(c["name"], c["value"], domain=c.get("domain"))
+
+          resp = ses.get(download_url, timeout=120, stream=True, allow_redirects=True)
+
+          if resp.status_code != 200:
+              print(f"❌ HTTP {resp.status_code}")
+              sys.exit(1)
+
+          # 4. Peek at the first few bytes to check for HTML
+          content_type = resp.headers.get("Content-Type", "").lower()
+          first_bytes = b""
+          chunk_iterator = resp.iter_content(chunk_size=1024)
+          try:
+              first_bytes = next(chunk_iterator)
+          except StopIteration:
+              print("❌ Empty response")
+              sys.exit(1)
+
+          is_html = b"<!DOCTYPE" in first_bytes[:200] or b"<html" in first_bytes[:200] or "text/html" in content_type
+
+          if is_html:
+              print("❌ Download link returned HTML, not a model file.")
+              print("   First bytes:", first_bytes[:200])
+              sys.exit(1)
+
+          # 5. Determine filename
+          fname = None
+          cd = resp.headers.get("Content-Disposition", "")
+          if cd:
+              match = re.search(r'filename="?([^";\s]+)"?', cd)
+              if match:
+                  fname = match.group(1)
+          if not fname:
+              fname = os.path.basename(urlparse(download_url).path)
+              if not fname or fname in ("", "/"):
+                  fname = "model.zip"
+
+          fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
           os.makedirs("3d-models", exist_ok=True)
-          for idx, durl in enumerate(download_urls):
-              print(f"  [{idx+1}] {durl[:120]}")
-              try:
-                  resp = requests.get(durl, headers={"User-Agent": "Mozilla/5.0"}, timeout=120, stream=True)
-                  if resp.status_code == 200:
-                      cd = resp.headers.get("Content-Disposition", "")
-                      fname = re.search(r'filename="?([^";\s]+)"?', cd)
-                      fname = fname.group(1) if fname else os.path.basename(urlparse(durl).path) or f"model_{idx+1}.zip"
-                      fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
-                      fpath = os.path.join("3d-models", fname)
-                      with open(fpath, "wb") as f:
-                          for chunk in resp.iter_content(8192): f.write(chunk)
-                      print(f"    ✅ {fname} ({os.path.getsize(fpath)//1024}KB)")
-                  else:
-                      print(f"    ❌ HTTP {resp.status_code}")
-              except Exception as e:
-                  print(f"    ❌ {e}")
+          fpath = os.path.join("3d-models", fname)
 
-          print("✅ Done!")
+          # 6. Write the file (first chunk + remaining)
+          with open(fpath, "wb") as f:
+              f.write(first_bytes)
+              for chunk in chunk_iterator:
+                  f.write(chunk)
+
+          size_kb = os.path.getsize(fpath) // 1024
+          print(f"✅ Saved: {fname} ({size_kb} KB)")
           PYEOF
 
-      - name: Commit
+      - name: Commit model
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p 3d-models
           git add 3d-models/ 2>/dev/null || true
-          git commit -m "📦 3D models from Open3DModel" || echo "Nothing"
-          git pull --rebase && git push || true
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+            ls -lah 3d-models/
+          else
+            git commit -m "📦 Downloaded 3D model"
+            git pull --rebase && git push
+            echo "✅ Pushed!"
+          fi
