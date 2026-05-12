@@ -1,4 +1,4 @@
-name: Ultimate Stealth Download + Save All Files
+name: Ultimate Stealth Download (CommonJS Fixed)
 
 on:
   workflow_dispatch:
@@ -23,8 +23,9 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install system dependencies for Chromium
+      - name: Clean old configs and install system dependencies
         run: |
+          rm -f package.json package-lock.json
           sudo apt-get update
           sudo apt-get install -y \
             ca-certificates \
@@ -52,11 +53,11 @@ jobs:
           npm init -y
           npm install puppeteer-extra puppeteer-extra-plugin-stealth
 
-      - name: Download using stealth browser
+      - name: Write and execute download script
         env:
           MODEL_PAGE: ${{ inputs.model_page }}
         run: |
-          node --max-old-space-size=4096 << 'SCRIPT_EOF'
+          cat > download_script.cjs << 'SCRIPT_EOF'
           const puppeteer = require('puppeteer-extra');
           const StealthPlugin = require('puppeteer-extra-plugin-stealth');
           const fs = require('fs');
@@ -72,106 +73,102 @@ jobs:
           let browser = null;
           let page = null;
 
-          try {
-            console.log("🚀 راه‌اندازی مرورگر مخفی‌کار...");
-            browser = await puppeteer.launch({
-              headless: "new",
-              args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process"
-              ]
-            });
+          (async () => {
+            try {
+              console.log("🚀 راه‌اندازی مرورگر مخفی‌کار...");
+              browser = await puppeteer.launch({
+                headless: "new",
+                args: [
+                  "--no-sandbox",
+                  "--disable-setuid-sandbox",
+                  "--disable-dev-shm-usage",
+                  "--disable-gpu",
+                  "--disable-web-security",
+                  "--disable-features=IsolateOrigins,site-per-process"
+                ]
+              });
 
-            page = await browser.newPage();
+              page = await browser.newPage();
 
-            // تنظیم مسیر دانلود
-            const client = await page.target().createCDPSession();
-            await client.send("Browser.setDownloadBehavior", {
-              behavior: "allow",
-              downloadPath: downloadDir,
-              eventsEnabled: true
-            });
+              // تنظیم مسیر دانلود
+              const client = await page.target().createCDPSession();
+              await client.send("Browser.setDownloadBehavior", {
+                behavior: "allow",
+                downloadPath: downloadDir,
+                eventsEnabled: true
+              });
 
-            console.log(`🌐 بارگذاری صفحه مدل: ${modelPage}`);
-            await page.goto(modelPage, { waitUntil: "networkidle2", timeout: 60000 });
+              console.log(`🌐 بارگذاری صفحه مدل: ${modelPage}`);
+              await page.goto(modelPage, { waitUntil: "networkidle2", timeout: 60000 });
 
-            console.log("🔍 جستجوی دکمه دانلود...");
-            // صبر کن تا دکمه ظاهر بشه
-            const downloadBtnSelector = 'a[href*="download.php"]';
-            await page.waitForSelector(downloadBtnSelector, { timeout: 15000 });
-            const downloadButton = await page.$(downloadBtnSelector);
-            
-            if (downloadButton) {
-              console.log("🖱️ کلیک روی دکمه دانلود...");
-              await downloadButton.click();
-              console.log("⏳ منتظر اجرای جاوااسکریپت و شروع دانلود...");
-              await wait(20000); // ۲۰ ثانیه صبر
+              console.log("🔍 جستجوی دکمه دانلود...");
+              const downloadBtnSelector = 'a[href*="download.php"]';
+              await page.waitForSelector(downloadBtnSelector, { timeout: 15000 });
+              const downloadButton = await page.$(downloadBtnSelector);
+
+              if (downloadButton) {
+                console.log("🖱️ کلیک روی دکمه دانلود...");
+                await downloadButton.click();
+                console.log("⏳ منتظر اجرای جاوااسکریپت و شروع دانلود...");
+                await wait(20000);
+              } else {
+                console.log("❌ دکمه دانلود پیدا نشد.");
+              }
+
+              console.log("📸 گرفتن اسکرین‌شات نهایی...");
+              await page.screenshot({ path: "screenshot_final.png" });
+
+            } catch (error) {
+              console.error("❌ خطا:", error.message);
+              if (page) {
+                try {
+                  await page.screenshot({ path: "screenshot_error.png" });
+                } catch (e) {}
+              }
+            } finally {
+              if (browser) {
+                await browser.close();
+                console.log("✔️ مرورگر بسته شد");
+              }
+            }
+
+            // گزارش فایل‌های دانلود شده
+            if (fs.existsSync(downloadDir)) {
+              const files = fs.readdirSync(downloadDir).filter(f => {
+                const fullPath = path.join(downloadDir, f);
+                return fs.statSync(fullPath).isFile();
+              });
+              console.log(`\n📁 فایل‌های موجود در 3d-models (${files.length} عدد):`);
+              files.forEach(f => {
+                const fullPath = path.join(downloadDir, f);
+                const sizeKB = Math.round(fs.statSync(fullPath).size / 1024);
+                console.log(`  📦 ${f} (${sizeKB} KB)`);
+              });
             } else {
-              console.log("❌ دکمه دانلود پیدا نشد.");
+              console.log("⚠️ پوشه 3d-models پیدا نشد.");
             }
-
-            // اسکرین‌شات از وضعیت نهایی
-            const screenshotPath = "screenshot_final.png";
-            await page.screenshot({ path: screenshotPath });
-            console.log(`📸 اسکرین‌شات ذخیره شد: ${screenshotPath}`);
-
-          } catch (error) {
-            console.error("❌ خطا:", error.message);
-            if (page) {
-              try {
-                await page.screenshot({ path: "screenshot_error.png" });
-                console.log("📸 اسکرین‌شات خطا ذخیره شد.");
-              } catch (e) {}
-            }
-          } finally {
-            if (browser) {
-              await browser.close();
-              console.log("✔️ مرورگر بسته شد");
-            }
-          }
-
-          // گزارش فایل‌های دانلود شده
-          if (fs.existsSync(downloadDir)) {
-            const files = fs.readdirSync(downloadDir).filter(f => {
-              const fullPath = path.join(downloadDir, f);
-              return fs.statSync(fullPath).isFile();
-            });
-            console.log(`\n📁 فایل‌های موجود در 3d-models (${files.length} عدد):`);
-            files.forEach(f => {
-              const fullPath = path.join(downloadDir, f);
-              const sizeKB = Math.round(fs.statSync(fullPath).size / 1024);
-              console.log(`  📦 ${f} (${sizeKB} KB)`);
-            });
-          } else {
-            console.log("⚠️ پوشه 3d-models پیدا نشد.");
-          }
-          console.log("\n✨ پایان اسکریپت.");
+            console.log("\n✨ پایان اسکریپت.");
+          })();
           SCRIPT_EOF
 
-      - name: Commit all downloaded files & screenshots
+          node download_script.cjs
+
+      - name: Commit all files (models + screenshots)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # اطمینان از وجود پوشه
           mkdir -p 3d-models
-          # اضافه کردن تمام فایل‌های دانلودی و اسکرین‌شات‌ها با اجبار (حتی اگر در gitignore باشند)
-          git add -f 3d-models/* 2>/dev/null || true
+          git add -f 3d-models/ 2>/dev/null || true
           git add -f screenshot_final.png screenshot_error.png 2>/dev/null || true
-          # اگر تغییری برای کامیت وجود داشت
           if git diff --cached --quiet; then
-            echo "هیچ فایلی برای کامیت وجود ندارد."
+            echo "No files to commit"
           else
             git commit -m "📦 دانلود مدل + اسکرین‌شات"
-            git pull --rebase
-            git push
+            git pull --rebase && git push
             echo "✅ فایل‌ها با موفقیت در مخزن ذخیره شدند."
           fi
 
-      - name: Upload screenshots as artifacts (backup)
+      - name: Upload screenshots as artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
