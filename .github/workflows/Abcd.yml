@@ -81,23 +81,27 @@ jobs:
           for a in soup.find_all("a", href=True):
               all_links.add(urljoin(page_url, a["href"]))
 
-          # Find model pages (with .html or /3d-model/ or /3d-models/)
+          # Find model pages
+          # Model pages have .html in URL
+          # Category pages DO NOT have .html (they're just /anime, /wood, etc.)
           model_pages = set()
           for link in all_links:
-              low = link.lower()
-              if '.html' in low or '/3d-model/' in low or '/3d-models/' in low:
-                  # But exclude pagination, categories, submit, announcement
-                  if not any(kw in low for kw in ['/page/', '/submit/', '/announcement/', '/lamp', '/desk', '/home-furniture']):
-                      model_pages.add(link)
+              if '.html' in link:
+                  model_pages.add(link)
 
           print(f"📄 Found {len(model_pages)} model pages")
 
+          # Show first few
+          for mp in list(model_pages)[:5]:
+              print(f"   {mp}")
+
           download_urls = set()
 
-          for model_url in list(model_pages)[:max_models*2]:
+          # Visit model pages to find download links
+          for model_url in list(model_pages)[:max_models*3]:
               if len(download_urls) >= max_models:
                   break
-              print(f"  ➡️ {model_url.split('/')[-1][:60]}")
+              print(f"  ➡️ {model_url.split('/')[-1][:80]}")
               m_html = fetch_page(model_url)
               if m_html:
                   dlinks = extract_download_links(m_html, model_url)
@@ -113,7 +117,7 @@ jobs:
 
           os.makedirs("3d-models", exist_ok=True)
           for idx, durl in enumerate(download_urls):
-              print(f"  [{idx+1}] {durl[:100]}")
+              print(f"  [{idx+1}] {durl[:120]}")
               try:
                   resp = requests.get(durl, headers={"User-Agent": "Mozilla/5.0"}, timeout=120, stream=True)
                   if resp.status_code == 200:
