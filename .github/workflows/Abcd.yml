@@ -4,20 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       page_url:
-        description: 'URL of the page (search or model)'
+        description: 'URL of the page'
         required: true
-        type: string
         default: 'https://open3dmodel.com/3d-models/anime'
       max_models:
         description: 'Max models to download'
         required: false
-        type: string
         default: '3'
-      use_flaresolverr:
-        description: 'Use FlareSolverr if direct request fails'
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -37,8 +30,7 @@ jobs:
       - name: Install Python dependencies
         run: pip install requests beautifulsoup4
 
-      - name: Wait for FlareSolverr (if needed)
-        if: inputs.use_flaresolverr == 'true'
+      - name: Wait for FlareSolverr
         run: |
           for i in $(seq 1 15); do
             STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
@@ -51,48 +43,51 @@ jobs:
           done
 
       - name: Download Models
-        env:
-          PAGE_URL: ${{ inputs.page_url }}
-          MAX_MODELS: ${{ inputs.max_models }}
-          USE_FLARESOLVERR: ${{ inputs.use_flaresolverr }}
         run: |
           python3 << 'PYEOF'
           import requests, os, re, sys, time
           from bs4 import BeautifulSoup
           from urllib.parse import urljoin, urlparse
 
-          page_url = os.environ["PAGE_URL"]
-          max_models = int(os.environ["MAX_MODELS"])
-          use_flaresolverr = os.environ.get("USE_FLARESOLVERR", "true") == "true"
-
-          headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+          page_url = "${{ inputs.page_url }}"
+          max_models = int("${{ inputs.max_models }}")
+          FLARE_URL = "http://localhost:8191/v1"
 
           def fetch_page(url):
+              """Use FlareSolverr to render JavaScript pages"""
               try:
-                  resp = requests.get(url, headers=headers, timeout=30)
+                  r = requests.post(FLARE_URL, json={
+                      "cmd": "request.get",
+                      "url": url,
+                      "maxTimeout": 60000
+                  }, timeout=120)
+                  data = r.json()
+                  if data.get("status") == "ok":
+                      return data["solution"]["response"]
+              except Exception as e:
+                  print(f"⚠️ FlareSolverr error: {e}")
+              # Fallback
+              try:
+                  resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
                   if resp.status_code == 200:
                       return resp.text
               except:
                   pass
-              if use_flaresolverr:
-                  print("🔄 Trying FlareSolverr...")
-                  flare_url = "http://localhost:8191/v1"
-                  r = requests.post(flare_url, json={"cmd": "request.get", "url": url, "maxTimeout": 60000}, timeout=120)
-                  data = r.json()
-                  if data.get("status") == "ok":
-                      return data["solution"]["response"]
               return None
 
-          print(f"🌐 Fetching: {page_url}")
+          print(f"🌐 Fetching via FlareSolverr: {page_url}")
           html = fetch_page(page_url)
           if not html:
               print("❌ Could not fetch page")
               sys.exit(1)
 
+          print(f"✅ Page loaded ({len(html)} bytes)")
+
           soup = BeautifulSoup(html, "html.parser")
           extensions = ['.zip', '.rar', '.7z', '.fbx', '.obj', '.glb', '.gltf', '.blend', '.max', '.c4d', '.ma', '.mb', '.stl', '.3ds', '.dae', '.ply']
 
           download_urls = set()
+          # Find direct download links
           for a in soup.find_all("a", href=True):
               href = a["href"]
               full_url = urljoin(page_url, href)
@@ -100,14 +95,20 @@ jobs:
               if any(path.endswith(ext) for ext in extensions) or 'download' in href.lower():
                   download_urls.add(full_url)
 
+          # Also look for data attributes
+          for el in soup.find_all(attrs={"data-download-url": True}):
+              download_urls.add(el["data-download-url"])
+
           if not download_urls:
               print("🔍 Searching model pages...")
               model_links = set()
               for a in soup.find_all("a", href=True):
                   href = a["href"].lower()
-                  if any(kw in href for kw in ['/3d-model/', '/model/', '/download/']):
+                  if any(kw in href for kw in ['/3d-model/', '/model/', '/download/', '/free-download']):
                       model_links.add(urljoin(page_url, a["href"]))
-              for model_url in model_links:
+
+              print(f"  Found {len(model_links)} model pages")
+              for model_url in list(model_links)[:10]:
                   if len(download_urls) >= max_models: break
                   print(f"  ➡️ {model_url}")
                   m_html = fetch_page(model_url)
@@ -118,16 +119,22 @@ jobs:
                           full = urljoin(model_url, href)
                           if any(urlparse(full).path.lower().endswith(ext) for ext in extensions) or 'download' in href.lower():
                               download_urls.add(full)
-                  time.sleep(1)
+                      for el in ms.find_all(attrs={"data-download-url": True}):
+                          download_urls.add(el["data-download-url"])
+                  time.sleep(2)
 
           download_urls = list(download_urls)[:max_models]
-          print(f"📥 {len(download_urls)} files")
+          print(f"📥 Found {len(download_urls)} download links")
+
+          if not download_urls:
+              print("❌ No download links found")
+              sys.exit(0)
 
           os.makedirs("3d-models", exist_ok=True)
           for idx, durl in enumerate(download_urls):
               print(f"  [{idx+1}] {durl}")
               try:
-                  resp = requests.get(durl, headers=headers, timeout=120, stream=True)
+                  resp = requests.get(durl, headers={"User-Agent": "Mozilla/5.0"}, timeout=120, stream=True)
                   if resp.status_code == 200:
                       cd = resp.headers.get("Content-Disposition", "")
                       fname = re.search(r'filename="?([^";\s]+)"?', cd)
