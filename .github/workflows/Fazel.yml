@@ -1,18 +1,16 @@
-name: Download from Open3DModel Direct Link
+name: Download from Open3DModel (FlareSolverr)
 
 on:
   workflow_dispatch:
     inputs:
       download_url:
-        description: 'Direct download link'
         required: true
         type: string
         default: 'https://open3dmodel.com/?token_id=NFRYUzZKWFlyQmFTb0FvZDhRaXZEZz09&key=YWRuWVc1OGFlazR2cnE4am5TaDVGUT09'
-      filename:
-        description: 'File name (optional)'
+      model_page:
         required: false
         type: string
-        default: ''
+        default: 'https://open3dmodel.com/3d-models/3d-model-cute-anime-school-girl_116659.html'
 
 permissions:
   contents: write
@@ -20,53 +18,71 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download File
+      - name: Wait for FlareSolverr
         run: |
-          mkdir -p 3d-models
-          URL="${{ inputs.download_url }}"
-          FNAME="${{ inputs.filename }}"
+          for i in $(seq 1 15); do
+            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+            if [ "$STATUS" = "ok" ]; then echo "✅ Ready"; break; fi
+            sleep 4
+          done
 
-          echo "📥 Downloading: $URL"
+      - name: Install Dependencies
+        run: pip install requests
 
-          # Follow redirects and get filename from headers
-          RESPONSE=$(curl -L -o "3d-models/temp_download" -w "%{http_code}|%{url_effective}|%{filename_effective}" -s "$URL")
-          HTTP_CODE=$(echo "$RESPONSE" | cut -d'|' -f1)
-          FINAL_URL=$(echo "$RESPONSE" | cut -d'|' -f2)
+      - name: Download via FlareSolverr
+        run: |
+          python3 << 'PYEOF'
+          import requests
 
-          if [ "$HTTP_CODE" = "200" ]; then
-              # Try to get filename from Content-Disposition
-              CD_FILENAME=$(curl -L -I -s "$FINAL_URL" | grep -i "Content-Disposition" | sed -n 's/.*filename="\?\([^";]*\)"\?.*/\1/p')
+          download_url = "${{ inputs.download_url }}"
+          model_page = "${{ inputs.model_page }}"
 
-              if [ -n "$FNAME" ]; then
-                  mv "3d-models/temp_download" "3d-models/$FNAME"
-                  echo "  ✅ Saved as: $FNAME"
-              elif [ -n "$CD_FILENAME" ]; then
-                  mv "3d-models/temp_download" "3d-models/$CD_FILENAME"
-                  echo "  ✅ Saved as: $CD_FILENAME"
-              else
-                  EXT="${FINAL_URL##*.}"
-                  EXT=$(echo "$EXT" | cut -d'?' -f1)
-                  mv "3d-models/temp_download" "3d-models/model.$EXT"
-                  echo "  ✅ Saved as: model.$EXT"
-              fi
-              ls -la 3d-models/
-          else
-              echo "❌ HTTP $HTTP_CODE"
-              rm -f 3d-models/temp_download
-          fi
+          # Get cookies from model page
+          print(f"🌐 Getting cookies from: {model_page}")
+          r = requests.post("http://localhost:8191/v1", json={
+              "cmd": "request.get",
+              "url": model_page,
+              "maxTimeout": 30000
+          }, timeout=60)
+          data = r.json()
+          cookies = data.get("solution", {}).get("cookies", [])
+          ua = data.get("solution", {}).get("userAgent", "Mozilla/5.0")
+
+          # Download file with cookies
+          print(f"📥 Downloading: {download_url}")
+          ses = requests.Session()
+          ses.headers.update({"User-Agent": ua, "Referer": model_page})
+          for c in cookies:
+              ses.cookies.set(c["name"], c["value"])
+
+          resp = ses.get(download_url, timeout=120, stream=True)
+          if resp.status_code == 200:
+              import os, re
+              os.makedirs("3d-models", exist_ok=True)
+              cd = resp.headers.get("Content-Disposition", "")
+              fname = re.search(r'filename="?([^";\s]+)"?', cd)
+              fname = fname.group(1) if fname else "model.zip"
+              fpath = f"3d-models/{fname}"
+              with open(fpath, "wb") as f:
+                  for chunk in resp.iter_content(8192): f.write(chunk)
+              print(f"✅ Saved: {fname} ({os.path.getsize(fpath)//1024}KB)")
+          else:
+              print(f"❌ HTTP {resp.status_code}")
+          PYEOF
 
       - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add 3d-models/ 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "No changes"
-          else
-            git commit -m "📦 Downloaded 3D model"
-            git pull --rebase && git push
-          fi
+          if git diff --cached --quiet; then echo "No changes"
+          else git commit -m "📦 3D model" && git pull --rebase && git push; fi
