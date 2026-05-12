@@ -54,26 +54,29 @@ jobs:
           FLARE_URL = "http://localhost:8191/v1"
 
           def fetch_page(url):
-              """Use FlareSolverr to render JavaScript pages"""
-              try:
-                  r = requests.post(FLARE_URL, json={
-                      "cmd": "request.get",
-                      "url": url,
-                      "maxTimeout": 60000
-                  }, timeout=120)
-                  data = r.json()
-                  if data.get("status") == "ok":
-                      return data["solution"]["response"]
-              except Exception as e:
-                  print(f"⚠️ FlareSolverr error: {e}")
-              # Fallback
-              try:
-                  resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
-                  if resp.status_code == 200:
-                      return resp.text
-              except:
-                  pass
+              """Full browser render via FlareSolverr"""
+              r = requests.post(FLARE_URL, json={
+                  "cmd": "request.get",
+                  "url": url,
+                  "maxTimeout": 60000
+              }, timeout=120)
+              data = r.json()
+              if data.get("status") == "ok":
+                  return data["solution"]["response"]
               return None
+
+          def extract_download_links(html, base_url, limit=10):
+              soup = BeautifulSoup(html, "html.parser")
+              links = set()
+              extensions = ['.zip', '.rar', '.7z', '.fbx', '.obj', '.glb', '.gltf', '.stl', '.blend']
+
+              for a in soup.find_all("a", href=True):
+                  href = a["href"]
+                  full = urljoin(base_url, href)
+                  path = urlparse(full).path.lower()
+                  if any(path.endswith(ext) for ext in extensions) or 'download' in href.lower():
+                      links.add(full)
+              return list(links)[:limit]
 
           print(f"🌐 Fetching via FlareSolverr: {page_url}")
           html = fetch_page(page_url)
@@ -83,44 +86,42 @@ jobs:
 
           print(f"✅ Page loaded ({len(html)} bytes)")
 
+          # Debug: print all links found
           soup = BeautifulSoup(html, "html.parser")
-          extensions = ['.zip', '.rar', '.7z', '.fbx', '.obj', '.glb', '.gltf', '.blend', '.max', '.c4d', '.ma', '.mb', '.stl', '.3ds', '.dae', '.ply']
-
-          download_urls = set()
-          # Find direct download links
+          all_links = set()
           for a in soup.find_all("a", href=True):
               href = a["href"]
-              full_url = urljoin(page_url, href)
-              path = urlparse(full_url).path.lower()
-              if any(path.endswith(ext) for ext in extensions) or 'download' in href.lower():
-                  download_urls.add(full_url)
+              full = urljoin(page_url, href)
+              all_links.add(full)
 
-          # Also look for data attributes
-          for el in soup.find_all(attrs={"data-download-url": True}):
-              download_urls.add(el["data-download-url"])
+          print(f"🔍 Found {len(all_links)} total links")
+          for link in list(all_links)[:10]:
+              print(f"   {link}")
 
-          if not download_urls:
-              print("🔍 Searching model pages...")
-              model_links = set()
-              for a in soup.find_all("a", href=True):
-                  href = a["href"].lower()
-                  if any(kw in href for kw in ['/3d-model/', '/model/', '/download/', '/free-download']):
-                      model_links.add(urljoin(page_url, a["href"]))
+          # Extract model page links
+          model_links = set()
+          for link in all_links:
+              if any(kw in link.lower() for kw in ['/3d-model/', '/model/', '/download/', '/free-download']):
+                  model_links.add(link)
 
-              print(f"  Found {len(model_links)} model pages")
-              for model_url in list(model_links)[:10]:
-                  if len(download_urls) >= max_models: break
+          print(f"📄 Found {len(model_links)} model pages")
+
+          download_urls = set()
+
+          # Try direct download links first
+          for link in all_links:
+              if any(link.lower().endswith(ext) for ext in ['.zip', '.rar', '.7z', '.fbx', '.obj', '.glb', '.stl', '.blend']):
+                  download_urls.add(link)
+
+          # If no direct links, visit model pages
+          if not download_urls and model_links:
+              for model_url in list(model_links)[:max_models]:
                   print(f"  ➡️ {model_url}")
                   m_html = fetch_page(model_url)
                   if m_html:
-                      ms = BeautifulSoup(m_html, "html.parser")
-                      for a in ms.find_all("a", href=True):
-                          href = a["href"]
-                          full = urljoin(model_url, href)
-                          if any(urlparse(full).path.lower().endswith(ext) for ext in extensions) or 'download' in href.lower():
-                              download_urls.add(full)
-                      for el in ms.find_all(attrs={"data-download-url": True}):
-                          download_urls.add(el["data-download-url"])
+                      dlinks = extract_download_links(m_html, model_url)
+                      for dl in dlinks:
+                          download_urls.add(dl)
                   time.sleep(2)
 
           download_urls = list(download_urls)[:max_models]
