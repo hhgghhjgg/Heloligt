@@ -1,180 +1,154 @@
-name: دانلودر پورن هاب
+name: Download 3D Models from Open3DModel
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: 'URL of the video, search, or playlist'
+      page_url:
+        description: 'URL of the page (search or model)'
         required: true
         type: string
-      output_folder:
-        description: 'Folder where the video will be saved'
+        default: 'https://open3dmodel.com/3d-models/anime'
+      max_models:
+        description: 'Max models to download'
         required: false
         type: string
-        default: 'downloads'
-      quality:
-        description: 'Video quality'
-        required: true
-        type: string
-        default: 'bestvideo[height<=240]+bestaudio/best[height<=240][ext=mp4]/best[height<=240]'
-      category_filter:
-        description: 'Category / tag filter – leave empty for none'
+        default: '3'
+      use_flaresolverr:
+        description: 'Use FlareSolverr if direct request fails'
         required: false
-        type: string
-        default: ''
-      sort_by:
-        description: 'Sort order'
-        required: false
-        type: choice
-        options:
-          - 'none (default)'
-          - 'newest first'
-          - 'oldest first'
-          - 'random'
-        default: 'none (default)'
-      exclude_keywords:
-        description: 'Keywords to exclude (comma)'
-        required: false
-        type: string
-        default: ''
-      max_duration_minutes:
-        description: 'Max duration in minutes (0=no limit)'
-        required: false
-        type: string
-        default: '0'
-      start:
-        description: 'Start from video #'
-        required: false
-        type: string
-        default: '1'
-      end:
-        description: 'End at video #'
-        required: false
-        type: string
-        default: '5'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 jobs:
-  download-and-maybe-split:
+  download:
     runs-on: ubuntu-latest
-
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+      - name: Install Python dependencies
+        run: pip install requests beautifulsoup4
 
-      - name: Install yt-dlp
-        run: pip install yt-dlp
-
-      - name: Build filter
-        id: filters
+      - name: Wait for FlareSolverr (if needed)
+        if: inputs.use_flaresolverr == 'true'
         run: |
-          FILTER_PARTS=()
-
-          if [ "${{ github.event.inputs.max_duration_minutes }}" != "0" ]; then
-            SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
-            FILTER_PARTS+=("duration<${SEC}")
-          fi
-
-          if [ -n "${{ github.event.inputs.category_filter }}" ]; then
-            FILTER_PARTS+=("title~=(?i)${{ github.event.inputs.category_filter }}")
-          fi
-
-          if [ -n "${{ github.event.inputs.exclude_keywords }}" ]; then
-            IFS=',' read -ra KW <<< "${{ github.event.inputs.exclude_keywords }}"
-            for kw in "${KW[@]}"; do
-              kw=$(echo "$kw" | xargs)
-              if [ -n "$kw" ]; then
-                FILTER_PARTS+=("title
-
-!~=(?i)${kw}")
-              fi
-            done
-          fi
-
-          FILTER=""
-          for part in "${FILTER_PARTS[@]}"; do
-            if [ -z "$FILTER" ]; then
-              FILTER="$part"
-            else
-              FILTER="${FILTER}&${part}"
+          for i in $(seq 1 15); do
+            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+            if [ "$STATUS" = "ok" ]; then
+              echo "✅ FlareSolverr ready"
+              break
             fi
+            echo "Waiting... ($i/15)"
+            sleep 4
           done
 
-          echo "filter=${FILTER}" >> $GITHUB_OUTPUT
-          echo "Filter: ${FILTER:-none}"
-
-      - name: Download
+      - name: Download Models
+        env:
+          PAGE_URL: ${{ inputs.page_url }}
+          MAX_MODELS: ${{ inputs.max_models }}
+          USE_FLARESOLVERR: ${{ inputs.use_flaresolverr }}
         run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          mkdir -p "$FOLDER"
-          touch "$FOLDER/.gitkeep"
+          python3 << 'PYEOF'
+          import requests, os, re, sys, time
+          from bs4 import BeautifulSoup
+          from urllib.parse import urljoin, urlparse
 
-          SORT=""
-          case "${{ github.event.inputs.sort_by }}" in
-            "newest first") SORT="--playlist-reverse" ;;
-            "random")       SORT="--playlist-random" ;;
-          esac
+          page_url = os.environ["PAGE_URL"]
+          max_models = int(os.environ["MAX_MODELS"])
+          use_flaresolverr = os.environ.get("USE_FLARESOLVERR", "true") == "true"
 
-          FILTER="${{ steps.filters.outputs.filter }}"
+          headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-          for i in 1 2 3 4 5; do
-            echo "Attempt $i/5"
-            CMD=(yt-dlp
-              --output "./${FOLDER}/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
-              --format "${{ github.event.inputs.quality }}"
-              --merge-output-format mp4
-              --playlist-start "${{ github.event.inputs.start }}"
-              --playlist-end "${{ github.event.inputs.end }}"
-              $SORT
-              --retries 3 --fragment-retries 10
-              --no-check-certificate --geo-bypass --no-color --ignore-errors --newline
-            )
-            if [ -n "$FILTER" ]; then
-              CMD+=(--match-filter "$FILTER")
-            fi
-            CMD+=("${{ github.event.inputs.url }}")
-            "${CMD[@]}" && break
-            sleep 5
-          done
+          def fetch_page(url):
+              try:
+                  resp = requests.get(url, headers=headers, timeout=30)
+                  if resp.status_code == 200:
+                      return resp.text
+              except:
+                  pass
+              if use_flaresolverr:
+                  print("🔄 Trying FlareSolverr...")
+                  flare_url = "http://localhost:8191/v1"
+                  r = requests.post(flare_url, json={"cmd": "request.get", "url": url, "maxTimeout": 60000}, timeout=120)
+                  data = r.json()
+                  if data.get("status") == "ok":
+                      return data["solution"]["response"]
+              return None
 
-          # Remove non-video files (thumbnails, images, etc.)
-          find "$FOLDER" -type f ! -name "*.mp4" ! -name "*.mkv" ! -name "*.webm" ! -name ".gitkeep" -delete 2>/dev/null || true
+          print(f"🌐 Fetching: {page_url}")
+          html = fetch_page(page_url)
+          if not html:
+              print("❌ Could not fetch page")
+              sys.exit(1)
 
-          echo "Downloaded files:"
-          find "$FOLDER" -type f ! -name ".gitkeep" | while read -r f; do
-            echo "  $(basename "$f") ($(stat -c %s "$f") bytes)"
-          done
+          soup = BeautifulSoup(html, "html.parser")
+          extensions = ['.zip', '.rar', '.7z', '.fbx', '.obj', '.glb', '.gltf', '.blend', '.max', '.c4d', '.ma', '.mb', '.stl', '.3ds', '.dae', '.ply']
 
-      - name: Split large files
-        run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          cd "$FOLDER"
-          find . -maxdepth 1 -type f ! -name ".gitkeep" | while read -r FILE; do
-            FILENAME=$(basename "$FILE")
-            SIZE=$(stat -c %s "$FILE")
-            if [ "$SIZE" -gt 104857600 ]; then
-              mkdir -p "../splits/${FILENAME}"
-              split -b 95M "$FILE" "../splits/${FILENAME}/part_"
-              rm "$FILE"
-              echo "Split: ${FILENAME}"
-            fi
-          done
+          download_urls = set()
+          for a in soup.find_all("a", href=True):
+              href = a["href"]
+              full_url = urljoin(page_url, href)
+              path = urlparse(full_url).path.lower()
+              if any(path.endswith(ext) for ext in extensions) or 'download' in href.lower():
+                  download_urls.add(full_url)
 
-      - name: Commit and Push
+          if not download_urls:
+              print("🔍 Searching model pages...")
+              model_links = set()
+              for a in soup.find_all("a", href=True):
+                  href = a["href"].lower()
+                  if any(kw in href for kw in ['/3d-model/', '/model/', '/download/']):
+                      model_links.add(urljoin(page_url, a["href"]))
+              for model_url in model_links:
+                  if len(download_urls) >= max_models: break
+                  print(f"  ➡️ {model_url}")
+                  m_html = fetch_page(model_url)
+                  if m_html:
+                      ms = BeautifulSoup(m_html, "html.parser")
+                      for a in ms.find_all("a", href=True):
+                          href = a["href"]
+                          full = urljoin(model_url, href)
+                          if any(urlparse(full).path.lower().endswith(ext) for ext in extensions) or 'download' in href.lower():
+                              download_urls.add(full)
+                  time.sleep(1)
+
+          download_urls = list(download_urls)[:max_models]
+          print(f"📥 {len(download_urls)} files")
+
+          os.makedirs("3d-models", exist_ok=True)
+          for idx, durl in enumerate(download_urls):
+              print(f"  [{idx+1}] {durl}")
+              try:
+                  resp = requests.get(durl, headers=headers, timeout=120, stream=True)
+                  if resp.status_code == 200:
+                      cd = resp.headers.get("Content-Disposition", "")
+                      fname = re.search(r'filename="?([^";\s]+)"?', cd)
+                      fname = fname.group(1) if fname else os.path.basename(urlparse(durl).path) or f"model_{idx+1}.zip"
+                      fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
+                      fpath = os.path.join("3d-models", fname)
+                      with open(fpath, "wb") as f:
+                          for chunk in resp.iter_content(8192): f.write(chunk)
+                      print(f"    ✅ {fname} ({os.path.getsize(fpath)//1024}KB)")
+                  else:
+                      print(f"    ❌ HTTP {resp.status_code}")
+              except Exception as e:
+                  print(f"    ❌ {e}")
+
+          print("✅ Done!")
+          PYEOF
+
+      - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/ splits/ 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "📥 Downloaded videos"
-            git pull --rebase && git push
-          fi
+          git add 3d-models/ 2>/dev/null || true
+          git commit -m "📦 3D models from Open3DModel" || echo "Nothing"
+          git pull --rebase && git push || true
