@@ -1,175 +1,72 @@
-name: دانلودر پورن هاب
+name: Download from Open3DModel Direct Link
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: 'URL of the video, search, or playlist'
+      download_url:
+        description: 'Direct download link'
         required: true
         type: string
-      output_folder:
-        description: 'Folder where the video will be saved'
-        required: false
-        type: string
-        default: 'downloads'
-      quality:
-        description: 'Video quality'
-        required: true
-        type: string
-        default: 'bestvideo[height<=240]+bestaudio/best[height<=240][ext=mp4]/best[height<=240]'
-      category_filter:
-        description: 'Category / tag filter – leave empty for none'
+        default: 'https://open3dmodel.com/?token_id=NFRYUzZKWFlyQmFTb0FvZDhRaXZEZz09&key=YWRuWVc1OGFlazR2cnE4am5TaDVGUT09'
+      filename:
+        description: 'File name (optional)'
         required: false
         type: string
         default: ''
-      sort_by:
-        description: 'Sort order'
-        required: false
-        type: choice
-        options:
-          - 'none (default)'
-          - 'newest first'
-          - 'oldest first'
-          - 'random'
-        default: 'none (default)'
-      exclude_keywords:
-        description: 'Keywords to exclude (comma)'
-        required: false
-        type: string
-        default: ''
-      max_duration_minutes:
-        description: 'Max duration in minutes (0=no limit)'
-        required: false
-        type: string
-        default: '0'
-      start:
-        description: 'Start from video #'
-        required: false
-        type: string
-        default: '1'
-      end:
-        description: 'End at video #'
-        required: false
-        type: string
-        default: '5'
 
 permissions:
   contents: write
 
 jobs:
-  download-and-maybe-split:
+  download:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install yt-dlp
-        run: pip install yt-dlp
-
-      - name: Build filter
-        id: filters
+      - name: Download File
         run: |
-          FILTER_PARTS=()
+          mkdir -p 3d-models
+          URL="${{ inputs.download_url }}"
+          FNAME="${{ inputs.filename }}"
 
-          if [ "${{ github.event.inputs.max_duration_minutes }}" != "0" ]; then
-            SEC=$(( ${{ github.event.inputs.max_duration_minutes }} * 60 ))
-            FILTER_PARTS+=("duration<${SEC}")
-          fi
+          echo "📥 Downloading: $URL"
 
-          if [ -n "${{ github.event.inputs.category_filter }}" ]; then
-            FILTER_PARTS+=("title~=(?i)${{ github.event.inputs.category_filter }}")
-          fi
+          # Follow redirects and get filename from headers
+          RESPONSE=$(curl -L -o "3d-models/temp_download" -w "%{http_code}|%{url_effective}|%{filename_effective}" -s "$URL")
+          HTTP_CODE=$(echo "$RESPONSE" | cut -d'|' -f1)
+          FINAL_URL=$(echo "$RESPONSE" | cut -d'|' -f2)
 
-          if [ -n "${{ github.event.inputs.exclude_keywords }}" ]; then
-            IFS=',' read -ra KW <<< "${{ github.event.inputs.exclude_keywords }}"
-            for kw in "${KW[@]}"; do
-              kw=$(echo "$kw" | xargs)
-              if [ -n "$kw" ]; then
-                FILTER_PARTS+=("title!~=(?i)${kw}")
+          if [ "$HTTP_CODE" = "200" ]; then
+              # Try to get filename from Content-Disposition
+              CD_FILENAME=$(curl -L -I -s "$FINAL_URL" | grep -i "Content-Disposition" | sed -n 's/.*filename="\?\([^";]*\)"\?.*/\1/p')
+
+              if [ -n "$FNAME" ]; then
+                  mv "3d-models/temp_download" "3d-models/$FNAME"
+                  echo "  ✅ Saved as: $FNAME"
+              elif [ -n "$CD_FILENAME" ]; then
+                  mv "3d-models/temp_download" "3d-models/$CD_FILENAME"
+                  echo "  ✅ Saved as: $CD_FILENAME"
+              else
+                  EXT="${FINAL_URL##*.}"
+                  EXT=$(echo "$EXT" | cut -d'?' -f1)
+                  mv "3d-models/temp_download" "3d-models/model.$EXT"
+                  echo "  ✅ Saved as: model.$EXT"
               fi
-            done
+              ls -la 3d-models/
+          else
+              echo "❌ HTTP $HTTP_CODE"
+              rm -f 3d-models/temp_download
           fi
 
-          FILTER=""
-          for part in "${FILTER_PARTS[@]}"; do
-            if [ -z "$FILTER" ]; then
-              FILTER="$part"
-            else
-              FILTER="${FILTER}&${part}"
-            fi
-          done
-
-          echo "filter=${FILTER}" >> $GITHUB_OUTPUT
-          echo "Filter: ${FILTER:-none}"
-
-      - name: Download
-        run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          mkdir -p "$FOLDER"
-          touch "$FOLDER/.gitkeep"
-
-          SORT=""
-          case "${{ github.event.inputs.sort_by }}" in
-            "newest first") SORT="--playlist-reverse" ;;
-            "random")       SORT="--playlist-random" ;;
-          esac
-
-          FILTER="${{ steps.filters.outputs.filter }}"
-
-          for i in 1 2 3 4 5; do
-            echo "Attempt $i/5"
-            CMD=(yt-dlp
-              --output "./${FOLDER}/%(playlist_index)s - %(uploader)s - %(title)s - %(id)s.%(ext)s"
-              --format "${{ github.event.inputs.quality }}"
-              --merge-output-format mp4
-              --playlist-start "${{ github.event.inputs.start }}"
-              --playlist-end "${{ github.event.inputs.end }}"
-              $SORT
-              --retries 3 --fragment-retries 10
-              --no-check-certificate --geo-bypass --no-color --ignore-errors --newline
-            )
-            if [ -n "$FILTER" ]; then
-              CMD+=(--match-filter "$FILTER")
-            fi
-            CMD+=("${{ github.event.inputs.url }}")
-            "${CMD[@]}" && break
-            sleep 5
-          done
-
-          echo "Downloaded files:"
-          find "$FOLDER" -type f ! -name ".gitkeep" | while read -r f; do
-            echo "  $(basename "$f") ($(stat -c %s "$f") bytes)"
-          done
-
-      - name: Split large files
-        run: |
-          FOLDER="${{ github.event.inputs.output_folder }}"
-          cd "$FOLDER"
-          find . -maxdepth 1 -type f ! -name ".gitkeep" | while read -r FILE; do
-            FILENAME=$(basename "$FILE")
-            SIZE=$(stat -c %s "$FILE")
-            if [ "$SIZE" -gt 104857600 ]; then
-              mkdir -p "../splits/${FILENAME}"
-              split -b 95M "$FILE" "../splits/${FILENAME}/part_"
-              rm "$FILE"
-              echo "Split: ${FILENAME}"
-            fi
-          done
-
-      - name: Commit and Push
+      - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/ splits/ 2>/dev/null || true
+          git add 3d-models/ 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "No changes"
           else
-            git commit -m "Downloaded videos"
+            git commit -m "📦 Downloaded 3D model"
             git pull --rebase && git push
           fi
