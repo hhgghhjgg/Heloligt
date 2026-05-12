@@ -1,14 +1,11 @@
-name: Download from Open3DModel (FlareSolverr)
+name: Download 3D Model from Open3DModel (Puppeteer)
 
 on:
   workflow_dispatch:
     inputs:
-      download_url:
-        required: true
-        type: string
-        default: 'https://open3dmodel.com/?token_id=NFRYUzZKWFlyQmFTb0FvZDhRaXZEZz09&key=YWRuWVc1OGFlazR2cnE4am5TaDVGUT09'
       model_page:
-        required: false
+        description: 'لینک صفحه مدل'
+        required: true
         type: string
         default: 'https://open3dmodel.com/3d-models/3d-model-cute-anime-school-girl_116659.html'
 
@@ -18,71 +15,196 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
+    
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Wait for FlareSolverr
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Chromium dependencies
         run: |
-          for i in $(seq 1 15); do
-            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
-            if [ "$STATUS" = "ok" ]; then echo "✅ Ready"; break; fi
-            sleep 4
-          done
+          sudo apt-get update
+          sudo apt-get install -y \
+            ca-certificates \
+            fonts-liberation \
+            libasound2 \
+            libatk-bridge2.0-0 \
+            libatk1.0-0 \
+            libcups2 \
+            libdbus-1-3 \
+            libdrm2 \
+            libgbm1 \
+            libgtk-3-0 \
+            libnspr4 \
+            libnss3 \
+            libu2f-udev \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxkbcommon0 \
+            libxrandr2 \
+            xdg-utils
 
-      - name: Install Dependencies
-        run: pip install requests
-
-      - name: Download via FlareSolverr
+      - name: Install Puppeteer
         run: |
-          python3 << 'PYEOF'
-          import requests
+          npm init -y
+          npm install puppeteer
 
-          download_url = "${{ inputs.download_url }}"
-          model_page = "${{ inputs.model_page }}"
+      - name: Download model with Puppeteer
+        run: |
+          node -e '
+          const puppeteer = require("puppeteer");
+          const fs = require("fs");
+          const path = require("path");
+          
+          const MODEL_PAGE = "${{ inputs.model_page }}";
+          
+          (async () => {
+            console.log("🚀 Starting browser...");
+            const browser = await puppeteer.launch({
+              headless: "new",
+              args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-accelerated-2d-canvas",
+                "--no-first-run",
+                "--no-zygote",
+                "--disable-gpu"
+              ]
+            });
+            
+            const page = await browser.newPage();
+            
+            // Set download directory
+            const downloadDir = path.resolve("3d-models");
+            if (!fs.existsSync(downloadDir)) {
+              fs.mkdirSync(downloadDir, { recursive: true });
+            }
+            
+            // Enable download behavior
+            const client = await page.target().createCDPSession();
+            await client.send("Browser.setDownloadBehavior", {
+              behavior: "allow",
+              downloadPath: downloadDir
+            });
+            
+            console.log("🌐 Loading model page:", MODEL_PAGE);
+            
+            // First, go to the model page
+            await page.goto(MODEL_PAGE, {
+              waitUntil: "networkidle2",
+              timeout: 60000
+            });
+            
+            console.log("📄 Page loaded. Waiting for scripts...");
+            await page.waitForTimeout(5000);
+            
+            // Get all links from the page
+            const links = await page.evaluate(() => {
+              const anchors = document.querySelectorAll("a[href]");
+              return Array.from(anchors).map(a => ({
+                href: a.href,
+                text: a.textContent.trim(),
+                classes: a.className
+              }));
+            });
+            
+            // Find download links
+            console.log("🔍 Searching for download links...");
+            const downloadLinks = links.filter(link => 
+              link.href.includes("token_id=") || 
+              link.href.includes("download") ||
+              link.href.includes("edd_action") ||
+              link.text.toLowerCase().includes("download") ||
+              link.classes.includes("edd_download")
+            );
+            
+            console.log(`Found ${downloadLinks.length} potential download links:`);
+            downloadLinks.forEach(link => {
+              console.log(`  - ${link.text || "no text"}: ${link.href.substring(0, 100)}`);
+            });
+            
+            if (downloadLinks.length > 0) {
+              // Click the download link
+              const downloadUrl = downloadLinks[0].href;
+              console.log("⬇️ Clicking download link:", downloadUrl.substring(0, 100) + "...");
+              
+              try {
+                // Try to navigate to download link
+                await page.goto(downloadUrl, {
+                  waitUntil: "networkidle2",
+                  timeout: 30000
+                });
+                
+                // Wait for download to start
+                console.log("⏳ Waiting for download to start...");
+                await page.waitForTimeout(10000);
+              } catch (err) {
+                console.log("⚠️ Download navigation timed out (might be OK)");
+              }
+            } else {
+              console.log("❌ No download links found!");
+              
+              // Take screenshot for debugging
+              await page.screenshot({ path: "debug.png" });
+              console.log("📸 Screenshot saved as debug.png");
+              
+              // Print page HTML for debugging
+              const html = await page.content();
+              fs.writeFileSync("debug.html", html);
+              console.log("📄 HTML saved as debug.html");
+            }
+            
+            // Wait for downloads to complete
+            console.log("⏳ Waiting for downloads to complete...");
+            await page.waitForTimeout(5000);
+            
+            await browser.close();
+            console.log("✅ Done!");
+            
+            // List downloaded files
+            const files = fs.readdirSync(downloadDir);
+            console.log("📁 Files in 3d-models:");
+            files.forEach(file => {
+              const stats = fs.statSync(path.join(downloadDir, file));
+              if (stats.isFile()) {
+                console.log(`  - ${file} (${Math.round(stats.size/1024)}KB)`);
+              }
+            });
+          })();
+          '
 
-          # Get cookies from model page
-          print(f"🌐 Getting cookies from: {model_page}")
-          r = requests.post("http://localhost:8191/v1", json={
-              "cmd": "request.get",
-              "url": model_page,
-              "maxTimeout": 30000
-          }, timeout=60)
-          data = r.json()
-          cookies = data.get("solution", {}).get("cookies", [])
-          ua = data.get("solution", {}).get("userAgent", "Mozilla/5.0")
-
-          # Download file with cookies
-          print(f"📥 Downloading: {download_url}")
-          ses = requests.Session()
-          ses.headers.update({"User-Agent": ua, "Referer": model_page})
-          for c in cookies:
-              ses.cookies.set(c["name"], c["value"])
-
-          resp = ses.get(download_url, timeout=120, stream=True)
-          if resp.status_code == 200:
-              import os, re
-              os.makedirs("3d-models", exist_ok=True)
-              cd = resp.headers.get("Content-Disposition", "")
-              fname = re.search(r'filename="?([^";\s]+)"?', cd)
-              fname = fname.group(1) if fname else "model.zip"
-              fpath = f"3d-models/{fname}"
-              with open(fpath, "wb") as f:
-                  for chunk in resp.iter_content(8192): f.write(chunk)
-              print(f"✅ Saved: {fname} ({os.path.getsize(fpath)//1024}KB)")
-          else:
-              print(f"❌ HTTP {resp.status_code}")
-          PYEOF
-
-      - name: Commit
+      - name: Commit downloaded models
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add 3d-models/ 2>/dev/null || true
-          if git diff --cached --quiet; then echo "No changes"
-          else git commit -m "📦 3D model" && git pull --rebase && git push; fi
+          
+          # Only commit model files, not debug files
+          git add 3d-models/*.{zip,rar,7z,fbx,obj,blend,max,3ds,stl,glb,gltf,dae,skp,c4d,ma,mb} 2>/dev/null || true
+          
+          if git diff --cached --quiet; then
+            echo "No model files to commit"
+          else
+            git commit -m "📦 Downloaded 3D model from Open3DModel"
+            git pull --rebase && git push
+            echo "✅ Committed and pushed!"
+          fi
+          
+          # Upload debug files as artifacts if download failed
+          if [ -f debug.png ]; then
+            echo "Debug files generated"
+          fi
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-files
+          path: |
+            debug.png
+            debug.html
