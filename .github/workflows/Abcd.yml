@@ -1,12 +1,11 @@
-name: Download 3D Model - Hybrid FlareSolverr + Requests v2
+name: Final Smart Download - Extract Link from Download Page
 
 on:
   workflow_dispatch:
     inputs:
       model_page:
-        description: 'لینک صفحه مدل'
+        description: 'لینک صفحه‌ی مدل'
         required: true
-        type: string
         default: 'https://open3dmodel.com/3d-models/3d-model-cute-anime-school-girl_116659.html'
 
 permissions:
@@ -15,156 +14,197 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Wait for FlareSolverr
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: پاکسازی و نصب پیش‌نیازهای سیستم
         run: |
-          for i in $(seq 1 15); do
-            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))")
-            [ "$STATUS" = "ok" ] && echo "✅ Ready" && break
-            sleep 4
-          done
+          rm -rf package.json package-lock.json node_modules
+          sudo apt-get update
+          sudo apt-get install -y \
+            ca-certificates fonts-liberation \
+            libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 \
+            libcups2t64 libdbus-1-3 libdrm2 libgbm1 libgtk-3-0t64 \
+            libnspr4 libnss3 libu2f-udev libxcomposite1 libxdamage1 \
+            libxfixes3 libxkbcommon0 libxrandr2 xdg-utils
 
-      - name: Install Python deps
-        run: pip install requests beautifulsoup4
-
-      - name: Download Model (Fixed peek error)
+      - name: نصب Puppeteer کامل + افزونه مخفی‌ساز
         run: |
-          python3 << 'PYEOF'
-          import requests, os, re, sys
-          from bs4 import BeautifulSoup
-          from urllib.parse import urljoin, urlparse
+          npm init -y
+          npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
 
-          model_page = "${{ inputs.model_page }}"
-          FLARE = "http://localhost:8191/v1"
+      - name: اجرای اسکریپت هوشمند دانلود
+        env:
+          MODEL_PAGE: ${{ inputs.model_page }}
+        run: |
+          node << 'SCRIPT_EOF'
+          const puppeteer = require('puppeteer-extra');
+          const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+          const fs = require('fs');
+          const path = require('path');
+          const axios = require('axios'); // برای دانلود مستقیم
 
-          # 1. FlareSolverr
-          print(f"🌐 Getting page: {model_page}")
-          r = requests.post(FLARE, json={
-              "cmd": "request.get",
-              "url": model_page,
-              "maxTimeout": 60000
-          }, timeout=120)
+          puppeteer.use(StealthPlugin());
 
-          if r.status_code != 200:
-              print("❌ FlareSolverr failed")
-              sys.exit(1)
+          const wait = ms => new Promise(r => setTimeout(r, ms));
+          const modelPage = process.env.MODEL_PAGE;
+          const downloadDir = path.resolve("3d-models");
+          if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
 
-          data = r.json()
-          if data.get("status") != "ok":
-              print("❌ Challenge failed")
-              sys.exit(1)
+          // نصب axios در صورت نبود
+          try { require.resolve('axios'); } catch(e) {
+            require('child_process').execSync('npm install axios', { stdio: 'ignore' });
+          }
 
-          html = data["solution"]["response"]
-          cookies = data["solution"].get("cookies", [])
-          ua = data["solution"].get("userAgent", "Mozilla/5.0")
-          print(f"✅ Fetched. Cookies: {len(cookies)}")
+          (async () => {
+            let browser = null;
+            let realFileUrl = null;
 
-          # 2. Extract download link
-          soup = BeautifulSoup(html, "html.parser")
-          download_url = None
+            try {
+              console.log("🚀 راه‌اندازی مرورگر مخفی‌کار...");
+              browser = await puppeteer.launch({
+                headless: "new",
+                args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+              });
 
-          for a in soup.find_all("a", href=True):
-              href = a["href"].strip()
-              text = a.get_text(strip=True).lower()
-              if any(k in href for k in ["download.php", "edd_action", "token_id"]) or "download" in text:
-                  download_url = urljoin(model_page, href)
-                  print(f"🔗 Found: {download_url[:120]}...")
-                  break
+              const page = await browser.newPage();
+              await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-          if not download_url:
-              for a in soup.find_all("a", href=True):
-                  href = a["href"].strip()
-                  if "token_id=" in href or "key=" in href or "/download/" in href:
-                      download_url = urljoin(model_page, href)
-                      print(f"🔗 Fallback found: {download_url[:120]}...")
-                      break
+              console.log(`🌐 بارگذاری صفحه مدل: ${modelPage}`);
+              await page.goto(modelPage, { waitUntil: "networkidle2", timeout: 60000 });
 
-          if not download_url:
-              print("❌ No download link found")
-              sys.exit(1)
+              // کلیک روی دکمه دانلود
+              console.log("🔍 کلیک روی دکمه دانلود...");
+              const downloadBtn = await page.waitForSelector('a[href*="download.php"]', { timeout: 15000 });
+              if (!downloadBtn) throw new Error("دکمه دانلود پیدا نشد");
 
-          # 3. Download with cookies
-          print(f"📥 Downloading: {download_url}")
-          ses = requests.Session()
-          ses.headers.update({
-              "User-Agent": ua,
-              "Referer": model_page,
-              "Accept": "*/*",
-              "Accept-Language": "en-US,en;q=0.9",
-              "Connection": "keep-alive"
-          })
+              // صبر می‌کنیم تا صفحه جدید باز شود
+              const newPagePromise = new Promise(resolve => browser.once('targetcreated', async target => {
+                const newPage = await target.page();
+                if (newPage) resolve(newPage);
+              }));
 
-          for c in cookies:
-              ses.cookies.set(c["name"], c["value"], domain=c.get("domain"))
+              await downloadBtn.click();
+              console.log("⏳ منتظر باز شدن صفحه‌ی میانی دانلود...");
+              const downloadPage = await newPagePromise;
+              await downloadPage.bringToFront();
+              await downloadPage.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 });
 
-          resp = ses.get(download_url, timeout=120, stream=True, allow_redirects=True)
+              console.log("📄 صفحه‌ی میانی بارگذاری شد. صبر برای اجرای جاوااسکریپت...");
+              await wait(15000); // صبر طولانی برای تولید لینک نهایی
 
-          if resp.status_code != 200:
-              print(f"❌ HTTP {resp.status_code}")
-              sys.exit(1)
+              // استخراج تمام لینک‌های موجود در صفحه
+              const allLinks = await downloadPage.evaluate(() =>
+                Array.from(document.querySelectorAll('a[href]')).map(a => ({
+                  href: a.href,
+                  text: a.textContent.trim()
+                }))
+              );
 
-          # 4. Peek at the first few bytes to check for HTML
-          content_type = resp.headers.get("Content-Type", "").lower()
-          first_bytes = b""
-          chunk_iterator = resp.iter_content(chunk_size=1024)
-          try:
-              first_bytes = next(chunk_iterator)
-          except StopIteration:
-              print("❌ Empty response")
-              sys.exit(1)
+              console.log(`🔗 تعداد کل لینک‌ها در صفحه: ${allLinks.length}`);
 
-          is_html = b"<!DOCTYPE" in first_bytes[:200] or b"<html" in first_bytes[:200] or "text/html" in content_type
+              // اولویت با لینک‌هایی که شبیه فایل‌های سه‌بعدی هستند
+              const patterns = [/\.(zip|rar|7z|fbx|obj|max|blend|stl|glb|gltf)$/i, /download/i, /token_id=/i];
+              for (const pat of patterns) {
+                const found = allLinks.find(l => pat.test(l.href) || pat.test(l.text));
+                if (found) {
+                  realFileUrl = found.href;
+                  console.log(`✅ لینک احتمالی دانلود واقعی پیدا شد: ${realFileUrl}`);
+                  break;
+                }
+              }
 
-          if is_html:
-              print("❌ Download link returned HTML, not a model file.")
-              print("   First bytes:", first_bytes[:200])
-              sys.exit(1)
+              // اگر پیدا نشد، کل لینک‌ها را چاپ کن
+              if (!realFileUrl) {
+                console.log("❌ هیچ لینک مشخصی پیدا نشد. لیست کامل:");
+                allLinks.forEach(l => console.log(`  - ${l.href.substring(0,100)} (${l.text})`));
+                await downloadPage.screenshot({ path: "debug_download_page.png" });
+              }
 
-          # 5. Determine filename
-          fname = None
-          cd = resp.headers.get("Content-Disposition", "")
-          if cd:
-              match = re.search(r'filename="?([^";\s]+)"?', cd)
-              if match:
-                  fname = match.group(1)
-          if not fname:
-              fname = os.path.basename(urlparse(download_url).path)
-              if not fname or fname in ("", "/"):
-                  fname = "model.zip"
+              // اگر لینکی پیدا شد، دانلود با axios و کوکی‌های مرورگر
+              if (realFileUrl) {
+                console.log(`📥 دانلود فایل نهایی از: ${realFileUrl}`);
+                const cookies = await downloadPage.cookies();
+                const cStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+                const resp = await axios.get(realFileUrl, {
+                  headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": downloadPage.url(),
+                    "Cookie": cStr
+                  },
+                  responseType: 'stream'
+                });
 
-          fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
-          os.makedirs("3d-models", exist_ok=True)
-          fpath = os.path.join("3d-models", fname)
+                let fname = 'model.zip';
+                const cd = resp.headers['content-disposition'] || '';
+                const match = cd.match(/filename\s*=\s*"?([^"]+)"?/i);
+                if (match) fname = match[1];
+                else {
+                  const urlPath = new URL(realFileUrl).pathname;
+                  fname = path.basename(urlPath) || 'model.zip';
+                }
+                fname = fname.replace(/[/\\?%*:|"<>]/g, '_');
+                const fpath = path.join(downloadDir, fname);
 
-          # 6. Write the file (first chunk + remaining)
-          with open(fpath, "wb") as f:
-              f.write(first_bytes)
-              for chunk in chunk_iterator:
-                  f.write(chunk)
+                const writer = fs.createWriteStream(fpath);
+                resp.data.pipe(writer);
+                await new Promise((resolve, reject) => {
+                  writer.on('finish', resolve);
+                  writer.on('error', reject);
+                });
 
-          size_kb = os.path.getsize(fpath) // 1024
-          print(f"✅ Saved: {fname} ({size_kb} KB)")
-          PYEOF
+                console.log(`✅ ذخیره شد: ${fname} (${Math.round(fs.statSync(fpath).size/1024)} KB)`);
+              }
 
-      - name: Commit model
+              await downloadPage.screenshot({ path: "screenshot_final.png" });
+              console.log("📸 اسکرین‌شات ذخیره شد.");
+
+            } catch (err) {
+              console.error("❌ خطا:", err.message);
+              try { if (browser) await browser.close(); } catch(e) {}
+            } finally {
+              if (browser) {
+                await browser.close();
+                console.log("✔️ مرورگر بسته شد");
+              }
+            }
+
+            // گزارش نهایی
+            console.log("\n📁 فایل‌های موجود در 3d-models:");
+            if (fs.existsSync(downloadDir)) {
+              fs.readdirSync(downloadDir).forEach(f => {
+                const s = fs.statSync(path.join(downloadDir, f));
+                if (s.isFile()) console.log(`  📦 ${f} (${Math.round(s.size/1024)} KB)`);
+              });
+            }
+            console.log("✨ پایان.");
+          })();
+          SCRIPT_EOF
+
+      - name: کامیت تمام فایل‌های تولید شده
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p 3d-models
-          git add 3d-models/ 2>/dev/null || true
+          git add -f 3d-models/ screenshot_final.png debug_download_page.png 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "Nothing to commit"
-            ls -lah 3d-models/
+            echo "هیچ فایلی برای کامیت وجود ندارد"
           else
-            git commit -m "📦 Downloaded 3D model"
+            git commit -m "📦 دانلود مدل با استخراج هوشمند لینک"
             git pull --rebase && git push
-            echo "✅ Pushed!"
+            echo "✅ کامیت و پوش شد"
           fi
+
+      - name: آپلود اسکرین‌شات‌ها برای بررسی
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: |
+            screenshot_final.png
+            debug_download_page.png
+          retention-days: 7
