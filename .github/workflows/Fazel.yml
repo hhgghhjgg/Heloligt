@@ -1,12 +1,12 @@
-name: مخصوص دانلود از لینک download.php?id=116659
+name: Ultimate Stealth Download + Save All Files
 
 on:
   workflow_dispatch:
     inputs:
-      download_link:
-        description: 'لینک دانلود (پیش‌فرض برای مدل 116659)'
+      model_page:
+        description: 'آدرس صفحه مدل'
         required: true
-        default: 'https://open3dmodel.com/download.php?id=116659'
+        default: 'https://open3dmodel.com/3d-models/3d-model-cute-anime-school-girl_116659.html'
 
 permissions:
   contents: write
@@ -14,7 +14,6 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,7 +23,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install all Chromium dependencies
+      - name: Install system dependencies for Chromium
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -48,150 +47,136 @@ jobs:
             libxrandr2 \
             xdg-utils
 
-      - name: Install Puppeteer
+      - name: Install puppeteer-extra with stealth plugin
         run: |
           npm init -y
-          npm install puppeteer
+          npm install puppeteer-extra puppeteer-extra-plugin-stealth
 
-      - name: Download model (specialized for download.php)
+      - name: Download using stealth browser
         env:
-          DOWNLOAD_LINK: ${{ inputs.download_link }}
+          MODEL_PAGE: ${{ inputs.model_page }}
         run: |
           node --max-old-space-size=4096 << 'SCRIPT_EOF'
-          const puppeteer = require("puppeteer");
-          const fs = require("fs");
-          const path = require("path");
+          const puppeteer = require('puppeteer-extra');
+          const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+          const fs = require('fs');
+          const path = require('path');
+
+          puppeteer.use(StealthPlugin());
 
           const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+          const modelPage = process.env.MODEL_PAGE;
+          const downloadDir = path.resolve("3d-models");
+          if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
 
-          (async () => {
-            const downloadLink = process.env.DOWNLOAD_LINK;
-            const downloadDir = path.resolve("3d-models");
-            if (!fs.existsSync(downloadDir)) {
-              fs.mkdirSync(downloadDir, { recursive: true });
-            }
+          let browser = null;
+          let page = null;
 
-            let browser = null;
-            let page = null;
+          try {
+            console.log("🚀 راه‌اندازی مرورگر مخفی‌کار...");
+            browser = await puppeteer.launch({
+              headless: "new",
+              args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process"
+              ]
+            });
 
-            try {
-              console.log("🚀 Launching Chromium browser...");
-              browser = await puppeteer.launch({
-                headless: "new",
-                args: [
-                  "--no-sandbox",
-                  "--disable-setuid-sandbox",
-                  "--disable-dev-shm-usage",
-                  "--disable-accelerated-2d-canvas",
-                  "--no-first-run",
-                  "--no-zygote",
-                  "--disable-gpu",
-                  "--disable-web-security",
-                  "--disable-features=IsolateOrigins,site-per-process"
-                ]
-              });
+            page = await browser.newPage();
 
-              page = await browser.newPage();
-              await page.setUserAgent(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-              );
+            // تنظیم مسیر دانلود
+            const client = await page.target().createCDPSession();
+            await client.send("Browser.setDownloadBehavior", {
+              behavior: "allow",
+              downloadPath: downloadDir,
+              eventsEnabled: true
+            });
 
-              // تنظیم دانلود
-              const client = await page.target().createCDPSession();
-              await client.send("Browser.setDownloadBehavior", {
-                behavior: "allow",
-                downloadPath: downloadDir,
-                eventsEnabled: true
-              });
+            console.log(`🌐 بارگذاری صفحه مدل: ${modelPage}`);
+            await page.goto(modelPage, { waitUntil: "networkidle2", timeout: 60000 });
 
-              // مانیتورینگ دانلود
-              const downloadPromises = [];
-              client.on("Browser.downloadProgress", (event) => {
-                if (event.state === "completed") {
-                  console.log(`✅ Download completed: ${event.guid}`);
-                } else if (event.state === "canceled") {
-                  console.log(`❌ Download canceled: ${event.guid}`);
-                }
-                // ذخیره وعده‌ها برای همگام‌سازی
-                downloadPromises.push(event);
-              });
-
-              console.log(`🌐 Navigating to: ${downloadLink}`);
-              await page.goto(downloadLink, {
-                waitUntil: "networkidle2",
-                timeout: 60000
-              });
-
-              console.log("⏳ Waiting for JavaScript redirects...");
-              // صبر طولانی برای اجرای کامل JS و شروع دانلود
-              await wait(10000);
-
-              // گرفتن اسکرین‌شات برای بررسی وضعیت
-              await page.screenshot({ path: "download_page.png" });
-              console.log("📸 Screenshot saved as download_page.png");
-
-              // صبر اضافی برای تکمیل دانلود
-              await wait(15000);
-
-            } catch (error) {
-              console.error("❌ Error:", error.message);
-              if (page) {
-                try { await page.screenshot({ path: "debug_error.png" }); } catch (e) {}
-              }
-            } finally {
-              if (browser) {
-                await browser.close();
-                console.log("✔️ Browser closed");
-              }
-            }
-
-            // بررسی فایل‌های دانلود شده
-            if (fs.existsSync(downloadDir)) {
-              const files = fs.readdirSync(downloadDir).filter(f => {
-                const p = path.join(downloadDir, f);
-                return fs.statSync(p).isFile();
-              });
-              console.log(`\n📁 Files in 3d-models (${files.length}):`);
-
-              let downloadedSomething = false;
-              for (const file of files) {
-                const fp = path.join(downloadDir, file);
-                const sizeKB = Math.round(fs.statSync(fp).size / 1024);
-                console.log(`  📦 ${file} (${sizeKB} KB)`);
-                if (sizeKB > 100) downloadedSomething = true;
-              }
-
-              if (!downloadedSomething) {
-                console.log("\n⚠️ Download did not start or file is very small.");
-              }
+            console.log("🔍 جستجوی دکمه دانلود...");
+            // صبر کن تا دکمه ظاهر بشه
+            const downloadBtnSelector = 'a[href*="download.php"]';
+            await page.waitForSelector(downloadBtnSelector, { timeout: 15000 });
+            const downloadButton = await page.$(downloadBtnSelector);
+            
+            if (downloadButton) {
+              console.log("🖱️ کلیک روی دکمه دانلود...");
+              await downloadButton.click();
+              console.log("⏳ منتظر اجرای جاوااسکریپت و شروع دانلود...");
+              await wait(20000); // ۲۰ ثانیه صبر
             } else {
-              console.log("⚠️ 3d-models directory not found.");
+              console.log("❌ دکمه دانلود پیدا نشد.");
             }
 
-            console.log("\n✨ Script finished!");
-          })();
+            // اسکرین‌شات از وضعیت نهایی
+            const screenshotPath = "screenshot_final.png";
+            await page.screenshot({ path: screenshotPath });
+            console.log(`📸 اسکرین‌شات ذخیره شد: ${screenshotPath}`);
+
+          } catch (error) {
+            console.error("❌ خطا:", error.message);
+            if (page) {
+              try {
+                await page.screenshot({ path: "screenshot_error.png" });
+                console.log("📸 اسکرین‌شات خطا ذخیره شد.");
+              } catch (e) {}
+            }
+          } finally {
+            if (browser) {
+              await browser.close();
+              console.log("✔️ مرورگر بسته شد");
+            }
+          }
+
+          // گزارش فایل‌های دانلود شده
+          if (fs.existsSync(downloadDir)) {
+            const files = fs.readdirSync(downloadDir).filter(f => {
+              const fullPath = path.join(downloadDir, f);
+              return fs.statSync(fullPath).isFile();
+            });
+            console.log(`\n📁 فایل‌های موجود در 3d-models (${files.length} عدد):`);
+            files.forEach(f => {
+              const fullPath = path.join(downloadDir, f);
+              const sizeKB = Math.round(fs.statSync(fullPath).size / 1024);
+              console.log(`  📦 ${f} (${sizeKB} KB)`);
+            });
+          } else {
+            console.log("⚠️ پوشه 3d-models پیدا نشد.");
+          }
+          console.log("\n✨ پایان اسکریپت.");
           SCRIPT_EOF
 
-      - name: Commit all files (even HTML for debugging)
+      - name: Commit all downloaded files & screenshots
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # اطمینان از وجود پوشه
           mkdir -p 3d-models
-          git add 3d-models/ 2>/dev/null || true
+          # اضافه کردن تمام فایل‌های دانلودی و اسکرین‌شات‌ها با اجبار (حتی اگر در gitignore باشند)
+          git add -f 3d-models/* 2>/dev/null || true
+          git add -f screenshot_final.png screenshot_error.png 2>/dev/null || true
+          # اگر تغییری برای کامیت وجود داشت
           if git diff --cached --quiet; then
-            echo "No files to commit"
+            echo "هیچ فایلی برای کامیت وجود ندارد."
           else
-            git commit -m "📦 Attempted download from download.php?id=${{ inputs.download_link }}"
-            git pull --rebase && git push
+            git commit -m "📦 دانلود مدل + اسکرین‌شات"
+            git pull --rebase
+            git push
+            echo "✅ فایل‌ها با موفقیت در مخزن ذخیره شدند."
           fi
 
-      - name: Upload debug screenshots
+      - name: Upload screenshots as artifacts (backup)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: download-page-screenshots
+          name: screenshots
           path: |
-            download_page.png
-            debug_error.png
-          retention-days: 3
+            screenshot_final.png
+            screenshot_error.png
+          retention-days: 7
