@@ -31,14 +31,15 @@ jobs:
           sudo apt-get install -y \
             ca-certificates \
             fonts-liberation \
-            libasound2 \
-            libatk-bridge2.0-0 \
-            libatk1.0-0 \
-            libcups2 \
+            libasound2t64 \
+            libatk-bridge2.0-0t64 \
+            libatk1.0-0t64 \
+            libatspi2.0-0t64 \
+            libcups2t64 \
             libdbus-1-3 \
             libdrm2 \
             libgbm1 \
-            libgtk-3-0 \
+            libgtk-3-0t64 \
             libnspr4 \
             libnss3 \
             libu2f-udev \
@@ -56,12 +57,12 @@ jobs:
 
       - name: Download model with Puppeteer
         run: |
-          node -e '
+          node --max-old-space-size=4096 << 'NODEEOF'
           const puppeteer = require("puppeteer");
           const fs = require("fs");
           const path = require("path");
           
-          const MODEL_PAGE = "${{ inputs.model_page }}";
+          const MODEL_PAGE = process.env.MODEL_PAGE || "${{ inputs.model_page }}";
           
           (async () => {
             console.log("🚀 Starting browser...");
@@ -74,137 +75,220 @@ jobs:
                 "--disable-accelerated-2d-canvas",
                 "--no-first-run",
                 "--no-zygote",
-                "--disable-gpu"
+                "--disable-gpu",
+                "--disable-web-security",
+                "--disable-features=IsolateOrigins,site-per-process"
               ]
             });
             
-            const page = await browser.newPage();
-            
-            // Set download directory
-            const downloadDir = path.resolve("3d-models");
-            if (!fs.existsSync(downloadDir)) {
-              fs.mkdirSync(downloadDir, { recursive: true });
-            }
-            
-            // Enable download behavior
-            const client = await page.target().createCDPSession();
-            await client.send("Browser.setDownloadBehavior", {
-              behavior: "allow",
-              downloadPath: downloadDir
-            });
-            
-            console.log("🌐 Loading model page:", MODEL_PAGE);
-            
-            // First, go to the model page
-            await page.goto(MODEL_PAGE, {
-              waitUntil: "networkidle2",
-              timeout: 60000
-            });
-            
-            console.log("📄 Page loaded. Waiting for scripts...");
-            await page.waitForTimeout(5000);
-            
-            // Get all links from the page
-            const links = await page.evaluate(() => {
-              const anchors = document.querySelectorAll("a[href]");
-              return Array.from(anchors).map(a => ({
-                href: a.href,
-                text: a.textContent.trim(),
-                classes: a.className
-              }));
-            });
-            
-            // Find download links
-            console.log("🔍 Searching for download links...");
-            const downloadLinks = links.filter(link => 
-              link.href.includes("token_id=") || 
-              link.href.includes("download") ||
-              link.href.includes("edd_action") ||
-              link.text.toLowerCase().includes("download") ||
-              link.classes.includes("edd_download")
-            );
-            
-            console.log(`Found ${downloadLinks.length} potential download links:`);
-            downloadLinks.forEach(link => {
-              console.log(`  - ${link.text || "no text"}: ${link.href.substring(0, 100)}`);
-            });
-            
-            if (downloadLinks.length > 0) {
-              // Click the download link
-              const downloadUrl = downloadLinks[0].href;
-              console.log("⬇️ Clicking download link:", downloadUrl.substring(0, 100) + "...");
+            try {
+              const page = await browser.newPage();
               
-              try {
-                // Try to navigate to download link
-                await page.goto(downloadUrl, {
-                  waitUntil: "networkidle2",
-                  timeout: 30000
-                });
-                
-                // Wait for download to start
-                console.log("⏳ Waiting for download to start...");
-                await page.waitForTimeout(10000);
-              } catch (err) {
-                console.log("⚠️ Download navigation timed out (might be OK)");
+              // Set user agent to avoid detection
+              await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+              
+              // Set download directory
+              const downloadDir = path.resolve("3d-models");
+              if (!fs.existsSync(downloadDir)) {
+                fs.mkdirSync(downloadDir, { recursive: true });
               }
-            } else {
-              console.log("❌ No download links found!");
+              
+              // Enable download behavior
+              const client = await page.target().createCDPSession();
+              await client.send("Browser.setDownloadBehavior", {
+                behavior: "allow",
+                downloadPath: downloadDir,
+                eventsEnabled: true
+              });
+              
+              // Listen for downloads
+              client.on("Browser.downloadProgress", (event) => {
+                if (event.state === "completed") {
+                  console.log(`✅ Download completed: ${event.guid}`);
+                } else if (event.state === "canceled") {
+                  console.log(`❌ Download canceled: ${event.guid}`);
+                }
+              });
+              
+              console.log("🌐 Loading model page:", MODEL_PAGE);
+              
+              // Go to the model page
+              await page.goto(MODEL_PAGE, {
+                waitUntil: "networkidle2",
+                timeout: 60000
+              });
+              
+              console.log("📄 Page loaded. Extracting content...");
+              await page.waitForTimeout(3000);
               
               // Take screenshot for debugging
-              await page.screenshot({ path: "debug.png" });
-              console.log("📸 Screenshot saved as debug.png");
+              await page.screenshot({ path: "debug_before.png" });
+              console.log("📸 Screenshot saved");
               
-              // Print page HTML for debugging
-              const html = await page.content();
-              fs.writeFileSync("debug.html", html);
-              console.log("📄 HTML saved as debug.html");
+              // Try multiple methods to find and click download link
+              let downloaded = false;
+              
+              // Method 1: Look for elements with specific text
+              const downloadSelectors = [
+                'a:has-text("Download")',
+                'a:has-text("download")',
+                'a:has-text("Free Download")',
+                'a[class*="download"]',
+                'a[class*="edd"]',
+                'button:has-text("Download")',
+                '.edd_download',
+                '.download-link',
+                'a[href*="token_id"]',
+                'a[href*="edd_action"]',
+                'a[href*="download"]'
+              ];
+              
+              for (const selector of downloadSelectors) {
+                try {
+                  const element = await page.$(selector);
+                  if (element) {
+                    const href = await element.evaluate(el => el.href || el.getAttribute("href") || "");
+                    const text = await element.evaluate(el => el.textContent.trim());
+                    console.log(`Found element: "${text}" -> ${href.substring(0, 100)}`);
+                    
+                    // Click the element
+                    await Promise.all([
+                      element.click(),
+                      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {})
+                    ]);
+                    
+                    console.log("Clicked! Waiting for download...");
+                    await page.waitForTimeout(5000);
+                    downloaded = true;
+                    break;
+                  }
+                } catch (e) {
+                  continue;
+                }
+              }
+              
+              if (!downloaded) {
+                // Method 2: Find all links and try each
+                console.log("Method 1 failed. Trying all links...");
+                const allLinks = await page.evaluate(() => {
+                  return Array.from(document.querySelectorAll("a[href]")).map(a => ({
+                    href: a.href,
+                    text: a.textContent.trim().substring(0, 50)
+                  }));
+                });
+                
+                console.log(`Found ${allLinks.length} total links`);
+                
+                // Filter for download-related links
+                const potentialDownloads = allLinks.filter(link => 
+                  link.href.includes("token_id") ||
+                  link.href.includes("download") ||
+                  link.href.includes("edd") ||
+                  link.text.toLowerCase().includes("download")
+                );
+                
+                console.log(`Found ${potentialDownloads.length} potential download links`);
+                
+                for (const link of potentialDownloads) {
+                  console.log(`Trying: ${link.href.substring(0, 100)}`);
+                  try {
+                    await page.goto(link.href, {
+                      waitUntil: "networkidle2",
+                      timeout: 15000
+                    });
+                    await page.waitForTimeout(3000);
+                    downloaded = true;
+                    break;
+                  } catch (e) {
+                    console.log("Failed, trying next...");
+                  }
+                }
+              }
+              
+              // Wait for downloads to complete
+              console.log("⏳ Waiting for downloads to finish...");
+              await page.waitForTimeout(8000);
+              
+              // Take final screenshot
+              await page.screenshot({ path: "debug_after.png" });
+              
+            } catch (error) {
+              console.error("Error:", error.message);
+              await page.screenshot({ path: "debug_error.png" });
+            } finally {
+              await browser.close();
+              console.log("✅ Browser closed");
             }
             
-            // Wait for downloads to complete
-            console.log("⏳ Waiting for downloads to complete...");
-            await page.waitForTimeout(5000);
-            
-            await browser.close();
-            console.log("✅ Done!");
-            
-            // List downloaded files
-            const files = fs.readdirSync(downloadDir);
-            console.log("📁 Files in 3d-models:");
-            files.forEach(file => {
-              const stats = fs.statSync(path.join(downloadDir, file));
-              if (stats.isFile()) {
-                console.log(`  - ${file} (${Math.round(stats.size/1024)}KB)`);
+            // Check downloaded files
+            const downloadDir = path.resolve("3d-models");
+            if (fs.existsSync(downloadDir)) {
+              const files = fs.readdirSync(downloadDir);
+              console.log(`\n📁 Files in 3d-models (${files.length}):`);
+              
+              let hasValidFiles = false;
+              files.forEach(file => {
+                const filePath = path.join(downloadDir, file);
+                const stats = fs.statSync(filePath);
+                if (stats.isFile()) {
+                  const sizeKB = Math.round(stats.size / 1024);
+                  console.log(`  ${stats.size > 50000 ? "✅" : "⚠️"} ${file} (${sizeKB}KB)`);
+                  if (stats.size > 50000) hasValidFiles = true;
+                }
+              });
+              
+              if (!hasValidFiles) {
+                console.log("\n⚠️ No large files found. This might mean:");
+                console.log("  1. The download didn't start");
+                console.log("  2. The file is very small");
+                console.log("  3. We got an HTML page instead of a model file");
+                
+                // Check if any file is actually HTML
+                files.forEach(file => {
+                  const filePath = path.join(downloadDir, file);
+                  const content = fs.readFileSync(filePath, "utf8").substring(0, 100);
+                  if (content.includes("<!DOCTYPE") || content.includes("<html")) {
+                    console.log(`  ❌ ${file} is actually HTML, not a 3D model!`);
+                  }
+                });
               }
-            });
+            }
+            
+            console.log("\n✨ Script finished!");
           })();
-          '
+          NODEEOF
+        env:
+          MODEL_PAGE: ${{ inputs.model_page }}
 
       - name: Commit downloaded models
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Only commit model files, not debug files
-          git add 3d-models/*.{zip,rar,7z,fbx,obj,blend,max,3ds,stl,glb,gltf,dae,skp,c4d,ma,mb} 2>/dev/null || true
+          # Create directory if not exists
+          mkdir -p 3d-models
+          
+          # Add only actual model files (not HTML pages disguised as files)
+          find 3d-models/ -type f -size +50k ! -name "*.html" -exec git add {} + 2>/dev/null || true
+          
+          # Also check for files that might not have extensions
+          find 3d-models/ -type f -size +100k -exec file {} \; | grep -i "zip\|rar\|archive\|data" | cut -d: -f1 | xargs -r git add 2>/dev/null || true
           
           if git diff --cached --quiet; then
-            echo "No model files to commit"
+            echo "No valid model files to commit"
+            echo "Listing all files in 3d-models for debugging:"
+            ls -lah 3d-models/ 2>/dev/null || echo "Directory empty or doesn't exist"
           else
-            git commit -m "📦 Downloaded 3D model from Open3DModel"
+            git commit -m "📦 Downloaded 3D model"
             git pull --rebase && git push
             echo "✅ Committed and pushed!"
           fi
-          
-          # Upload debug files as artifacts if download failed
-          if [ -f debug.png ]; then
-            echo "Debug files generated"
-          fi
 
       - name: Upload debug artifacts
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-files
+          name: debug-screenshots
           path: |
-            debug.png
-            debug.html
+            debug_*.png
+          retention-days: 3
