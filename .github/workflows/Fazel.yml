@@ -1,4 +1,4 @@
-name: Download 3D Model from Open3DModel (ANY FILE)
+name: Download 3D Model - Hybrid FlareSolverr + Requests
 
 on:
   workflow_dispatch:
@@ -15,249 +15,159 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Chromium dependencies
+      - name: Wait for FlareSolverr
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ca-certificates \
-            fonts-liberation \
-            libasound2t64 \
-            libatk-bridge2.0-0t64 \
-            libatk1.0-0t64 \
-            libatspi2.0-0t64 \
-            libcups2t64 \
-            libdbus-1-3 \
-            libdrm2 \
-            libgbm1 \
-            libgtk-3-0t64 \
-            libnspr4 \
-            libnss3 \
-            libu2f-udev \
-            libxcomposite1 \
-            libxdamage1 \
-            libxfixes3 \
-            libxkbcommon0 \
-            libxrandr2 \
-            xdg-utils
+          for i in $(seq 1 15); do
+            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))")
+            [ "$STATUS" = "ok" ] && echo "✅ Ready" && break
+            sleep 4
+          done
 
-      - name: Install Puppeteer
+      - name: Install Python deps
+        run: pip install requests beautifulsoup4
+
+      - name: Download Model (Smart Extraction + Cookies)
         run: |
-          npm init -y
-          npm install puppeteer
+          python3 << 'PYEOF'
+          import requests, os, re, sys, time
+          from bs4 import BeautifulSoup
+          from urllib.parse import urljoin, urlparse
 
-      - name: Download model with Puppeteer (COMMIT WHATEVER WE GET)
-        env:
-          MODEL_PAGE: ${{ inputs.model_page }}
-        run: |
-          node --max-old-space-size=4096 << 'NODEEOF'
-          const puppeteer = require("puppeteer");
-          const fs = require("fs");
-          const path = require("path");
+          model_page = "${{ inputs.model_page }}"
+          FLARE = "http://localhost:8191/v1"
 
-          const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+          # ─── 1. Get page with FlareSolverr ─────────────────────
+          print(f"🌐 Getting model page: {model_page}")
+          r = requests.post(FLARE, json={
+              "cmd": "request.get",
+              "url": model_page,
+              "maxTimeout": 60000
+          }, timeout=120)
 
-          (async () => {
-            const MODEL_PAGE = process.env.MODEL_PAGE;
-            const downloadDir = path.resolve("3d-models");
-            if (!fs.existsSync(downloadDir)) {
-              fs.mkdirSync(downloadDir, { recursive: true });
-            }
+          if r.status_code != 200:
+              print("❌ FlareSolverr failed")
+              sys.exit(1)
 
-            let page = null;
-            let browser = null;
+          data = r.json()
+          if data.get("status") != "ok":
+              print("❌ Challenge not solved")
+              sys.exit(1)
 
-            try {
-              console.log("🚀 Starting browser...");
-              browser = await puppeteer.launch({
-                headless: "new",
-                args: [
-                  "--no-sandbox",
-                  "--disable-setuid-sandbox",
-                  "--disable-dev-shm-usage",
-                  "--disable-accelerated-2d-canvas",
-                  "--no-first-run",
-                  "--no-zygote",
-                  "--disable-gpu",
-                  "--disable-web-security",
-                  "--disable-features=IsolateOrigins,site-per-process"
-                ]
-              });
+          html = data["solution"]["response"]
+          cookies = data["solution"].get("cookies", [])
+          ua = data["solution"].get("userAgent", "Mozilla/5.0")
 
-              page = await browser.newPage();
-              await page.setUserAgent(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-              );
+          print("✅ Page fetched. Cookies:", len(cookies), "UA:", ua[:50])
 
-              // Set download behavior
-              const client = await page.target().createCDPSession();
-              await client.send("Browser.setDownloadBehavior", {
-                behavior: "allow",
-                downloadPath: downloadDir,
-                eventsEnabled: true
-              });
+          # ─── 2. Extract download link ─────────────────────────
+          soup = BeautifulSoup(html, "html.parser")
+          download_url = None
 
-              // Listen for downloads
-              client.on("Browser.downloadProgress", (event) => {
-                if (event.state === "completed") {
-                  console.log(`✅ Download completed: ${event.guid}`);
-                } else if (event.state === "canceled") {
-                  console.log(`❌ Download canceled: ${event.guid}`);
-                }
-              });
+          # Search for links that look like download
+          for a in soup.find_all("a", href=True):
+              href = a["href"].strip()
+              text = a.get_text(strip=True).lower()
+              if any(k in href for k in ["download.php", "edd_action", "token_id"]) or \
+                 "download" in text or "free download" in text:
+                  download_url = urljoin(model_page, href)
+                  print(f"🔗 Found: {text[:60]} -> {download_url[:100]}...")
+                  break
 
-              console.log("🌐 Loading model page:", MODEL_PAGE);
-              await page.goto(MODEL_PAGE, {
-                waitUntil: "networkidle2",
-                timeout: 60000
-              });
+          # If not found by text, try href pattern
+          if not download_url:
+              for a in soup.find_all("a", href=True):
+                  href = a["href"].strip()
+                  if "download" in href.lower() or "token_id=" in href or "key=" in href:
+                      download_url = urljoin(model_page, href)
+                      print(f"🔗 Found by href: {download_url[:120]}...")
+                      break
 
-              console.log("📄 Page loaded. Waiting for scripts to settle...");
-              await wait(5000);
+          if not download_url:
+              print("❌ No download link found")
+              sys.exit(1)
 
-              // Screenshot before actions
-              await page.screenshot({ path: "debug_before.png" });
-              console.log("📸 Screenshot saved (debug_before.png)");
+          # ─── 3. Download the real file with cookies ───────────
+          print(f"📥 Downloading: {download_url}")
+          ses = requests.Session()
+          ses.headers.update({
+              "User-Agent": ua,
+              "Referer": model_page,
+              "Accept": "*/*",
+              "Accept-Language": "en-US,en;q=0.9",
+              "Connection": "keep-alive"
+          })
 
-              // ----------------------------------------------------------------
-              // CLICK ALL DOWNLOAD LINKS WE CAN FIND
-              // ----------------------------------------------------------------
-              let downloadTriggered = false;
+          # Set cookies from FlareSolverr
+          for c in cookies:
+              ses.cookies.set(c["name"], c["value"], domain=c.get("domain"))
 
-              const clickSelectors = [
-                'a[href*="download"]',
-                'a[href*="token_id"]',
-                'a[href*="edd_action"]',
-                'a[class*="download"]',
-                'a[class*="edd"]',
-                '.edd_download',
-                '.download-link',
-                'a:has-text("Download")',
-                'a:has-text("download")',
-                'a:has-text("Free Download")',
-                'button:has-text("Download")'
-              ];
+          # Send request
+          resp = ses.get(download_url, timeout=120, stream=True, allow_redirects=True)
 
-              for (const selector of clickSelectors) {
-                try {
-                  const el = await page.$(selector);
-                  if (el) {
-                    const text = await el.evaluate(e => e.textContent.trim());
-                    const href = await el.evaluate(e => e.href || e.getAttribute("href") || "");
-                    console.log(`🖱️ Clicking: "${text}" (${href.substring(0, 80)}...)`);
-                    await Promise.all([
-                      el.click(),
-                      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {})
-                    ]);
-                    await wait(5000);
-                    downloadTriggered = true;
-                    break;
-                  }
-                } catch (e) {
-                  // next
-                }
-              }
+          if resp.status_code != 200:
+              print(f"❌ HTTP {resp.status_code}")
+              sys.exit(1)
 
-              // If nothing clicked, extract links manually
-              if (!downloadTriggered) {
-                console.log("🔍 No clickable element worked. Extracting all links...");
-                const allLinks = await page.evaluate(() =>
-                  Array.from(document.querySelectorAll("a[href]")).map(a => a.href)
-                );
+          # Check if response is actually a file or HTML
+          content_type = resp.headers.get("Content-Type", "").lower()
+          cd = resp.headers.get("Content-Disposition", "")
 
-                const downloadLinks = allLinks.filter(link =>
-                  link.includes("token_id") ||
-                  link.includes("edd_action") ||
-                  link.includes("download.php") ||
-                  link.includes("download")
-                );
+          # Read first bytes to detect HTML
+          first_chunk = resp.raw.peek(512)[:512]
+          is_html = b"<!DOCTYPE" in first_chunk or b"<html" in first_chunk
 
-                console.log(`Found ${downloadLinks.length} possible download links`);
-                for (const link of downloadLinks) {
-                  console.log(`➡️ Trying: ${link.substring(0, 100)}`);
-                  try {
-                    await page.goto(link, { waitUntil: "networkidle2", timeout: 20000 });
-                    await wait(5000);
-                    downloadTriggered = true;
-                    break;
-                  } catch (e) {
-                    console.log("   Failed, trying next...");
-                  }
-                }
-              }
+          if is_html and "text/html" in content_type:
+              print("❌ Response is HTML, not a file. Server rejected the request.")
+              print("First bytes:", first_chunk[:200])
+              sys.exit(1)
 
-              // Final wait for downloads
-              await wait(10000);
-              await page.screenshot({ path: "debug_after.png" });
-              console.log("📸 Final screenshot saved (debug_after.png)");
+          # Determine filename
+          fname = None
+          if cd:
+              match = re.search(r'filename="?([^";\s]+)"?', cd)
+              if match:
+                  fname = match.group(1)
+          if not fname:
+              # Use basename from URL
+              fname = os.path.basename(urlparse(download_url).path)
+              if not fname or fname == "":
+                  fname = "model.zip"  # fallback
 
-            } catch (error) {
-              console.error("❌ Error:", error.message);
-              if (page) {
-                try { await page.screenshot({ path: "debug_error.png" }); } catch (e) {}
-              }
-            } finally {
-              if (browser) {
-                await browser.close();
-                console.log("✅ Browser closed");
-              }
-            }
+          # Clean filename
+          fname = re.sub(r'[\\/*?:"<>|]', '_', fname)
 
-            // ----------------------------------------------------------------
-            // VERIFY DOWNLOADED FILES (JUST REPORT, DON'T FILTER)
-            // ----------------------------------------------------------------
-            if (fs.existsSync(downloadDir)) {
-              const files = fs.readdirSync(downloadDir).filter(f => {
-                const p = path.join(downloadDir, f);
-                return fs.statSync(p).isFile();
-              });
-              console.log(`\n📁 Files in 3d-models (${files.length}):`);
+          os.makedirs("3d-models", exist_ok=True)
+          fpath = os.path.join("3d-models", fname)
 
-              for (const file of files) {
-                const fp = path.join(downloadDir, file);
-                const sizeKB = Math.round(fs.statSync(fp).size / 1024);
-                console.log(`  📦 ${file} (${sizeKB}KB)`);
-              }
-            } else {
-              console.log("⚠️ 3d-models directory does not exist.");
-            }
+          with open(fpath, "wb") as f:
+              f.write(first_chunk)  # write the peeked bytes
+              for chunk in resp.iter_content(8192):
+                  f.write(chunk)
 
-            console.log("\n✨ Script finished!");
-          })();
-          NODEEOF
+          size_kb = os.path.getsize(fpath) // 1024
+          print(f"✅ Saved: {fname} ({size_kb}KB)")
+          PYEOF
 
-      - name: Commit ALL downloaded files WITHOUT CHECKING
+      - name: Commit model
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p 3d-models
-
-          # Add EVERYTHING in the directory
-          find 3d-models/ -type f -exec git add {} +
-
+          git add 3d-models/ 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No files to commit"
-            ls -lah 3d-models/ 2>/dev/null || echo "Directory empty"
+            echo "Nothing to commit"
+            ls -lah 3d-models/
           else
-            git commit -m "📦 Downloaded whatever we got! Even if it's HTML!"
+            git commit -m "📦 Downloaded 3D model"
             git pull --rebase && git push
-            echo "✅ Committed and pushed!"
+            echo "✅ Pushed!"
           fi
-
-      - name: Upload debug artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots
-          path: |
-            debug_*.png
-          retention-days: 3
