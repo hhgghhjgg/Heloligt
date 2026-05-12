@@ -1,0 +1,129 @@
+{
+  "channel": "BlenderUniverse",
+  "title": "Blender: Free Universe",
+  "posts_count": 7,
+  "posts": [
+    {
+      "id": "post-0",
+      "date": "2026-05-12T08:59:53+00:00",
+      "text": "⭐️\nBezier Curve Editor v1.0.8\nℹ️\nДополнение для Blender, позволяющее интуитивно редактировать кривые сглаживания ключевых кадров непосредственно на временной шкале.\nПросто перетащите контрольные точки на графике, чтобы создать пользовательские кривые и применить их к выбранным ключевым кадрам. В режиме автоматического применения вы можете просматривать результаты корректировки кривых в реальном времени. Дополнение также поддерживает эластичные кривые и позволяет сохранять часто используемые кривые в качестве предустановок.\n✅\nBlender 4.2 - 5.1\n📁\n.zip\n|\n⚙\nУстановка\n⬇️\nСкачать\n|\n©️\nИсточник\n🏷\nBlender: Free Universe\n|\n#addons",
+      "views": "1.52K",
+      "links": [
+        "https://telegra.ph/Kak-ustanovit-addon-v-Blender-01-17",
+        "https://t.me/BlenderStorage/7957",
+        "https://extensions.blender.org/add-ons/bezier-curve-editor/",
+        "https://t.me/BlenderUniverse",
+        "?q=%23addons"
+      ],
+      "photos": [
+        "Mkxfy4HaXa46o8WkYLUUlenFtSQ3ePY1VXQrcJMgzLWkiikIuBF_2grK8SAWWDuyyK0Kw17Vj-L2uaTK.jpg",
+        "gQCYQjBHMu1oAEOFKPjAtFnpehc5PFZz3lRyu-0tgw34dfADo3oP2q705VHbin7pOOnEd3R4Iyle6FAp.jpg",
+        "nKPA40L2J7bzzrzDVPr_O8OC4nxtgQCgqOENBkcPx0FwQBNSLdGsyoszkwBf5zDm0MVoX1urRnqf0Uqw.jpg",
+        "AEGmvL03l7xUSnptKD-eScPwNtPkJyjXLHXE_lBFfkyrvgL76mv22Eh1t8Wcno4RzIyVAoEGTivg93yb.jpg"
+      ],
+      "videos": [],
+      "files": []
+    },
+    {
+      "id": "post-1",
+      "date": "2026-05-12T09:49:53+00:00",
+      "text": "⭐️\nCharacters PSX\nℹ️\n79 персонажей разных типов в стилистике PSX\n12 полицейских\n41 гражданский\n4 пожарных\n4 врача\n4 специалиста по опасным материалам\n8 убийц\n6 монстров\n📁\n.blend .fbx .png\n⬇️\nСкачать\n|\n©️\nИсточник\n🏷\nBlender: Free Universe\n|\n#models",
+      "views": "1.53K",
+      "links": [
+        "https://t.me/BlenderStorage/7958",
+        "https://elbolilloduro.itch.io/",
+        "https://t.me/BlenderUniverse",
+        "?q=%23models"
+      ],
+      "photos": [
+        "kjyXXR2lwg6LLMYMhxfsBJ-fB4bJxMmCol7W_9lzxB2hTCSYbDhFR8oD7va_pEh31K7dyTx5tykZV-AL.jpg",
+        "H2xPlVPxLZTpKkwwPDRfmHqSZUxlkT-hhC9A2pgOEFcI9eV9LOomntTXru0l3WadBxtyXH1d1XZkR0ao.jpg",
+        "PmQOG6ShA1mOM8pugHU-Zz71jJKqbiakQ5coQqIvocJHRgBrWgEIiUsiq8cQIqfxyVGigWgnLa7dxi_h.jpg",
+        "KMwY1rK-MaMMK32eKgG4-GfsNQ9kpC6zGrbqC_ueAleKG3CXgRe3fZ2kj3KpxKtZFPtHgUgwg_DrbQmx.jpg",
+        "O4edCUfudrSsi5IPGz89HFJMl_-6rzTIm9PB1ukCXAKaY5mPO6hat-gNOA7C8GePPVt0u5Dk6TvIeIQn.jpg",
+        "HEKv5HBMyxSnDYAVIpk2xnqSKt5AdrasKQxpr3Wcs4cj7rwNKTbDpcdR54C_XqYKpKsl9FRQaheS86WX.jpg",
+        "Mp_7BUnyZ9vqSgLsXC65g20DkKTVLBF7aMK79AbUSeE6L53HXLhEXt0e4GuA3F5eeYDJ-mIfUE8L6oLX.jpg"
+      ],
+      "videos": [],
+      "files": []
+    },
+    {
+      "id": "post-2",
+      "date": "2026-05-12T12:30:51+00:00",
+      "text": "",
+      "views": "1.23K",
+      "links": [],
+      "photos": [],
+      "videos": [],
+      "files": []
+    },
+    {
+      "id": "post-3",
+      "date": "2026-05-12T12:59:53+00:00",
+      "text": "⭐️\nRing Path Selection v1.1\nℹ️\nЭтот инструмент работает аналогично оператору «Выбрать кратчайший путь» в Blender. При щелчке по краю выбирается конец пути для выделения с помощью инструмента «Кольцевой путь».\n📁\n.blend |\n✅\nBlender 5.1\n⬇️\nСкачать\n|\n©️\nИсточник\n🏷\nBlender: Free Universe\n|\n#geonodes",
+      "views": "1.19K",
+      "links": [
+        "https://t.me/BlenderStorage/7959",
+        "https://superhivemarket.com/products/ring-path-selection",
+        "https://t.me/BlenderUniverse",
+        "?q=%23geonodes"
+      ],
+      "photos": [],
+      "videos": [],
+      "files": []
+    },
+    {
+      "id": "post-4",
+      "date": "2026-05-12T13:49:53+00:00",
+      "text": "⭐️\nModeling A Game Asset Castle In Blender\nℹ️\nЭто подробное видеоруководство для тех, кто хочет изучить все тонкости моделирования в Blender для создания стилизованных домов и замков, а также низкополигональных моделей для игр.\nУроков:\n36\nПродолжительность:\n5 ч 21 м\nКачество:\n720p\nЯзык:\nанглийский\nФайлы проекта:\nда\nСубтитры:\nнет\nПО:\nBlender\nРазмер:\n5.5 GB\n📁\n.mp4 .blend .png\n⬇️\nСкачать\n|\n©️\nИсточник\n🏷\nBlender: Free Universe\n|\n#courses",
+      "views": "954",
+      "links": [
+        "https://t.me/BlenderStorage/7960",
+        "https://superhivemarket.com/products/modeling-a-game-asset-castle-in-blender",
+        "https://t.me/BlenderUniverse",
+        "?q=%23courses"
+      ],
+      "photos": [
+        "IEwNiqcDr7ONjd6XihGTYuP1onszHf79vzQ7KBNNpQ3OoFrj7vflDcNlx_7x-r9K3mwOyabEIq58EDTC.jpg",
+        "f8M1Gq8iqRdPtgdfRjxiWajO1YdIXT2vkMVa-WGmT6cQWrPYFlHqqwC_f5C9HyfiM6zxBixXquDibZfv.jpg",
+        "kgqFolF34VjPE0nW6cn8AX17puT3VVmqegTvM4J6_G7N0Pke-wo8jvSjPqwCBUbUx82C7syTsWlMw1uX.jpg"
+      ],
+      "videos": [],
+      "files": []
+    },
+    {
+      "id": "post-5",
+      "date": "2026-05-12T14:04:21+00:00",
+      "text": "",
+      "views": "976",
+      "links": [],
+      "photos": [],
+      "videos": [],
+      "files": []
+    },
+    {
+      "id": "post-6",
+      "date": "2026-05-12T16:49:53+00:00",
+      "text": "⭐️\nEnvironment Concept Design Course | Foundations for Digital Artists\nℹ️\nЭтот курс проведет вас через весь процесс создания концепции окружения — начиная с базовых упражнений, таких как композиция, цвет и освещение, и заканчивая созданием кинематографических финальных сцен, готовых для профессионального портфолио.\nВы изучите, как наблюдать, упрощать и рисовать окружение, рассказывающее историю, сочетая художественные основы с реальными производственными процессами, используемыми в кино, играх и анимации.\nУроков:\n158\nПродолжительность:\n30 ч 21 м\nКачество:\n1080p\nЯзык:\nанглийский\nФайлы проекта:\nда\nСубтитры:\nнет\nПО:\nBlender, Photoshop\nРазмер:\n33.5 GB\n📁\n.mp4 .blend .pur .psd .png\n⬇️\nСкачать\n|\n©️\nИсточник\n🏷\nBlender: Free Universe\n|\n#courses",
+      "views": "286",
+      "links": [
+        "https://t.me/BlenderStorage/7962",
+        "https://imaworldbuilder.com/foundations",
+        "https://t.me/BlenderUniverse",
+        "?q=%23courses"
+      ],
+      "photos": [
+        "ixYj8J6mX8ph9qg4PlIeqcvg64lv8fFeyv3KHBkF6euC6baxqjJDI8kI8Czl8NMcHxLyITfhNLnAAyY_.jpg",
+        "Bxc3UbZ2dJe0vsQFLmeKUIMJ75VE3VIXX1ddjyJKZYoIMHVcFmJhuzBxlZTCycr7nYH44vQye59a5F_n.jpg",
+        "qDdOL2xMzQRKTnT2mhyh2cHbkalwtJz0-zeX6u9rGpqqGvx2aFr4cZg9enI32bd39tDLJXD8UMi0zjMl.jpg"
+      ],
+      "videos": [
+        "aead0822c6.mp4"
+      ],
+      "files": []
+    }
+  ],
+  "cached_at": "2026-05-12 17:08:58",
+  "_media_base": "https://raw.githubusercontent.com/hhgghhjgg/Heloligt/main/sites/telegram/BlenderUniverse/2026-05-12_17-08/media/",
+  "_files_base": "https://raw.githubusercontent.com/hhgghhjgg/Heloligt/main/sites/telegram/BlenderUniverse/2026-05-12_17-08/files/"
+}
