@@ -1,4 +1,4 @@
-name: Download 3D Model from Open3DModel (Puppeteer)
+name: Download 3D Model from Open3DModel (ANY FILE)
 
 on:
   workflow_dispatch:
@@ -55,7 +55,7 @@ jobs:
           npm init -y
           npm install puppeteer
 
-      - name: Download model with Puppeteer
+      - name: Download model with Puppeteer (COMMIT WHATEVER WE GET)
         env:
           MODEL_PAGE: ${{ inputs.model_page }}
         run: |
@@ -64,7 +64,6 @@ jobs:
           const fs = require("fs");
           const path = require("path");
 
-          // Helper to replace waitForTimeout
           const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
           (async () => {
@@ -74,7 +73,6 @@ jobs:
               fs.mkdirSync(downloadDir, { recursive: true });
             }
 
-            // Declare page outside try so catch can access it for screenshot
             let page = null;
             let browser = null;
 
@@ -100,7 +98,7 @@ jobs:
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
               );
 
-              // Enable download behavior
+              // Set download behavior
               const client = await page.target().createCDPSession();
               await client.send("Browser.setDownloadBehavior", {
                 behavior: "allow",
@@ -124,31 +122,29 @@ jobs:
               });
 
               console.log("📄 Page loaded. Waiting for scripts to settle...");
-              await wait(4000);
+              await wait(5000);
 
               // Screenshot before actions
               await page.screenshot({ path: "debug_before.png" });
               console.log("📸 Screenshot saved (debug_before.png)");
 
-              // ------------------------------------------------------------------
-              // MULTI-STRATEGY DOWNLOAD
-              // ------------------------------------------------------------------
+              // ----------------------------------------------------------------
+              // CLICK ALL DOWNLOAD LINKS WE CAN FIND
+              // ----------------------------------------------------------------
               let downloadTriggered = false;
 
-              // Strategy 1: Click elements likely to start download
               const clickSelectors = [
-                'a:has-text("Download")',
-                'a:has-text("download")',
-                'a:has-text("Free Download")',
-                'button:has-text("Download")',
-                'button:has-text("download")',
+                'a[href*="download"]',
+                'a[href*="token_id"]',
+                'a[href*="edd_action"]',
                 'a[class*="download"]',
                 'a[class*="edd"]',
                 '.edd_download',
                 '.download-link',
-                'a[href*="edd_action"]',
-                'a[href*="download"]',
-                'a[href*="token_id"]'
+                'a:has-text("Download")',
+                'a:has-text("download")',
+                'a:has-text("Free Download")',
+                'button:has-text("Download")'
               ];
 
               for (const selector of clickSelectors) {
@@ -162,38 +158,35 @@ jobs:
                       el.click(),
                       page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {})
                     ]);
-                    await wait(4000);
+                    await wait(5000);
                     downloadTriggered = true;
                     break;
                   }
                 } catch (e) {
-                  // Continue to next selector
+                  // next
                 }
               }
 
-              // Strategy 2: If nothing clicked, extract all links and try to navigate
+              // If nothing clicked, extract links manually
               if (!downloadTriggered) {
                 console.log("🔍 No clickable element worked. Extracting all links...");
                 const allLinks = await page.evaluate(() =>
-                  Array.from(document.querySelectorAll("a[href]")).map(a => ({
-                    href: a.href,
-                    text: a.textContent.trim().substring(0, 60)
-                  }))
+                  Array.from(document.querySelectorAll("a[href]")).map(a => a.href)
                 );
 
                 const downloadLinks = allLinks.filter(link =>
-                  link.href.includes("token_id") ||
-                  link.href.includes("edd_action") ||
-                  link.href.includes("download") ||
-                  link.text.toLowerCase().includes("download")
+                  link.includes("token_id") ||
+                  link.includes("edd_action") ||
+                  link.includes("download.php") ||
+                  link.includes("download")
                 );
 
                 console.log(`Found ${downloadLinks.length} possible download links`);
                 for (const link of downloadLinks) {
-                  console.log(`➡️ Trying: ${link.href.substring(0, 100)}`);
+                  console.log(`➡️ Trying: ${link.substring(0, 100)}`);
                   try {
-                    await page.goto(link.href, { waitUntil: "networkidle2", timeout: 20000 });
-                    await wait(4000);
+                    await page.goto(link, { waitUntil: "networkidle2", timeout: 20000 });
+                    await wait(5000);
                     downloadTriggered = true;
                     break;
                   } catch (e) {
@@ -202,8 +195,8 @@ jobs:
                 }
               }
 
-              // Final wait for any downloads to finish
-              await wait(8000);
+              // Final wait for downloads
+              await wait(10000);
               await page.screenshot({ path: "debug_after.png" });
               console.log("📸 Final screenshot saved (debug_after.png)");
 
@@ -219,9 +212,9 @@ jobs:
               }
             }
 
-            // ------------------------------------------------------------------
-            // VERIFY DOWNLOADED FILES
-            // ------------------------------------------------------------------
+            // ----------------------------------------------------------------
+            // VERIFY DOWNLOADED FILES (JUST REPORT, DON'T FILTER)
+            // ----------------------------------------------------------------
             if (fs.existsSync(downloadDir)) {
               const files = fs.readdirSync(downloadDir).filter(f => {
                 const p = path.join(downloadDir, f);
@@ -229,28 +222,10 @@ jobs:
               });
               console.log(`\n📁 Files in 3d-models (${files.length}):`);
 
-              let hasValid = false;
               for (const file of files) {
                 const fp = path.join(downloadDir, file);
-                const sizeBytes = fs.statSync(fp).size;
-                const sizeKB = Math.round(sizeBytes / 1024);
-                const isLarge = sizeBytes > 50000;
-                console.log(`  ${isLarge ? "✅" : "⚠️"} ${file} (${sizeKB}KB)`);
-                if (isLarge) hasValid = true;
-
-                // Check if file is HTML disguised as something else
-                if (sizeBytes < 500000 && sizeBytes > 100) {
-                  try {
-                    const head = fs.readFileSync(fp, "utf8").substring(0, 200);
-                    if (head.includes("<!DOCTYPE") || head.includes("<html")) {
-                      console.log(`    ❌ This file is actually HTML, not a 3D model!`);
-                    }
-                  } catch (_) {}
-                }
-              }
-
-              if (!hasValid) {
-                console.log("\n⚠️ No large files found. The download likely did not start or was blocked.");
+                const sizeKB = Math.round(fs.statSync(fp).size / 1024);
+                console.log(`  📦 ${file} (${sizeKB}KB)`);
               }
             } else {
               console.log("⚠️ 3d-models directory does not exist.");
@@ -260,25 +235,20 @@ jobs:
           })();
           NODEEOF
 
-      - name: Commit downloaded models
+      - name: Commit ALL downloaded files WITHOUT CHECKING
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p 3d-models
 
-          # Add only files larger than 50KB that are not HTML
-          find 3d-models/ -type f -size +50k -exec sh -c '
-            for f; do
-              head -c 200 "$f" | grep -q "<html" && continue
-              git add "$f"
-            done
-          ' _ {} +
+          # Add EVERYTHING in the directory
+          find 3d-models/ -type f -exec git add {} +
 
           if git diff --cached --quiet; then
-            echo "No valid model files to commit"
+            echo "No files to commit"
             ls -lah 3d-models/ 2>/dev/null || echo "Directory empty"
           else
-            git commit -m "📦 Downloaded 3D model"
+            git commit -m "📦 Downloaded whatever we got! Even if it's HTML!"
             git pull --rebase && git push
             echo "✅ Committed and pushed!"
           fi
