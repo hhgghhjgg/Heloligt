@@ -1,4 +1,4 @@
-name: دانلود APK با Puppeteer
+name: دانلود APK با Puppeteer v2
 
 on:
   workflow_dispatch:
@@ -40,6 +40,7 @@ jobs:
 
           (async () => {
             const package_name = process.env.PACKAGE;
+            // آدرس مستقیم که خودت دادی
             const downloadUrl = `https://apkcombo.com/deepseek-ai-assistant/${package_name}/`;
             
             console.log(`Launching browser...`);
@@ -54,48 +55,61 @@ jobs:
             console.log(`Navigating to: ${downloadUrl}`);
             await page.goto(downloadUrl, { waitUntil: 'networkidle2', timeout: 60000 });
             
-            // استخراج لینک دانلود - منتظر لینک دانلود واقعی
+            // صبر برای لود شدن کامل صفحه
+            await page.waitForTimeout(5000);
+            
+            // استخراج لینک دانلود
             let downloadLink = null;
             
-            // روش 1: تگ a با کلاس download-btn
+            // روش ۱: جستجوی هر لینکی که به apk ختم بشه
             try {
-              downloadLink = await page.$eval('a.download-btn', el => el.href);
-              console.log(`Found via download-btn: ${downloadLink}`);
-            } catch(e) {}
-            
-            // روش 2: تگ a با id download-btn
-            if(!downloadLink) {
-              try {
-                downloadLink = await page.$eval('a#download-btn', el => el.href);
-                console.log(`Found via #download-btn: ${downloadLink}`);
-              } catch(e) {}
-            }
-            
-            // روش 3: هر لینکی که به .apk ختم بشه
-            if(!downloadLink) {
               downloadLink = await page.evaluate(() => {
-                const links = document.querySelectorAll('a[href*=".apk"]');
-                if(links.length > 0) return links[0].href;
+                const allLinks = Array.from(document.querySelectorAll('a'));
+                for (let link of allLinks) {
+                  if (link.href && link.href.includes('.apk')) {
+                    return link.href;
+                  }
+                }
                 return null;
               });
-              if(downloadLink) console.log(`Found APK link: ${downloadLink}`);
+              if (downloadLink) console.log(`Found APK link via generic search: ${downloadLink}`);
+            } catch(e) {}
+            
+            // روش ۲: جستجوی دکمه دانلود با کلاس‌های رایج
+            if (!downloadLink) {
+              try {
+                downloadLink = await page.evaluate(() => {
+                  const selectors = [
+                    'a.download-btn',
+                    'a#download-btn',
+                    'a[href*="download"]',
+                    'a.info-down'
+                  ];
+                  for (let sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.href) return el.href;
+                  }
+                  return null;
+                });
+                if (downloadLink) console.log(`Found download link via selectors: ${downloadLink}`);
+              } catch(e) {}
             }
             
             if(!downloadLink) {
               console.error('No download link found!');
-              console.log('Page content: ', await page.content().slice(0, 1000));
+              const pageContent = await page.content();
+              console.log('Page content (first 1500 chars): ', pageContent.substring(0, 1500));
               await browser.close();
               process.exit(1);
             }
 
             console.log(`Downloading from: ${downloadLink}`);
             
-            // تنظیم مسیر دانلود
             const downloadPath = path.resolve('./downloads');
             const fileName = `${package_name}.apk`;
             const filePath = path.join(downloadPath, fileName);
             
-            // دانلود فایل
+            // رفتن به لینک دانلود و گرفتن فایل
             const response = await page.goto(downloadLink, { 
               waitUntil: 'networkidle2',
               timeout: 120000
@@ -104,7 +118,7 @@ jobs:
             if(response && response.ok()) {
               const buffer = await response.buffer();
               fs.writeFileSync(filePath, buffer);
-              console.log(`Downloaded successfully: ${filePath} (${buffer.length} bytes)`);
+              console.log(`SUCCESS! Downloaded to: ${filePath} (${buffer.length} bytes)`);
             } else {
               console.error(`Download failed with status: ${response?.status()}`);
               await browser.close();
@@ -131,8 +145,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add output/
           if git diff --staged --quiet; then
-            echo "No changes."
+            echo "No changes to push."
           else
-            git commit -m "Download ${{ inputs.package_name }} via Puppeteer"
+            git commit -m "Download ${{ inputs.package_name }} via Puppeteer v2"
             git push
           fi
