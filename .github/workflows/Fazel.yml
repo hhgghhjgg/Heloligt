@@ -31,7 +31,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'   # نسخه درست برای apkpure
 
       - name: Install apkpure
         run: pip install apkpure
@@ -42,8 +42,6 @@ jobs:
           ARCH: ${{ inputs.architecture }}
         run: |
           echo "Downloading $PACKAGE for architecture $ARCH..."
-          # apkpure یک دستور CLI به اسم apkpure هم داره
-          # نحو استفاده: apkpure download <pkg> --arch <arch> -o <dir>
           python -m apkpure download $PACKAGE --arch $ARCH -o downloads
 
       - name: Organize and compress
@@ -55,8 +53,6 @@ jobs:
               7z a -mx=3 -v85m "../output/$f.7z" "$f"
             fi
           done
-          # حذف فایل اصلی برای خالی موندن پوشه downloads
-          rm -f *.apk
 
       - name: Commit and push APKs
         run: |
