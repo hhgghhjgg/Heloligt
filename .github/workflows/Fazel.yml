@@ -1,22 +1,13 @@
-name: دانلود APK با gplaydl
+name: دانلود APK با Puppeteer
 
 on:
   workflow_dispatch:
     inputs:
       package_name:
-        description: 'نام پکیج برنامه (مثلاً com.deepseek.chat)'
+        description: 'نام پکیج (مثلاً com.deepseek.chat)'
         required: true
         type: string
-      architecture:
-        description: 'معماری پردازنده'
-        required: true
-        type: choice
-        options:
-          - arm64
-          - armv7
-          - x86
-          - x86_64
-        default: 'arm64'
+        default: 'com.deepseek.chat'
 
 permissions:
   contents: write
@@ -25,42 +16,123 @@ jobs:
   download:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.12'
+          node-version: '20'
 
-      - name: Install gplaydl
-        run: pip install gplaydl
+      - name: Install dependencies
+        run: |
+          npm init -y
+          npm install puppeteer
 
-      - name: Authenticate anonymously
-        run: gplaydl auth
-
-      - name: Download APK from Google Play
+      - name: Download APK
         env:
           PACKAGE: ${{ inputs.package_name }}
-          ARCH: ${{ inputs.architecture }}
         run: |
           mkdir -p downloads
-          gplaydl download $PACKAGE -a $ARCH -o downloads/
+          node - << 'NODEEOF'
+          const puppeteer = require('puppeteer');
+          const fs = require('fs');
+          const path = require('path');
+
+          (async () => {
+            const package_name = process.env.PACKAGE;
+            const downloadUrl = `https://apkcombo.com/deepseek-ai-assistant/${package_name}/`;
+            
+            console.log(`Launching browser...`);
+            const browser = await puppeteer.launch({
+              headless: 'new',
+              args: ['--no-sandbox', '--disable-setuid-sandbox']
+            });
+            
+            const page = await browser.newPage();
+            await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+            
+            console.log(`Navigating to: ${downloadUrl}`);
+            await page.goto(downloadUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+            
+            // استخراج لینک دانلود - منتظر لینک دانلود واقعی
+            let downloadLink = null;
+            
+            // روش 1: تگ a با کلاس download-btn
+            try {
+              downloadLink = await page.$eval('a.download-btn', el => el.href);
+              console.log(`Found via download-btn: ${downloadLink}`);
+            } catch(e) {}
+            
+            // روش 2: تگ a با id download-btn
+            if(!downloadLink) {
+              try {
+                downloadLink = await page.$eval('a#download-btn', el => el.href);
+                console.log(`Found via #download-btn: ${downloadLink}`);
+              } catch(e) {}
+            }
+            
+            // روش 3: هر لینکی که به .apk ختم بشه
+            if(!downloadLink) {
+              downloadLink = await page.evaluate(() => {
+                const links = document.querySelectorAll('a[href*=".apk"]');
+                if(links.length > 0) return links[0].href;
+                return null;
+              });
+              if(downloadLink) console.log(`Found APK link: ${downloadLink}`);
+            }
+            
+            if(!downloadLink) {
+              console.error('No download link found!');
+              console.log('Page content: ', await page.content().slice(0, 1000));
+              await browser.close();
+              process.exit(1);
+            }
+
+            console.log(`Downloading from: ${downloadLink}`);
+            
+            // تنظیم مسیر دانلود
+            const downloadPath = path.resolve('./downloads');
+            const fileName = `${package_name}.apk`;
+            const filePath = path.join(downloadPath, fileName);
+            
+            // دانلود فایل
+            const response = await page.goto(downloadLink, { 
+              waitUntil: 'networkidle2',
+              timeout: 120000
+            });
+            
+            if(response && response.ok()) {
+              const buffer = await response.buffer();
+              fs.writeFileSync(filePath, buffer);
+              console.log(`Downloaded successfully: ${filePath} (${buffer.length} bytes)`);
+            } else {
+              console.error(`Download failed with status: ${response?.status()}`);
+              await browser.close();
+              process.exit(1);
+            }
+            
+            await browser.close();
+          })();
+          NODEEOF
 
       - name: Compress and push APK
         run: |
           cd downloads
           mkdir -p ../output
-          for f in *.apk; do
-            [ -f "$f" ] && 7z a -mx=3 -v85m "../output/${f}.7z" "$f"
-          done
+          f=$(ls -1 *.apk 2>/dev/null | head -n1)
+          if [ -n "$f" ] && [ -f "$f" ]; then
+            7z a -mx=1 -v85m "../output/${f}.7z" "$f"
+          else
+            echo "No APK found!"
+            exit 1
+          fi
           cd ..
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add output/
           if git diff --staged --quiet; then
-            echo "No APK downloaded."
+            echo "No changes."
           else
-            git commit -m "Download ${{ inputs.package_name }} via gplaydl"
+            git commit -m "Download ${{ inputs.package_name }} via Puppeteer"
             git push
           fi
