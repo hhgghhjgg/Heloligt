@@ -1,4 +1,4 @@
-name: دانلود مستقیم از گوگل پلی
+name: دانلود APK با gplaydl
 
 on:
   workflow_dispatch:
@@ -12,10 +12,11 @@ on:
         required: true
         type: choice
         options:
-          - arm64-v8a
-          - armeabi-v7a
+          - arm64
+          - armv7
+          - x86
           - x86_64
-        default: 'arm64-v8a'
+        default: 'arm64'
 
 permissions:
   contents: write
@@ -23,7 +24,6 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,9 +33,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Google Play API
-        run: |
-          pip install googleplay-api
+      - name: Install gplaydl
+        run: pip install gplaydl
+
+      - name: Authenticate anonymously
+        run: gplaydl auth
 
       - name: Download APK from Google Play
         env:
@@ -43,62 +45,22 @@ jobs:
           ARCH: ${{ inputs.architecture }}
         run: |
           mkdir -p downloads
-          
-          echo "Downloading $PACKAGE for $ARCH directly from Google Play..."
-          
-          python -m googleplay_api download \
-            "$PACKAGE" \
-            --arch "$ARCH" \
-            --output downloads/
-          
-          if [ $? -ne 0 ]; then
-            echo "First attempt failed, trying with alternative device config..."
-            # تلاش دوباره با تنظیمات متفاوت
-            python -m googleplay_api download \
-              "$PACKAGE" \
-              --arch "$ARCH" \
-              --device "flame" \
-              --output downloads/
-          fi
-          
-          echo "Download completed. Files in downloads/:"
-          ls -la downloads/
+          gplaydl download $PACKAGE -a $ARCH -o downloads/
 
-      - name: Compress APK for storage
+      - name: Compress and push APK
         run: |
           cd downloads
-          
-          # پیدا کردن فایل APK دانلود شده
-          APK_FILE=$(ls -1 *.apk 2>/dev/null | head -n1)
-          
-          if [ -z "$APK_FILE" ]; then
-            # شاید اسپلیت APK باشه
-            APK_ZIP=$(ls -1 *.zip 2>/dev/null | head -n1)
-            if [ -n "$APK_ZIP" ]; then
-              APK_FILE="$APK_ZIP"
-            else
-              echo "هیچ فایل APK یا ZIP پیدا نشد!"
-              ls -la
-              exit 1
-            fi
-          fi
-          
-          echo "Compressing $APK_FILE..."
           mkdir -p ../output
-          7z a -mx=3 -v85m "../output/${APK_FILE}.7z" "$APK_FILE"
-          
-          echo "Compression completed."
-
-      - name: Push to repository
-        run: |
+          for f in *.apk; do
+            [ -f "$f" ] && 7z a -mx=3 -v85m "../output/${f}.7z" "$f"
+          done
+          cd ..
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add output/
-          
           if git diff --staged --quiet; then
-            echo "تغییری برای commit وجود ندارد."
+            echo "No APK downloaded."
           else
-            git commit -m "Download ${{ inputs.package_name }} directly from Google Play"
+            git commit -m "Download ${{ inputs.package_name }} via gplaydl"
             git push
-            echo "دانلود و ذخیره با موفقیت انجام شد!"
           fi
