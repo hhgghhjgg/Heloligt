@@ -1,4 +1,4 @@
-name: دانلود APK با Puppeteer v2
+name: دانلود APK از APKCombo
 
 on:
   workflow_dispatch:
@@ -8,6 +8,15 @@ on:
         required: true
         type: string
         default: 'com.deepseek.chat'
+      architecture:
+        description: 'معماری پردازنده'
+        required: true
+        type: choice
+        options:
+          - universal
+          - arm64-v8a
+          - armeabi-v7a
+        default: 'arm64-v8a'
 
 permissions:
   contents: write
@@ -24,108 +33,31 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: |
-          npm init -y
-          npm install puppeteer
+        run: npm install @nirewen/apkcombo-downloader
 
       - name: Download APK
         env:
           PACKAGE: ${{ inputs.package_name }}
+          ARCH: ${{ inputs.architecture }}
         run: |
           mkdir -p downloads
           node - << 'NODEEOF'
-          const puppeteer = require('puppeteer');
-          const fs = require('fs');
-          const path = require('path');
-
+          const { APKComboDownloader } = require("@nirewen/apkcombo-downloader");
+          
           (async () => {
-            const package_name = process.env.PACKAGE;
-            // آدرس مستقیم که خودت دادی
-            const downloadUrl = `https://apkcombo.com/deepseek-ai-assistant/${package_name}/`;
-            
-            console.log(`Launching browser...`);
-            const browser = await puppeteer.launch({
-              headless: 'new',
-              args: ['--no-sandbox', '--disable-setuid-sandbox']
+            const apkcd = new APKComboDownloader({
+              outDir: "./downloads",
+              arch: process.env.ARCH
             });
-            
-            const page = await browser.newPage();
-            await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-            
-            console.log(`Navigating to: ${downloadUrl}`);
-            await page.goto(downloadUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-            
-            // صبر برای لود شدن کامل صفحه
-            await page.waitForTimeout(5000);
-            
-            // استخراج لینک دانلود
-            let downloadLink = null;
-            
-            // روش ۱: جستجوی هر لینکی که به apk ختم بشه
-            try {
-              downloadLink = await page.evaluate(() => {
-                const allLinks = Array.from(document.querySelectorAll('a'));
-                for (let link of allLinks) {
-                  if (link.href && link.href.includes('.apk')) {
-                    return link.href;
-                  }
-                }
-                return null;
-              });
-              if (downloadLink) console.log(`Found APK link via generic search: ${downloadLink}`);
-            } catch(e) {}
-            
-            // روش ۲: جستجوی دکمه دانلود با کلاس‌های رایج
-            if (!downloadLink) {
-              try {
-                downloadLink = await page.evaluate(() => {
-                  const selectors = [
-                    'a.download-btn',
-                    'a#download-btn',
-                    'a[href*="download"]',
-                    'a.info-down'
-                  ];
-                  for (let sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el && el.href) return el.href;
-                  }
-                  return null;
-                });
-                if (downloadLink) console.log(`Found download link via selectors: ${downloadLink}`);
-              } catch(e) {}
-            }
-            
-            if(!downloadLink) {
-              console.error('No download link found!');
-              const pageContent = await page.content();
-              console.log('Page content (first 1500 chars): ', pageContent.substring(0, 1500));
-              await browser.close();
-              process.exit(1);
-            }
 
-            console.log(`Downloading from: ${downloadLink}`);
+            console.log(`Downloading ${process.env.PACKAGE} for ${process.env.ARCH}...`);
             
-            const downloadPath = path.resolve('./downloads');
-            const fileName = `${package_name}.apk`;
-            const filePath = path.join(downloadPath, fileName);
-            
-            // رفتن به لینک دانلود و گرفتن فایل
-            const response = await page.goto(downloadLink, { 
-              waitUntil: 'networkidle2',
-              timeout: 120000
+            await apkcd.download({
+              org: "deepseek-ai-assistant",
+              repo: process.env.PACKAGE
             });
             
-            if(response && response.ok()) {
-              const buffer = await response.buffer();
-              fs.writeFileSync(filePath, buffer);
-              console.log(`SUCCESS! Downloaded to: ${filePath} (${buffer.length} bytes)`);
-            } else {
-              console.error(`Download failed with status: ${response?.status()}`);
-              await browser.close();
-              process.exit(1);
-            }
-            
-            await browser.close();
+            console.log("دانلود با موفقیت انجام شد!");
           })();
           NODEEOF
 
@@ -133,20 +65,23 @@ jobs:
         run: |
           cd downloads
           mkdir -p ../output
-          f=$(ls -1 *.apk 2>/dev/null | head -n1)
-          if [ -n "$f" ] && [ -f "$f" ]; then
-            7z a -mx=1 -v85m "../output/${f}.7z" "$f"
-          else
-            echo "No APK found!"
-            exit 1
-          fi
+          
+          # همه فایل‌های APK دانلود شده رو فشرده کن
+          for f in *.apk *.xapk *.apkm; do
+            if [ -f "$f" ]; then
+              7z a -mx=1 -v85m "../output/${f}.7z" "$f"
+            fi
+          done
+          
           cd ..
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add output/
           if git diff --staged --quiet; then
-            echo "No changes to push."
+            echo "هیچ فایلی پیدا نشد!"
+            exit 1
           else
-            git commit -m "Download ${{ inputs.package_name }} via Puppeteer v2"
+            git commit -m "Download ${{ inputs.package_name }} (${{ inputs.architecture }})"
             git push
+            echo "فایل APK با موفقیت ذخیره شد!"
           fi
