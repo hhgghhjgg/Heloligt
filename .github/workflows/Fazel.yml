@@ -1,83 +1,71 @@
-name: Download APK with apkeep
+name: Download APK from APKPure
 
 on:
   workflow_dispatch:
     inputs:
       package_name:
-        description: 'Package name of the app (e.g., com.instagram.android)'
+        description: 'نام بسته (package name) برنامه'
         required: true
         type: string
-      source:
-        description: 'Download source'
+        default: 'com.instagram.android'
+      architecture:
+        description: 'معماری پردازنده'
         required: true
         type: choice
-        default: 'apkpure'
+        default: 'arm64-v8a'
         options:
-          - apkpure
-          - fdroid
+          - arm64-v8a
+          - armeabi-v7a
+          - x86_64
+          - all
 
 permissions:
   contents: write
 
 jobs:
-  download-apk:
+  download:
     runs-on: ubuntu-latest
     steps:
-      # ۱. بررسی مخزن
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # ۲. ایجاد پوشه خروجی
-      - name: Create output folder
-        run: mkdir -p downloads
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      # ۳. دانلود و نصب apkeep
-      - name: Install apkeep
+      - name: Install apkpure
+        run: pip install apkpure
+
+      - name: Download APK
+        env:
+          PACKAGE: ${{ inputs.package_name }}
+          ARCH: ${{ inputs.architecture }}
         run: |
-          # apkeep یه ابزار Rust هست. ما نسخه کامپایل شده برای لینوکس رو مستقیم دانلود می‌کنیم
-          curl -L -o apkeep.tar.gz https://github.com/EFForg/apkeep/releases/download/v0.17.0/apkeep-x86_64-unknown-linux-gnu.tar.gz
-          tar -xzf apkeep.tar.gz
-          chmod +x apkeep
+          echo "Downloading $PACKAGE for architecture $ARCH..."
+          # apkpure یک دستور CLI به اسم apkpure هم داره
+          # نحو استفاده: apkpure download <pkg> --arch <arch> -o <dir>
+          python -m apkpure download $PACKAGE --arch $ARCH -o downloads
 
-      # ۴. دانلود فایل APK
-      - name: Download APK from ${{ inputs.source }}
-        run: |
-          echo "Attempting to download ${{ inputs.package_name }} from ${{ inputs.source }}..."
-          ./apkeep -a ${{ inputs.package_name }} -d ${{ inputs.source }} -o downloads .
-          echo "Download attempt finished."
-
-      # ۵. فشرده‌سازی و ذخیره‌سازی
-      - name: Compress and push APKs to repository
+      - name: Organize and compress
         run: |
           cd downloads
-          # فایل‌های APK رو با ۷z به صورت قطعات ۸۵ مگابایتی فشرده کن 
-          for file in *.apk; do
-            if [ -f "$file" ]; then
-              echo "Compressing $file..."
-              7z a -mx=3 -v85m "compressed_${file}.7z" "$file"
-              # حذف فایل اصلی برای صرفه‌جویی در فضای مخزن
-              rm "$file"
+          mkdir -p ../output
+          for f in *.apk; do
+            if [ -f "$f" ]; then
+              7z a -mx=3 -v85m "../output/$f.7z" "$f"
             fi
           done
-          
-          # برای Split APK ها
-          for file in *.zip; do
-            if [ -f "$file" ]; then
-              echo "Compressing $file..."
-              7z a -mx=3 -v85m "compressed_${file}.7z" "$file"
-              rm "$file"
-            fi
-          done
+          # حذف فایل اصلی برای خالی موندن پوشه downloads
+          rm -f *.apk
 
-      - name: Commit and push to repository
+      - name: Commit and push APKs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/
+          git add output/
           if git diff --staged --quiet; then
-            echo "No changes to commit. The app might not be available."
+            echo "No APK found."
           else
-            git commit -m "Download ${{ inputs.package_name }} from ${{ inputs.source }} [skip ci]"
+            git commit -m "Add ${{ inputs.package_name }} (${{ inputs.architecture }}) from APKPure"
             git push
-            echo "APK successfully pushed to repository!"
           fi
