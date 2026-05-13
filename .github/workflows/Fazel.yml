@@ -1,4 +1,4 @@
-name: Download APK from APKPure
+name: Download APK from APKPure (Robust)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
         description: 'نام بسته (package name) برنامه'
         required: true
         type: string
-        default: 'com.instagram.android'
+        default: 'com.deepseek.chat'
       architecture:
         description: 'معماری پردازنده'
         required: true
@@ -31,36 +31,122 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'   # نسخه درست برای apkpure
+          python-version: '3.12'
 
-      - name: Install apkpure
-        run: pip install apkpure
+      - name: Install dependencies
+        run: |
+          pip install apkpure requests beautifulsoup4 cloudscraper
 
-      - name: Download APK
+      - name: Download APK (try apkpure first, fallback to custom script)
         env:
           PACKAGE: ${{ inputs.package_name }}
           ARCH: ${{ inputs.architecture }}
         run: |
-          echo "Downloading $PACKAGE for architecture $ARCH..."
-          python -m apkpure download $PACKAGE --arch $ARCH -o downloads
+          mkdir -p downloads
+          echo "Trying direct apkpure command..."
+          # اول دستور اصلی کتابخونه رو امتحان کن
+          if apkpure download $PACKAGE --arch $ARCH -o downloads 2>/dev/null; then
+            echo "Success with apkpure CLI."
+          else
+            echo "CLI failed. Using Python script fallback..."
+            # نوشتن و اجرای یه اسکریپت پایتون سفارشی
+            python << 'PYEOF'
+          import os, sys, re, requests
+          from bs4 import BeautifulSoup
+          from urllib.parse import urljoin
 
-      - name: Organize and compress
+          package = os.environ["PACKAGE"]
+          arch = os.environ["ARCH"]
+          output_dir = "downloads"
+          os.makedirs(output_dir, exist_ok=True)
+
+          # --- جستجو در APKPure ---
+          search_url = f"https://apkpure.com/search?q={package}"
+          headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+          response = requests.get(search_url, headers=headers)
+          soup = BeautifulSoup(response.text, "html.parser")
+
+          # پیدا کردن لینک به صفحه اپ
+          app_link = None
+          for a in soup.select("a[href*='/download/']"):
+              href = a.get("href")
+              if href and "/download/" in href and "variant" not in href:
+                  app_link = urljoin("https://apkpure.com", href)
+                  break
+
+          if not app_link:
+              print("Could not find app page.")
+              sys.exit(1)
+
+          print(f"App page: {app_link}")
+
+          # --- ورود به صفحه اپ و استخراج لینک دانلود ---
+          response = requests.get(app_link, headers=headers)
+          soup = BeautifulSoup(response.text, "html.parser")
+
+          # APKPure معمولاً لینک دانلود مستقیم رو توی یه data-href میذاره یا توی پیج دانلود
+          download_link = None
+          # روش ۱: تگ a با کلاس download_btn
+          dl_btn = soup.find("a", class_="download_btn")
+          if dl_btn and dl_btn.get("href"):
+              download_link = dl_btn["href"]
+          # روش ۲: تگ a با id download_link
+          if not download_link:
+              dl_a = soup.find("a", id="download_link")
+              if dl_a and dl_a.get("href"):
+                  download_link = dl_a["href"]
+          # روش ۳: جستجوی data-href
+          if not download_link:
+              pattern = re.compile(r"data-href\s*=\s*['\"]([^'\"]+)['\"]")
+              match = pattern.search(response.text)
+              if match:
+                  download_link = match.group(1)
+
+          if not download_link:
+              # اگه بازم پیدا نشد، شاید صفحه ی "download" جداگونه داره
+              # ساخت لینک دستی
+              download_link = f"{app_link}/download?from=details"
+
+          print(f"Download link: {download_link}")
+
+          # --- دانلود فایل ---
+          r = requests.get(download_link, headers=headers, stream=True)
+          if r.status_code != 200:
+              print(f"Download failed with status {r.status_code}")
+              sys.exit(1)
+
+          # حدس زدن نام فایل از URL یا Content-Disposition
+          filename = None
+          cd = r.headers.get("content-disposition")
+          if cd:
+              import cgi
+              value, params = cgi.parse_header(cd)
+              filename = params.get("filename")
+          if not filename:
+              filename = f"{package}.apk"
+
+          filepath = os.path.join(output_dir, filename)
+          with open(filepath, "wb") as f:
+              for chunk in r.iter_content(8192):
+                  f.write(chunk)
+
+          print(f"Downloaded: {filepath}")
+          PYEOF
+          fi
+
+      - name: Compress and push to repository
         run: |
           cd downloads
           mkdir -p ../output
           for f in *.apk; do
-            if [ -f "$f" ]; then
-              7z a -mx=3 -v85m "../output/$f.7z" "$f"
-            fi
+            [ -f "$f" ] && 7z a -mx=3 -v85m "../output/${f}.7z" "$f"
           done
-
-      - name: Commit and push APKs
-        run: |
+          cd ..
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add output/
           if git diff --staged --quiet; then
-            echo "No APK found."
+            echo "No APK downloaded."
           else
             git commit -m "Add ${{ inputs.package_name }} (${{ inputs.architecture }}) from APKPure"
             git push
