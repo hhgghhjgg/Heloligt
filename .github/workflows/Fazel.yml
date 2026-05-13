@@ -4,27 +4,20 @@ on:
   workflow_dispatch:
     inputs:
       package_name:
-        description: 'Package name (e.g., com.google.android.youtube)'
+        description: 'نام پکیج برنامه (مثلاً com.deepseek.chat)'
         required: true
         type: string
+        default: 'com.deepseek.chat'
       architecture:
-        description: 'Target architecture'
+        description: 'معماری پردازنده'
         required: true
         type: choice
         default: 'arm64'
         options:
           - arm64
           - armv7
-      merge_splits:
-        description: 'Merge split APKs into single installable APK'
-        required: false
-        type: boolean
-        default: true
-      output_folder:
-        description: 'Output folder (relative to repo root)'
-        required: false
-        type: string
-        default: 'downloads'
+          - x86_64
+          - all
 
 permissions:
   contents: write
@@ -34,112 +27,83 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 1
+          python-version: '3.11'
+
+      - name: Install gplaydl
+        run: |
+          pip install gplaydl
 
       - name: Create output folder
-        run: mkdir -p "${{ inputs.output_folder }}"
+        run: mkdir -p downloads
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y openjdk-17-jre-headless apksigner python3 python3-venv python3-pip curl git
-
-      - name: Clone gplay-apk-downloader
-        run: |
-          git clone https://github.com/alltechdev/gplay-apk-downloader.git
-          cd gplay-apk-downloader
-          ./setup.sh
-
-      - name: Authenticate with Google Play
-        run: |
-          cd gplay-apk-downloader
-          echo "y" | ./gplay auth
-          echo "Authentication completed."
-
-      - name: Download APK
+      - name: Authenticate and download APK
         id: download
         run: |
-          cd gplay-apk-downloader
+          # احراز هویت خودکار
+          echo "Authenticating..."
+          gplaydl auth
+          
+          # تعیین معماری
           ARCH="${{ inputs.architecture }}"
-          MERGE="${{ inputs.merge_splits }}"
-          OUTPUT_DIR="../${{ inputs.output_folder }}"
-          
-          CMD="./gplay download ${{ inputs.package_name }} -a $ARCH -o $OUTPUT_DIR"
-          if [ "$MERGE" = "true" ]; then
-            CMD="$CMD -m"
-          fi
-          
-          echo "Running: $CMD"
-          $CMD
-          
-          # Find downloaded file(s)
-          cd "$OUTPUT_DIR"
-          if [ "$MERGE" = "true" ]; then
-            DOWNLOADED_FILE=$(ls -1 *.apk 2>/dev/null | head -n1)
+          if [ "$ARCH" = "all" ]; then
+            ARCH_FLAG=""
           else
-            DOWNLOADED_FILE=$(ls -1 *.apk *.zip 2>/dev/null | head -n1)
+            ARCH_FLAG="--arch $ARCH"
           fi
+          
+          # دانلود
+          echo "Downloading ${{ inputs.package_name }}..."
+          gplaydl download ${{ inputs.package_name }} $ARCH_FLAG -o downloads
+          
+          # پیدا کردن فایل دانلود شده
+          cd downloads
+          DOWNLOADED_FILE=$(ls -1t *.apk 2>/dev/null | head -n1)
           
           if [ -z "$DOWNLOADED_FILE" ]; then
-            echo "Error: No file downloaded"
+            echo "Error: No APK downloaded"
+            # نمایش فایل‌های موجود برای دیباگ
+            echo "Files in downloads folder:"
+            ls -la
             exit 1
           fi
           
-          echo "downloaded_file_path=$OUTPUT_DIR/$DOWNLOADED_FILE" >> $GITHUB_OUTPUT
-          echo "downloaded_file_name=$DOWNLOADED_FILE" >> $GITHUB_OUTPUT
+          echo "Downloaded: $DOWNLOADED_FILE"
+          echo "downloaded_file=$DOWNLOADED_FILE" >> $GITHUB_OUTPUT
+        continue-on-error: false
 
-      - name: Generate timestamp for unique archive
-        id: timestamp
-        run: echo "value=$(date +%Y%m%d_%H%M%S)" >> $GITHUB_OUTPUT
-
-      - name: Create split archive (85MB chunks)
+      - name: Compress APK for storage
+        if: success()
         run: |
-          DOWNLOADED_FILE="${{ steps.download.outputs.downloaded_file_path }}"
-          TIMESTAMP="${{ steps.timestamp.outputs.value }}"
-          PACKAGE_NAME="${{ inputs.package_name }}"
+          cd downloads
+          APK_FILE="${{ steps.download.outputs.downloaded_file }}"
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          PACKAGE="${{ inputs.package_name }}"
           ARCH="${{ inputs.architecture }}"
           
-          # Create archive name
-          if [ "${{ inputs.merge_splits }}" = "true" ]; then
-            ARCHIVE_NAME="${PACKAGE_NAME}_${ARCH}_merged_${TIMESTAMP}"
-          else
-            ARCHIVE_NAME="${PACKAGE_NAME}_${ARCH}_splits_${TIMESTAMP}"
-          fi
+          # فشرده‌سازی با 7z
+          7z a -mx=3 -v85m "${PACKAGE}_${ARCH}_${TIMESTAMP}.7z" "$APK_FILE"
           
-          cd "${{ inputs.output_folder }}"
+          # حذف فایل اصلی APK برای صرفه‌جویی در فضای مخزن
+          rm "$APK_FILE"
           
-          # Compress and split the downloaded file(s)
-          if [ "${{ inputs.merge_splits }}" = "true" ]; then
-            # Single APK file - split into chunks
-            7z a -mx=3 -v85m "${ARCHIVE_NAME}.7z" "$(basename "$DOWNLOADED_FILE")"
-          else
-            # Multiple split files - use separate archive for each
-            mkdir -p "${ARCHIVE_NAME}_contents"
-            cp "$(basename "$DOWNLOADED_FILE")" "${ARCHIVE_NAME}_contents/"
-            7z a -mx=3 -v85m "${ARCHIVE_NAME}.7z" "${ARCHIVE_NAME}_contents/"
-          fi
-          
-          # Rename single-chunk archive to .7z
-          if [ -f "${ARCHIVE_NAME}.7z.001" ] && [ ! -f "${ARCHIVE_NAME}.7z.002" ]; then
-            mv "${ARCHIVE_NAME}.7z.001" "${ARCHIVE_NAME}.7z"
-          fi
+          echo "Compressed and cleaned up."
 
-      - name: Remove original downloaded file(s)
-        run: |
-          DOWNLOADED_FILE="${{ steps.download.outputs.downloaded_file_path }}"
-          if [[ -n "$DOWNLOADED_FILE" && -f "$DOWNLOADED_FILE" ]]; then
-            rm "$DOWNLOADED_FILE"
-          fi
-          # Also remove any extracted directories
-          rm -rf "${{ inputs.output_folder }}"/*_contents/
-
-      - name: Commit and push
+      - name: Commit and push to repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ inputs.output_folder }}/"
-          git commit -m "Download ${{ inputs.package_name }} (${{ inputs.architecture }}) from Google Play [skip ci]" || echo "No changes to commit"
-          git push
+          git add downloads/
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "دانلود ${{ inputs.package_name }} (${{ inputs.architecture }}) از گوگل پلی"
+            git push
+            echo "Successfully pushed to repository!"
+          fi
