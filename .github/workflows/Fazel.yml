@@ -1,13 +1,21 @@
-name: Download APK via FlareSolverr + apkpure.net
+name: دانلود مستقیم از گوگل پلی
 
 on:
   workflow_dispatch:
     inputs:
       package_name:
-        description: 'نام بسته (package name)'
+        description: 'نام پکیج برنامه (مثلاً com.deepseek.chat)'
         required: true
         type: string
-        default: 'com.deepseek.chat'
+      architecture:
+        description: 'معماری پردازنده'
+        required: true
+        type: choice
+        options:
+          - arm64-v8a
+          - armeabi-v7a
+          - x86_64
+        default: 'arm64-v8a'
 
 permissions:
   contents: write
@@ -15,204 +23,82 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    services:
-      flaresolverr:
-        image: flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
-
+    
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install Python packages
-        run: pip install requests beautifulsoup4
+      - name: Install Google Play API
+        run: |
+          pip install googleplay-api
 
-      - name: Download APK using FlareSolverr to bypass protection
+      - name: Download APK from Google Play
         env:
           PACKAGE: ${{ inputs.package_name }}
+          ARCH: ${{ inputs.architecture }}
         run: |
           mkdir -p downloads
-          python << 'PYEOF'
-          import os, sys, requests, re, cgi, time
-          from bs4 import BeautifulSoup
-          from urllib.parse import urljoin
+          
+          echo "Downloading $PACKAGE for $ARCH directly from Google Play..."
+          
+          python -m googleplay_api download \
+            "$PACKAGE" \
+            --arch "$ARCH" \
+            --output downloads/
+          
+          if [ $? -ne 0 ]; then
+            echo "First attempt failed, trying with alternative device config..."
+            # تلاش دوباره با تنظیمات متفاوت
+            python -m googleplay_api download \
+              "$PACKAGE" \
+              --arch "$ARCH" \
+              --device "flame" \
+              --output downloads/
+          fi
+          
+          echo "Download completed. Files in downloads/:"
+          ls -la downloads/
 
-          package = os.environ["PACKAGE"]
-          output_dir = "downloads"
-          
-          # آدرس سرویس FlareSolverr که توی این workflow بالا آورده شده
-          flaresolverr_url = "http://localhost:8191/v1"
-          
-          # --- تابع helper برای گرفتن محتوا با FlareSolverr ---
-          def get_page_via_flare(url, max_retries=3):
-              for attempt in range(max_retries):
-                  try:
-                      payload = {
-                          "cmd": "request.get",
-                          "url": url,
-                          "maxTimeout": 60000,
-                          "cookies": [
-                              {
-                                  "name": "language",
-                                  "value": "en",
-                                  "domain": ".apkpure.net"
-                              }
-                          ]
-                      }
-                      resp = requests.post(flaresolverr_url, json=payload, timeout=90)
-                      data = resp.json()
-                      if data.get("status") == "ok":
-                          solution = data["solution"]
-                          print(f"  [Flare] Solved in {solution.get('timeout')}ms")
-                          return solution["response"], solution["cookies"]
-                      else:
-                          print(f"  [Flare] Attempt {attempt+1}: status={data.get('status')}, msg={data.get('message')}")
-                  except Exception as e:
-                      print(f"  [Flare] Attempt {attempt+1}: error={e}")
-                  time.sleep(2)
-              return None, None
-
-          # 1. ساخت URL صفحه دانلود (از دامنه .net که ساده‌تره)
-          # لینک مستقیم از اطلاعاتی که داری
-          download_page_url = f"https://apkpure.net/deepseek/com.deepseek.chat/download?from=details"
-          
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-              "Referer": "https://apkpure.net/"
-          }
-          
-          print(f"1. Getting download page via FlareSolverr: {download_page_url}")
-          page_html, _ = get_page_via_flare(download_page_url)
-          
-          if not page_html:
-              print("Failed to get page via FlareSolverr. Trying direct request...")
-              resp = requests.get(download_page_url, headers=headers, timeout=30)
-              page_html = resp.text
-              print(f"  Direct request status: {resp.status_code}")
-
-          # 2. استخراج لینک مستقیم APK
-          print("2. Extracting download link...")
-          soup = BeautifulSoup(page_html, "html.parser")
-          
-          download_url = None
-          
-          # روش اول: تگ a با کلاس download_btn
-          dl_btn = soup.find("a", class_="download_btn")
-          if dl_btn and dl_btn.get("href"):
-              download_url = dl_btn["href"]
-              print(f"  Found via download_btn: {download_url[:100]}...")
-          
-          # روش دوم: تگ a با id download_link
-          if not download_url:
-              dl_a = soup.find("a", id="download_link")
-              if dl_a and dl_a.get("href"):
-                  download_url = dl_a["href"]
-                  print(f"  Found via download_link: {download_url[:100]}...")
-          
-          # روش سوم: جستجوی data-href توی کل صفحه
-          if not download_url:
-              match = re.search(r'data-href\s*=\s*["\']([^"\']+)["\']', page_html)
-              if match:
-                  download_url = match.group(1)
-                  print(f"  Found via data-href regex: {download_url[:100]}...")
-          
-          # روش چهارم: هر لینکی که به download.f-droid یا cdn.apkpure ختم بشه
-          if not download_url:
-              match = re.search(r'https?://[^"\']+?\.apk'+ r'[^"\']*', page_html, re.IGNORECASE)
-              if match:
-                  download_url = match.group(0)
-                  print(f"  Found via APK URL regex: {download_url[:100]}...")
-
-          if not download_url:
-              print("ERROR: Could not find any download link in the page.")
-              print("Page snippet:")
-              print(page_html[:2000])
-              sys.exit(1)
-          
-          # کامل کردن لینک در صورت نیاز
-          if download_url.startswith("//"):
-              download_url = "https:" + download_url
-          elif download_url.startswith("/"):
-              download_url = "https://apkpure.net" + download_url
-          
-          print(f"  Final download URL: {download_url}")
-
-          # 3. دانلود فایل APK
-          print("3. Downloading APK...")
-          # برای دانلود ممکنه دوباره به FlareSolverr نیاز باشه
-          # اول مستقیم امتحان کن
-          apk_response = requests.get(download_url, headers=headers, stream=True, timeout=120)
-          if apk_response.status_code != 200:
-              print(f"  Direct download failed ({apk_response.status_code}). Trying via FlareSolverr...")
-              resp_html, _ = get_page_via_flare(download_url)
-              # اما FlareSolverr برای دانلود فایل باینری خوب نیست. یه روش دیگه.
-              # در عوض، بیا لینک رو دوباره از صفحه استخراج کن
-              if resp_html:
-                  # تلاش برای استخراج لینک از صفحه ریدایرکت
-                  match = re.search(r'https?://[^"\']+?\.apk'+ r'[^"\']*', resp_html, re.IGNORECASE)
-                  if match:
-                      final_dl = match.group(0)
-                      print(f"  Retrying with URL from redirect: {final_dl[:100]}...")
-                      apk_response = requests.get(final_dl, headers=headers, stream=True, timeout=120)
-          
-          if apk_response.status_code == 200:
-              # استخراج نام فایل
-              filename = None
-              cd = apk_response.headers.get("content-disposition")
-              if cd:
-                  value, params = cgi.parse_header(cd)
-                  filename = params.get("filename")
-              if not filename:
-                  filename = f"{package}.apk"
-              
-              filepath = os.path.join(output_dir, filename)
-              total_size = int(apk_response.headers.get('content-length', 0))
-              print(f"  Saving as: {filename} ({total_size/1024/1024:.1f}MB)...")
-              
-              with open(filepath, "wb") as f:
-                  bytes_downloaded = 0
-                  for chunk in apk_response.iter_content(8192):
-                      f.write(chunk)
-                      bytes_downloaded += len(chunk)
-                      if total_size:
-                          percent = (bytes_downloaded / total_size) * 100
-                          print(f"\r  Progress: {percent:.1f}%", end="")
-              
-              print(f"\n4. SUCCESS! Downloaded to: {filepath}")
-              # خروج نام فایل برای مرحله بعد
-              with open(os.environ.get("GITHUB_ENV"), "a") as env_file:
-                  env_file.write(f"APK_FILE={filename}\n")
-          else:
-              print(f"FATAL: Download failed with status {apk_response.status_code}")
-              sys.exit(1)
-          PYEOF
-
-      - name: Compress and push to repository
-        env:
-          APK_FILE: ${{ env.APK_FILE }}
+      - name: Compress APK for storage
         run: |
-          if [ -z "$APK_FILE" ]; then
-            APK_FILE=$(ls -1 downloads/*.apk 2>/dev/null | head -n1 | xargs basename)
-          fi
-          if [ -z "$APK_FILE" ]; then
-            echo "No APK file found to compress."
-            exit 1
-          fi
           cd downloads
+          
+          # پیدا کردن فایل APK دانلود شده
+          APK_FILE=$(ls -1 *.apk 2>/dev/null | head -n1)
+          
+          if [ -z "$APK_FILE" ]; then
+            # شاید اسپلیت APK باشه
+            APK_ZIP=$(ls -1 *.zip 2>/dev/null | head -n1)
+            if [ -n "$APK_ZIP" ]; then
+              APK_FILE="$APK_ZIP"
+            else
+              echo "هیچ فایل APK یا ZIP پیدا نشد!"
+              ls -la
+              exit 1
+            fi
+          fi
+          
+          echo "Compressing $APK_FILE..."
           mkdir -p ../output
           7z a -mx=3 -v85m "../output/${APK_FILE}.7z" "$APK_FILE"
-          cd ..
+          
+          echo "Compression completed."
+
+      - name: Push to repository
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add output/
+          
           if git diff --staged --quiet; then
-            echo "No changes to commit."
+            echo "تغییری برای commit وجود ندارد."
           else
-            git commit -m "Download ${{ inputs.package_name }} via apkpure.net + FlareSolverr"
+            git commit -m "Download ${{ inputs.package_name }} directly from Google Play"
             git push
+            echo "دانلود و ذخیره با موفقیت انجام شد!"
           fi
