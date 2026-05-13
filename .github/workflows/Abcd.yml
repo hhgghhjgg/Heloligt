@@ -1,240 +1,172 @@
-"""
-کد کامل دانلود مدل‌های سه‌بعدی از دیتاست TexVerse
-بدون نیاز به اکانت (برای دیتاست‌های عمومی)
-"""
-
-import os
-import json
-import requests
-from pathlib import Path
-from tqdm import tqdm  # برای نمایش پیشرفت دانلود
+name: Download TexVerse Model
 
 # ============================================
-# تنظیمات اولیه - این بخش رو تغییر بده
+# تریگرها - کی اجرا بشه؟
 # ============================================
-
-# لیست شناسه مدل‌هایی که می‌خوای دانلود کنی
-MODEL_IDS = [
-    "e615bd5866e8483d86abd9d6fd48194b",  # اینو با شناسه واقعی عوض کن
-    # می‌تونی بیشتر اضافه کنی
-]
-
-# پوشه‌ای که مدل‌ها توش ذخیره بشن
-OUTPUT_DIR = "./texverse_models"
-
-# کیفیت مدل (1k, 2k, 4k, 8k)
-QUALITY = "1k"  # برای حجم کمتر از 1k استفاده کن
-
-# مخزن Hugging Face
-REPO_ID = f"YiboZhang2001/TexVerse-{QUALITY.upper()}" if QUALITY != "1k" else "YiboZhang2001/TexVerse-1K"
-
-# ============================================
-# توابع اصلی
-# ============================================
-
-def download_file(url, output_path):
-    """
-    دانلود یه فایل با نوار پیشرفت
-    """
-    response = requests.get(url, stream=True)
-    total_size = int(response.headers.get('content-length', 0))
-    
-    with open(output_path, 'wb') as f:
-        with tqdm(total=total_size, unit='B', unit_scale=True, desc=output_path.name) as pbar:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                pbar.update(len(chunk))
-    
-    return True
-
-
-def download_model_by_id(model_id, quality=QUALITY, output_dir=OUTPUT_DIR):
-    """
-    دانلود یه مدل با شناسه مشخص
-    
-    Args:
-        model_id: شناسه مدل
-        quality: کیفیت (1k, 2k, 4k, 8k)
-        output_dir: پوشه خروجی
-    """
-    
-    # ساخت مسیر پوشه
-    model_dir = Path(output_dir) / model_id
-    model_dir.mkdir(parents=True, exist_ok=True)
-    
-    # ساخت URL دانلود
-    if quality == "1k":
-        base_url = f"https://huggingface.co/datasets/YiboZhang2001/TexVerse-1K/resolve/main"
-    else:
-        base_url = f"https://huggingface.co/datasets/YiboZhang2001/TexVerse/resolve/main"
-    
-    # پسوندهای مختلفی که ممکنه مدل داشته باشه
-    possible_files = [
-        f"{model_id}.glb",
-        f"{model_id}.gltf",
-        f"{model_id}.obj",
-        f"{model_id}.fbx",
-    ]
-    
-    downloaded = False
-    
-    for filename in possible_files:
-        url = f"{base_url}/{model_id}/{filename}"
-        output_path = model_dir / filename
-        
-        try:
-            print(f"در حال دانلود: {url}")
-            download_file(url, output_path)
-            print(f"دانلود شد: {output_path}")
-            downloaded = True
-            break
-        except Exception as e:
-            print(f"خطا در دانلود {filename}: {e}")
-            continue
-    
-    if not downloaded:
-        print(f"هیچ فایلی برای {model_id} پیدا نشد!")
-    
-    return downloaded
-
-
-def load_caption_file():
-    """
-    دانلود و لود فایل caption.json
-    """
-    caption_url = "https://huggingface.co/datasets/YiboZhang2001/TexVerse/resolve/main/caption.json"
-    caption_path = Path(OUTPUT_DIR) / "caption.json"
-    
-    if not caption_path.exists():
-        print("در حال دانلود فایل توضیحات...")
-        download_file(caption_url, caption_path)
-    
-    with open(caption_path, 'r', encoding='utf-8') as f:
-        captions = json.load(f)
-    
-    print(f"تعداد کل مدل‌ها با توضیحات: {len(captions)}")
-    return captions
-
-
-def search_anime_models(captions, search_terms=None):
-    """
-    جستجوی مدل‌های انیمه‌ای توی فایل توضیحات
-    
-    Args:
-        captions: دیکشنری توضیحات (خروجی load_caption_file)
-        search_terms: لیست کلمات جستجو
-    
-    Returns:
-        لیست شناسه مدل‌های پیدا شده
-    """
-    if search_terms is None:
-        search_terms = ["anime", "cartoon", "manga", "anime style", "anime character"]
-    
-    matched_ids = []
-    
-    for model_id, caption_text in captions.items():
-        # تبدیل به حروف کوچک برای جستجوی بهتر
-        text_lower = caption_text.lower()
-        
-        for term in search_terms:
-            if term.lower() in text_lower:
-                matched_ids.append(model_id)
-                break  # فقط یه بار اضافه کن
-    
-    return matched_ids
-
-
-def download_anime_models(max_models=10, quality=QUALITY):
-    """
-    پیدا کردن و دانلود مدل‌های انیمه‌ای
-    
-    Args:
-        max_models: حداکثر تعداد مدل برای دانلود
-        quality: کیفیت دانلود
-    """
-    
-    # 1. لود فایل توضیحات
-    print("="*50)
-    print("مرحله ۱: لود فایل توضیحات")
-    print("="*50)
-    captions = load_caption_file()
-    
-    # 2. جستجوی مدل‌های انیمه‌ای
-    print("\n" + "="*50)
-    print("مرحله ۲: جستجوی مدل‌های انیمه‌ای")
-    print("="*50)
-    anime_ids = search_anime_models(captions)
-    print(f"تعداد مدل‌های انیمه‌ای پیدا شده: {len(anime_ids)}")
-    
-    # 3. انتخاب تعداد محدود
-    selected_ids = anime_ids[:max_models]
-    print(f"تعداد انتخاب شده برای دانلود: {len(selected_ids)}")
-    
-    # 4. دانلود
-    print("\n" + "="*50)
-    print("مرحله ۳: دانلود مدل‌ها")
-    print("="*50)
-    
-    successful = 0
-    for i, model_id in enumerate(selected_ids):
-        print(f"\n--- مدل {i+1} از {len(selected_ids)} ---")
-        print(f"شناسه: {model_id}")
-        
-        # نمایش توضیح مدل (اختیاری)
-        if model_id in captions:
-            print(f"توضیح: {captions[model_id][:200]}...")
-        
-        if download_model_by_id(model_id, quality):
-            successful += 1
-    
-    print(f"\n" + "="*50)
-    print(f"عملیات تموم شد!")
-    print(f"دانلود موفق: {successful} از {len(selected_ids)}")
-    print(f"مدل‌ها توی پوشه '{OUTPUT_DIR}' ذخیره شدن")
-    print("="*50)
-    
-    return selected_ids
-
+on:
+# وقتی دکمه رو دستی می‌زنی
+  workflow_dispatch:
+    inputs:
+      model_id:
+        description: 'شناسه مدل TexVerse'
+        required: true
+        type: string
+        default: 'e615bd5866e8483d86abd9d6fd48194b'
+      quality:
+        description: 'کیفیت مدل'
+        required: true
+        type: choice
+        options:
+          - '1k'
+          - '2k'
+          - '4k'
+          - '8k'
+        default: '1k'
 
 # ============================================
-# اجرای اصلی
+# دسترسی‌ها
 # ============================================
+permissions:
+  contents: write
 
-if __name__ == "__main__":
+# ============================================
+# Job اصلی
+# ============================================
+jobs:
+  download-and-save:
+    runs-on: ubuntu-latest
     
-    print("""
-    ╔══════════════════════════════════════════╗
-    ║     TexVerse Model Downloader v1.0      ║
-    ║    دانلود مدل‌های سه‌بعدی انیمه‌ای      ║
-    ╚══════════════════════════════════════════╝
-    """)
-    
-    # انتخاب حالت
-    print("حالت‌های دانلود:")
-    print("1. جستجوی خودکار مدل‌های انیمه‌ای و دانلود")
-    print("2. دانلود با شناسه‌های مشخص (از لیست MODEL_IDS)")
-    
-    choice = input("\nانتخاب کن (1 یا 2): ").strip()
-    
-    if choice == "1":
-        # دانلود خودکار مدل‌های انیمه‌ای
-        max_download = input("چندتا مدل دانلود بشه؟ (پیش‌فرض 10): ").strip()
-        max_download = int(max_download) if max_download else 10
-        
-        quality = input("کیفیت؟ (1k/2k/4k/8k) (پیش‌فرض 1k): ").strip().lower()
-        quality = quality if quality else "1k"
-        
-        download_anime_models(max_download, quality)
-        
-    elif choice == "2":
-        # دانلود با شناسه‌های از پیش تعیین شده
-        if not MODEL_IDS or MODEL_IDS == ["b0c9d3e5f1a2478b9c2d4e6f8a0b1c3d"]:
-            print("اول برو توی کد و لیست MODEL_IDS رو با شناسه‌های واقعی پر کن!")
-        else:
-            for model_id in MODEL_IDS:
-                download_model_by_id(model_id)
-    
-    else:
-        print("انتخاب نامعتبر!")
-    
-    print("\nتموم شد! برو توی پوشه output و مدل‌هات رو بردار.")
+    steps:
+      # مرحله ۱: چک‌اوت کردن مخزن
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      # مرحله ۲: تنظیم پایتون
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      # مرحله ۳: نصب پیش‌نیازها
+      - name: Install Dependencies
+        run: |
+          pip install requests tqdm
+      
+      # مرحله ۴: ساخت پوشه main اگر وجود نداره
+      - name: Create Main Directory
+        run: |
+          mkdir -p main
+          mkdir -p main/${{ github.event.inputs.model_id }}
+      
+      # مرحله ۵: دانلود مدل با شناسه داده شده
+      - name: Download Model
+        run: |
+          python << 'PYEOF'
+          import os
+          import sys
+          import requests
+          import json
+          from pathlib import Path
+          from tqdm import tqdm
+          
+          # گرفتن ورودی‌ها
+          MODEL_ID = "${{ github.event.inputs.model_id }}"
+          QUALITY = "${{ github.event.inputs.quality }}"
+          OUTPUT_DIR = "main"
+          
+          # تعیین URL بر اساس کیفیت
+          if QUALITY == "1k":
+              REPO_ID = "YiboZhang2001/TexVerse-1K"
+          else:
+              REPO_ID = "YiboZhang2001/TexVerse"
+          
+          # URL پایه دانلود
+          BASE_URL = f"https://huggingface.co/datasets/{REPO_ID}/resolve/main"
+          
+          print(f"شناسه مدل: {MODEL_ID}")
+          print(f"کیفیت: {QUALITY}")
+          print(f"مخزن: {REPO_ID}")
+          print("="*60)
+          
+          # پوشه ذخیره
+          model_dir = Path(OUTPUT_DIR) / MODEL_ID
+          model_dir.mkdir(parents=True, exist_ok=True)
+          
+          def download_file(url, output_path):
+              """دانلود یه فایل با نوار پیشرفت"""
+              try:
+                  response = requests.get(url, stream=True, timeout=30)
+                  if response.status_code == 200:
+                      total_size = int(response.headers.get('content-length', 0))
+                      with open(output_path, 'wb') as f:
+                          with tqdm(total=total_size, unit='B', unit_scale=True, desc=output_path.name) as pbar:
+                              for chunk in response.iter_content(chunk_size=8192):
+                                  f.write(chunk)
+                                  pbar.update(len(chunk))
+                      print(f"دانلود شد: {output_path.name}")
+                      return True
+                  else:
+                      print(f"خطای HTTP {response.status_code} برای: {url}")
+                      return False
+              except Exception as e:
+                  print(f"خطا: {e}")
+                  return False
+          
+          # لیست فرمت‌های ممکن
+          possible_files = ["glb", "gltf", "obj", "fbx", "usdz", "ply"]
+          
+          downloaded_any = False
+          
+          for ext in possible_files:
+              filename = f"{MODEL_ID}.{ext}"
+              url = f"{BASE_URL}/{filename}"
+              output_path = model_dir / filename
+              
+              print(f"تلاش برای دانلود: {filename}...")
+              if download_file(url, output_path):
+                  downloaded_any = True
+                  break
+          
+          if not downloaded_any:
+              print("="*60)
+              print("هیچ فایلی پیدا نشد! ممکنه که:")
+              print("- شناسه مدل اشتباه باشه")
+              print("- کیفیت انتخاب شده این مدل رو نداشته باشه")
+              print("- فرمت فایل متفاوت باشه")
+              
+              # تلاش برای نمایش محتویات پوشه (در صورت وجود API)
+              list_url = f"{BASE_URL}/"
+              try:
+                  # نوشتن خطا توی فایل
+                  error_file = model_dir / "DOWNLOAD_ERROR.txt"
+                  with open(error_file, 'w') as f:
+                      f.write(f"Model ID: {MODEL_ID}\n")
+                      f.write(f"Quality: {QUALITY}\n")
+                      f.write(f"Base URL: {BASE_URL}\n")
+                      f.write("Could not find model file.\n")
+                  print(f"فایل خطا توی {error_file} نوشته شد.")
+              except:
+                  pass
+              
+              sys.exit(1)
+          
+          print("="*60)
+          print("عملیات با موفقیت تموم شد!")
+          print(f"فایل‌ها توی: {model_dir}")
+          PYEOF
+      
+      # مرحله ۶: ذخیره مدل توی مخزن
+      - name: Commit and Push Model
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add main/
+          
+          if git diff --staged --quiet; then
+            echo "چیز جدیدی برای commit نیست."
+          else
+            git commit -m "دانلود مدل ${{ github.event.inputs.model_id }} با کیفیت ${{ github.event.inputs.quality }}"
+            git push
+            echo "مدل با موفقیت توی مخزن ذخیره شد!"
+          fi
