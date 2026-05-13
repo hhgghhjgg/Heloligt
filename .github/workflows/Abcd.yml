@@ -1,210 +1,240 @@
-name: Final Smart Download - Extract Link from Download Page
+"""
+کد کامل دانلود مدل‌های سه‌بعدی از دیتاست TexVerse
+بدون نیاز به اکانت (برای دیتاست‌های عمومی)
+"""
 
-on:
-  workflow_dispatch:
-    inputs:
-      model_page:
-        description: 'لینک صفحه‌ی مدل'
-        required: true
-        default: 'https://open3dmodel.com/3d-models/3d-model-cute-anime-school-girl_116659.html'
+import os
+import json
+import requests
+from pathlib import Path
+from tqdm import tqdm  # برای نمایش پیشرفت دانلود
 
-permissions:
-  contents: write
+# ============================================
+# تنظیمات اولیه - این بخش رو تغییر بده
+# ============================================
 
-jobs:
-  download:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+# لیست شناسه مدل‌هایی که می‌خوای دانلود کنی
+MODEL_IDS = [
+    "e615bd5866e8483d86abd9d6fd48194b",  # اینو با شناسه واقعی عوض کن
+    # می‌تونی بیشتر اضافه کنی
+]
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+# پوشه‌ای که مدل‌ها توش ذخیره بشن
+OUTPUT_DIR = "./texverse_models"
 
-      - name: پاکسازی و نصب پیش‌نیازهای سیستم
-        run: |
-          rm -rf package.json package-lock.json node_modules
-          sudo apt-get update
-          sudo apt-get install -y \
-            ca-certificates fonts-liberation \
-            libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 \
-            libcups2t64 libdbus-1-3 libdrm2 libgbm1 libgtk-3-0t64 \
-            libnspr4 libnss3 libu2f-udev libxcomposite1 libxdamage1 \
-            libxfixes3 libxkbcommon0 libxrandr2 xdg-utils
+# کیفیت مدل (1k, 2k, 4k, 8k)
+QUALITY = "1k"  # برای حجم کمتر از 1k استفاده کن
 
-      - name: نصب Puppeteer کامل + افزونه مخفی‌ساز
-        run: |
-          npm init -y
-          npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
+# مخزن Hugging Face
+REPO_ID = f"YiboZhang2001/TexVerse-{QUALITY.upper()}" if QUALITY != "1k" else "YiboZhang2001/TexVerse-1K"
 
-      - name: اجرای اسکریپت هوشمند دانلود
-        env:
-          MODEL_PAGE: ${{ inputs.model_page }}
-        run: |
-          node << 'SCRIPT_EOF'
-          const puppeteer = require('puppeteer-extra');
-          const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-          const fs = require('fs');
-          const path = require('path');
-          const axios = require('axios'); // برای دانلود مستقیم
+# ============================================
+# توابع اصلی
+# ============================================
 
-          puppeteer.use(StealthPlugin());
+def download_file(url, output_path):
+    """
+    دانلود یه فایل با نوار پیشرفت
+    """
+    response = requests.get(url, stream=True)
+    total_size = int(response.headers.get('content-length', 0))
+    
+    with open(output_path, 'wb') as f:
+        with tqdm(total=total_size, unit='B', unit_scale=True, desc=output_path.name) as pbar:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+                pbar.update(len(chunk))
+    
+    return True
 
-          const wait = ms => new Promise(r => setTimeout(r, ms));
-          const modelPage = process.env.MODEL_PAGE;
-          const downloadDir = path.resolve("3d-models");
-          if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
 
-          // نصب axios در صورت نبود
-          try { require.resolve('axios'); } catch(e) {
-            require('child_process').execSync('npm install axios', { stdio: 'ignore' });
-          }
+def download_model_by_id(model_id, quality=QUALITY, output_dir=OUTPUT_DIR):
+    """
+    دانلود یه مدل با شناسه مشخص
+    
+    Args:
+        model_id: شناسه مدل
+        quality: کیفیت (1k, 2k, 4k, 8k)
+        output_dir: پوشه خروجی
+    """
+    
+    # ساخت مسیر پوشه
+    model_dir = Path(output_dir) / model_id
+    model_dir.mkdir(parents=True, exist_ok=True)
+    
+    # ساخت URL دانلود
+    if quality == "1k":
+        base_url = f"https://huggingface.co/datasets/YiboZhang2001/TexVerse-1K/resolve/main"
+    else:
+        base_url = f"https://huggingface.co/datasets/YiboZhang2001/TexVerse/resolve/main"
+    
+    # پسوندهای مختلفی که ممکنه مدل داشته باشه
+    possible_files = [
+        f"{model_id}.glb",
+        f"{model_id}.gltf",
+        f"{model_id}.obj",
+        f"{model_id}.fbx",
+    ]
+    
+    downloaded = False
+    
+    for filename in possible_files:
+        url = f"{base_url}/{model_id}/{filename}"
+        output_path = model_dir / filename
+        
+        try:
+            print(f"در حال دانلود: {url}")
+            download_file(url, output_path)
+            print(f"دانلود شد: {output_path}")
+            downloaded = True
+            break
+        except Exception as e:
+            print(f"خطا در دانلود {filename}: {e}")
+            continue
+    
+    if not downloaded:
+        print(f"هیچ فایلی برای {model_id} پیدا نشد!")
+    
+    return downloaded
 
-          (async () => {
-            let browser = null;
-            let realFileUrl = null;
 
-            try {
-              console.log("🚀 راه‌اندازی مرورگر مخفی‌کار...");
-              browser = await puppeteer.launch({
-                headless: "new",
-                args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-              });
+def load_caption_file():
+    """
+    دانلود و لود فایل caption.json
+    """
+    caption_url = "https://huggingface.co/datasets/YiboZhang2001/TexVerse/resolve/main/caption.json"
+    caption_path = Path(OUTPUT_DIR) / "caption.json"
+    
+    if not caption_path.exists():
+        print("در حال دانلود فایل توضیحات...")
+        download_file(caption_url, caption_path)
+    
+    with open(caption_path, 'r', encoding='utf-8') as f:
+        captions = json.load(f)
+    
+    print(f"تعداد کل مدل‌ها با توضیحات: {len(captions)}")
+    return captions
 
-              const page = await browser.newPage();
-              await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-              console.log(`🌐 بارگذاری صفحه مدل: ${modelPage}`);
-              await page.goto(modelPage, { waitUntil: "networkidle2", timeout: 60000 });
+def search_anime_models(captions, search_terms=None):
+    """
+    جستجوی مدل‌های انیمه‌ای توی فایل توضیحات
+    
+    Args:
+        captions: دیکشنری توضیحات (خروجی load_caption_file)
+        search_terms: لیست کلمات جستجو
+    
+    Returns:
+        لیست شناسه مدل‌های پیدا شده
+    """
+    if search_terms is None:
+        search_terms = ["anime", "cartoon", "manga", "anime style", "anime character"]
+    
+    matched_ids = []
+    
+    for model_id, caption_text in captions.items():
+        # تبدیل به حروف کوچک برای جستجوی بهتر
+        text_lower = caption_text.lower()
+        
+        for term in search_terms:
+            if term.lower() in text_lower:
+                matched_ids.append(model_id)
+                break  # فقط یه بار اضافه کن
+    
+    return matched_ids
 
-              // کلیک روی دکمه دانلود
-              console.log("🔍 کلیک روی دکمه دانلود...");
-              const downloadBtn = await page.waitForSelector('a[href*="download.php"]', { timeout: 15000 });
-              if (!downloadBtn) throw new Error("دکمه دانلود پیدا نشد");
 
-              // صبر می‌کنیم تا صفحه جدید باز شود
-              const newPagePromise = new Promise(resolve => browser.once('targetcreated', async target => {
-                const newPage = await target.page();
-                if (newPage) resolve(newPage);
-              }));
+def download_anime_models(max_models=10, quality=QUALITY):
+    """
+    پیدا کردن و دانلود مدل‌های انیمه‌ای
+    
+    Args:
+        max_models: حداکثر تعداد مدل برای دانلود
+        quality: کیفیت دانلود
+    """
+    
+    # 1. لود فایل توضیحات
+    print("="*50)
+    print("مرحله ۱: لود فایل توضیحات")
+    print("="*50)
+    captions = load_caption_file()
+    
+    # 2. جستجوی مدل‌های انیمه‌ای
+    print("\n" + "="*50)
+    print("مرحله ۲: جستجوی مدل‌های انیمه‌ای")
+    print("="*50)
+    anime_ids = search_anime_models(captions)
+    print(f"تعداد مدل‌های انیمه‌ای پیدا شده: {len(anime_ids)}")
+    
+    # 3. انتخاب تعداد محدود
+    selected_ids = anime_ids[:max_models]
+    print(f"تعداد انتخاب شده برای دانلود: {len(selected_ids)}")
+    
+    # 4. دانلود
+    print("\n" + "="*50)
+    print("مرحله ۳: دانلود مدل‌ها")
+    print("="*50)
+    
+    successful = 0
+    for i, model_id in enumerate(selected_ids):
+        print(f"\n--- مدل {i+1} از {len(selected_ids)} ---")
+        print(f"شناسه: {model_id}")
+        
+        # نمایش توضیح مدل (اختیاری)
+        if model_id in captions:
+            print(f"توضیح: {captions[model_id][:200]}...")
+        
+        if download_model_by_id(model_id, quality):
+            successful += 1
+    
+    print(f"\n" + "="*50)
+    print(f"عملیات تموم شد!")
+    print(f"دانلود موفق: {successful} از {len(selected_ids)}")
+    print(f"مدل‌ها توی پوشه '{OUTPUT_DIR}' ذخیره شدن")
+    print("="*50)
+    
+    return selected_ids
 
-              await downloadBtn.click();
-              console.log("⏳ منتظر باز شدن صفحه‌ی میانی دانلود...");
-              const downloadPage = await newPagePromise;
-              await downloadPage.bringToFront();
-              await downloadPage.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 });
 
-              console.log("📄 صفحه‌ی میانی بارگذاری شد. صبر برای اجرای جاوااسکریپت...");
-              await wait(15000); // صبر طولانی برای تولید لینک نهایی
+# ============================================
+# اجرای اصلی
+# ============================================
 
-              // استخراج تمام لینک‌های موجود در صفحه
-              const allLinks = await downloadPage.evaluate(() =>
-                Array.from(document.querySelectorAll('a[href]')).map(a => ({
-                  href: a.href,
-                  text: a.textContent.trim()
-                }))
-              );
-
-              console.log(`🔗 تعداد کل لینک‌ها در صفحه: ${allLinks.length}`);
-
-              // اولویت با لینک‌هایی که شبیه فایل‌های سه‌بعدی هستند
-              const patterns = [/\.(zip|rar|7z|fbx|obj|max|blend|stl|glb|gltf)$/i, /download/i, /token_id=/i];
-              for (const pat of patterns) {
-                const found = allLinks.find(l => pat.test(l.href) || pat.test(l.text));
-                if (found) {
-                  realFileUrl = found.href;
-                  console.log(`✅ لینک احتمالی دانلود واقعی پیدا شد: ${realFileUrl}`);
-                  break;
-                }
-              }
-
-              // اگر پیدا نشد، کل لینک‌ها را چاپ کن
-              if (!realFileUrl) {
-                console.log("❌ هیچ لینک مشخصی پیدا نشد. لیست کامل:");
-                allLinks.forEach(l => console.log(`  - ${l.href.substring(0,100)} (${l.text})`));
-                await downloadPage.screenshot({ path: "debug_download_page.png" });
-              }
-
-              // اگر لینکی پیدا شد، دانلود با axios و کوکی‌های مرورگر
-              if (realFileUrl) {
-                console.log(`📥 دانلود فایل نهایی از: ${realFileUrl}`);
-                const cookies = await downloadPage.cookies();
-                const cStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-                const resp = await axios.get(realFileUrl, {
-                  headers: {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Referer": downloadPage.url(),
-                    "Cookie": cStr
-                  },
-                  responseType: 'stream'
-                });
-
-                let fname = 'model.zip';
-                const cd = resp.headers['content-disposition'] || '';
-                const match = cd.match(/filename\s*=\s*"?([^"]+)"?/i);
-                if (match) fname = match[1];
-                else {
-                  const urlPath = new URL(realFileUrl).pathname;
-                  fname = path.basename(urlPath) || 'model.zip';
-                }
-                fname = fname.replace(/[/\\?%*:|"<>]/g, '_');
-                const fpath = path.join(downloadDir, fname);
-
-                const writer = fs.createWriteStream(fpath);
-                resp.data.pipe(writer);
-                await new Promise((resolve, reject) => {
-                  writer.on('finish', resolve);
-                  writer.on('error', reject);
-                });
-
-                console.log(`✅ ذخیره شد: ${fname} (${Math.round(fs.statSync(fpath).size/1024)} KB)`);
-              }
-
-              await downloadPage.screenshot({ path: "screenshot_final.png" });
-              console.log("📸 اسکرین‌شات ذخیره شد.");
-
-            } catch (err) {
-              console.error("❌ خطا:", err.message);
-              try { if (browser) await browser.close(); } catch(e) {}
-            } finally {
-              if (browser) {
-                await browser.close();
-                console.log("✔️ مرورگر بسته شد");
-              }
-            }
-
-            // گزارش نهایی
-            console.log("\n📁 فایل‌های موجود در 3d-models:");
-            if (fs.existsSync(downloadDir)) {
-              fs.readdirSync(downloadDir).forEach(f => {
-                const s = fs.statSync(path.join(downloadDir, f));
-                if (s.isFile()) console.log(`  📦 ${f} (${Math.round(s.size/1024)} KB)`);
-              });
-            }
-            console.log("✨ پایان.");
-          })();
-          SCRIPT_EOF
-
-      - name: کامیت تمام فایل‌های تولید شده
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          mkdir -p 3d-models
-          git add -f 3d-models/ screenshot_final.png debug_download_page.png 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "هیچ فایلی برای کامیت وجود ندارد"
-          else
-            git commit -m "📦 دانلود مدل با استخراج هوشمند لینک"
-            git pull --rebase && git push
-            echo "✅ کامیت و پوش شد"
-          fi
-
-      - name: آپلود اسکرین‌شات‌ها برای بررسی
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: screenshots
-          path: |
-            screenshot_final.png
-            debug_download_page.png
-          retention-days: 7
+if __name__ == "__main__":
+    
+    print("""
+    ╔══════════════════════════════════════════╗
+    ║     TexVerse Model Downloader v1.0      ║
+    ║    دانلود مدل‌های سه‌بعدی انیمه‌ای      ║
+    ╚══════════════════════════════════════════╝
+    """)
+    
+    # انتخاب حالت
+    print("حالت‌های دانلود:")
+    print("1. جستجوی خودکار مدل‌های انیمه‌ای و دانلود")
+    print("2. دانلود با شناسه‌های مشخص (از لیست MODEL_IDS)")
+    
+    choice = input("\nانتخاب کن (1 یا 2): ").strip()
+    
+    if choice == "1":
+        # دانلود خودکار مدل‌های انیمه‌ای
+        max_download = input("چندتا مدل دانلود بشه؟ (پیش‌فرض 10): ").strip()
+        max_download = int(max_download) if max_download else 10
+        
+        quality = input("کیفیت؟ (1k/2k/4k/8k) (پیش‌فرض 1k): ").strip().lower()
+        quality = quality if quality else "1k"
+        
+        download_anime_models(max_download, quality)
+        
+    elif choice == "2":
+        # دانلود با شناسه‌های از پیش تعیین شده
+        if not MODEL_IDS or MODEL_IDS == ["b0c9d3e5f1a2478b9c2d4e6f8a0b1c3d"]:
+            print("اول برو توی کد و لیست MODEL_IDS رو با شناسه‌های واقعی پر کن!")
+        else:
+            for model_id in MODEL_IDS:
+                download_model_by_id(model_id)
+    
+    else:
+        print("انتخاب نامعتبر!")
+    
+    print("\nتموم شد! برو توی پوشه output و مدل‌هات رو بردار.")
