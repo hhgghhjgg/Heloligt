@@ -1,65 +1,122 @@
-name: Gemini 3.5 Flash - API Call
+name: List All GitHub Models with Full Logs
 
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:   # قابلیت اجرای دستی
+  workflow_dispatch:
 
 permissions:
-  contents: write      # برای commit فایل خروجی
+  contents: write
 
 jobs:
-  call-gemini:
+  list-all-models:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Create logs directory
+        run: mkdir -p _logs
 
-      - name: Install requests
-        run: pip install requests
+      - name: Save workflow metadata
+        run: |
+          {
+            echo "Job started at: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+            echo "Runner OS: ${{ runner.os }}"
+            echo "GitHub ref: ${{ github.ref }}"
+            echo "Repository: ${{ github.repository }}"
+            echo ""
+          } | tee -a _logs/model-list.txt
 
-      - name: Call Gemini and save to file
+      - name: Install GitHub CLI
+        run: |
+          {
+            echo "=== Installing GitHub CLI ==="
+            set -x
+            type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt update
+            sudo apt install gh -y
+            set +x
+          } &>> _logs/model-list.txt
+
+      - name: Authenticate GitHub CLI
+        run: |
+          {
+            echo "=== Authenticating with GitHub CLI ==="
+            set -x
+            echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+            set +x
+          } &>> _logs/model-list.txt
+
+      - name: Get model list via gh CLI (official)
+        run: |
+          {
+            echo ""
+            echo "=== MODEL LIST VIA gh CLI (OFFICIAL) ==="
+            echo "Command: gh models list"
+            echo "--- START OUTPUT ---"
+            set -x
+            gh models list
+            set +x
+            echo "--- END OUTPUT ---"
+          } &>> _logs/model-list.txt
+
+      - name: Get model list via raw API (backup)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python - <<EOF
-          import requests, json, os
-          token = os.environ['GITHUB_TOKEN']
-          url = "https://models.github.ai/inference/chat/completions"
-          headers = {
-              "Authorization": f"Bearer {token}",
-              "Content-Type": "application/json"
-          }
-          data = {
-              "model": "google/gemini-3.5-flash",
-              "messages": [
-                  {"role": "user", "content": "یک معمای ساده و جذاب به زبان فارسی بگو (فقط متن معما، بدون توضیح اضافه)"}
-              ]
-          }
-          try:
-              resp = requests.post(url, headers=headers, json=data, timeout=30)
-              resp.raise_for_status()
-              result = resp.json()['choices'][0]['message']['content']
-          except Exception as e:
-              result = f"خطا: {str(e)}"
-          with open('gemini_result.txt', 'w', encoding='utf-8') as f:
-              f.write(result)
-          EOF
+          {
+            echo ""
+            echo "=== MODEL LIST VIA RAW API ==="
+            echo "URL: https://models.github.ai/catalog/models"
+            echo "--- START OUTPUT ---"
+            set -x
+            curl -s -L \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              https://models.github.ai/catalog/models
+            echo ""
+            set +x
+            echo "--- END OUTPUT ---"
+          } &>> _logs/model-list.txt
 
-      - name: Show result in log (اختیاری)
-        run: cat gemini_result.txt
+      - name: Get Gemini models from external source (community)
+        run: |
+          {
+            echo ""
+            echo "=== GEMINI MODELS FROM EXTERNAL SOURCE ==="
+            echo "URL: https://raw.githubusercontent.com/spullara/models/master/models.json"
+            echo "Filter: .gemini[]"
+            echo "--- START OUTPUT ---"
+            set -x
+            curl -s "https://raw.githubusercontent.com/spullara/models/master/models.json" | jq -r '.gemini[]' 2>&1
+            set +x
+            echo "--- END OUTPUT ---"
+          } &>> _logs/model-list.txt
 
-      - name: Commit and push result file
+      - name: Save job status and completion time
+        run: |
+          {
+            echo ""
+            echo "=== JOB SUMMARY ==="
+            echo "Job completed at: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+            echo "Exit code: $?"
+            echo "Status: ${{ job.status }}"
+          } &>> _logs/model-list.txt
+
+      - name: Upload logs as workflow artifact (safe backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-model-logs
+          path: _logs/
+          retention-days: 7
+
+      - name: Commit and push log file to repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add gemini_result.txt
-          git commit -m "Add Gemini 3.5 Flash output" || echo "No changes"
+          git add _logs/model-list.txt
+          git commit -m "Add full model list logs [skip ci]" || echo "No changes to commit"
           git push
