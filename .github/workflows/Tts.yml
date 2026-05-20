@@ -1,158 +1,65 @@
-name: Download Sketchfab Model (FlareSolverr Direct)
+name: Gemini 3.5 Flash - API Call
 
 on:
-  workflow_dispatch:
-    inputs:
-      model_url:
-        description: 'Sketchfab model URL'
-        required: true
-        type: string
-        default: 'https://sketchfab.com/3d-models/maya-maid-bb6e45ab90a340129487f40dc11e2b83'
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # قابلیت اجرای دستی
 
 permissions:
-  contents: write
+  contents: write      # برای commit فایل خروجی
 
 jobs:
-  download:
+  call-gemini:
     runs-on: ubuntu-latest
-
-    services:
-      flaresolverr:
-        image: ghcr.io/flaresolverr/flaresolverr:latest
-        ports:
-          - 8191:8191
-
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Wait for FlareSolverr
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Call Gemini and save to file
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for i in $(seq 1 15); do
-            STATUS=$(curl -s http://localhost:8191/v1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
-            if [ "$STATUS" = "ok" ]; then
-              echo "✅ FlareSolverr ready"
-              break
-            fi
-            echo "Waiting... ($i/15)"
-            sleep 4
-          done
-
-      - name: Install Python Dependencies
-        run: pip install requests beautifulsoup4
-
-      - name: Get Cookies from FlareSolverr
-        run: |
-          python3 << 'EOF'
-          import requests, json
-
-          model_url = "${{ github.event.inputs.model_url }}"
-          
-          print(f"🌐 Fetching {model_url} via FlareSolverr...")
-          
-          resp = requests.post("http://localhost:8191/v1", json={
-              "cmd": "request.get",
-              "url": model_url,
-              "maxTimeout": 90000
-          }, timeout=120)
-          
-          data = resp.json()
-          
-          if data.get("status") != "ok":
-              print(f"❌ FlareSolverr failed: {data.get('message')}")
-              exit(1)
-          
-          # Extract cookies in Netscape format
-          cookies = data["solution"].get("cookies", [])
-          user_agent = data["solution"].get("userAgent", "")
-          
-          with open("cookies.txt", "w") as f:
-              f.write("# Netscape HTTP Cookie File\n")
-              for c in cookies:
-                  domain = c.get("domain", ".sketchfab.com")
-                  name = c.get("name", "")
-                  value = c.get("value", "")
-                  path = c.get("path", "/")
-                  secure = "TRUE" if c.get("secure") else "FALSE"
-                  expiry = str(c.get("expiry", 0))
-                  f.write(f"{domain}\tTRUE\t{path}\t{secure}\t{expiry}\t{name}\t{value}\n")
-          
-          print(f"✅ Got {len(cookies)} cookies")
-          print(f"   User-Agent: {user_agent[:80] if user_agent else 'N/A'}...")
-          
-          # Save User-Agent
-          with open("user_agent.txt", "w") as f:
-              f.write(user_agent or "")
+          python - <<EOF
+          import requests, json, os
+          token = os.environ['GITHUB_TOKEN']
+          url = "https://models.github.ai/inference/chat/completions"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Content-Type": "application/json"
+          }
+          data = {
+              "model": "google/gemini-3.5-flash",
+              "messages": [
+                  {"role": "user", "content": "یک معمای ساده و جذاب به زبان فارسی بگو (فقط متن معما، بدون توضیح اضافه)"}
+              ]
+          }
+          try:
+              resp = requests.post(url, headers=headers, json=data, timeout=30)
+              resp.raise_for_status()
+              result = resp.json()['choices'][0]['message']['content']
+          except Exception as e:
+              result = f"خطا: {str(e)}"
+          with open('gemini_result.txt', 'w', encoding='utf-8') as f:
+              f.write(result)
           EOF
 
-      - name: Download Model
-        run: |
-          python3 << 'EOF'
-          import requests, re, json, os
+      - name: Show result in log (اختیاری)
+        run: cat gemini_result.txt
 
-          model_url = "${{ github.event.inputs.model_url }}"
-          uid = model_url.rstrip("/").split("-")[-1]
-
-          # Read cookies and UA
-          user_agent = open("user_agent.txt").read().strip()
-
-          session = requests.Session()
-          if user_agent:
-              session.headers.update({"User-Agent": user_agent})
-
-          # Load cookies
-          with open("cookies.txt") as f:
-              for line in f:
-                  if line.startswith("#") or not line.strip():
-                      continue
-                  parts = line.strip().split("\t")
-                  if len(parts) >= 7:
-                      session.cookies.set(parts[5], parts[6], domain=parts[0], path=parts[2])
-
-          # Try Sketchfab API
-          api_url = f"https://api.sketchfab.com/v3/models/{uid}/download"
-          print(f"📡 Calling API: {api_url}")
-
-          resp = session.get(api_url, timeout=30)
-
-          if resp.status_code == 200:
-              data = resp.json()
-              # Find glTF or original download URL
-              download_url = None
-              for key in ["gltf", "glb", "source"]:
-                  if key in data and "url" in data[key]:
-                      download_url = data[key]["url"]
-                      break
-
-              if download_url:
-                  print(f"📥 Downloading from: {download_url}")
-                  dl_resp = session.get(download_url, timeout=120, stream=True)
-                  if dl_resp.status_code == 200:
-                      filename = "model.zip"
-                      cd = dl_resp.headers.get("Content-Disposition", "")
-                      match = re.search(r'filename="?([^"]+)"?', cd)
-                      if match:
-                          filename = match.group(1)
-                      
-                      os.makedirs("sketchfab-models", exist_ok=True)
-                      filepath = f"sketchfab-models/{filename}"
-                      with open(filepath, "wb") as f:
-                          for chunk in dl_resp.iter_content(8192):
-                              f.write(chunk)
-                      print(f"✅ Saved: {filepath}")
-                  else:
-                      print(f"❌ Download failed: HTTP {dl_resp.status_code}")
-              else:
-                  print("❌ No download URL found in API response")
-          else:
-              print(f"❌ API request failed: HTTP {resp.status_code}")
-              print(resp.text[:300])
-          EOF
-
-      - name: Commit
+      - name: Commit and push result file
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add sketchfab-models/ cookies.txt user_agent.txt 2>/dev/null || true
-          git commit -m "📦 Sketchfab model" || echo "Nothing to commit"
-          git pull --rebase && git push || true
+          git add gemini_result.txt
+          git commit -m "Add Gemini 3.5 Flash output" || echo "No changes"
+          git push
