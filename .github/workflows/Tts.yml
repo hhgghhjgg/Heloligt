@@ -1,4 +1,4 @@
-name: List All GitHub Models with Full Logs
+name: List Models with Full Logs (Fail-Safe)
 
 on:
   workflow_dispatch:
@@ -7,8 +7,9 @@ permissions:
   contents: write
 
 jobs:
-  list-all-models:
+  list-models:
     runs-on: ubuntu-latest
+    continue-on-error: true  # 🔥 مهم: حتی با خطا هم ادامه بده
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -16,107 +17,64 @@ jobs:
       - name: Create logs directory
         run: mkdir -p _logs
 
-      - name: Save workflow metadata
+      - name: Save start info
         run: |
           {
-            echo "Job started at: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+            echo "Job started at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
             echo "Runner OS: ${{ runner.os }}"
-            echo "GitHub ref: ${{ github.ref }}"
-            echo "Repository: ${{ github.repository }}"
-            echo ""
-          } | tee -a _logs/model-list.txt
+          } | tee _logs/model-list.txt
 
-      - name: Install GitHub CLI
-        run: |
-          {
-            echo "=== Installing GitHub CLI ==="
-            set -x
-            type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt update
-            sudo apt install gh -y
-            set +x
-          } &>> _logs/model-list.txt
-
-      - name: Authenticate GitHub CLI
-        run: |
-          {
-            echo "=== Authenticating with GitHub CLI ==="
-            set -x
-            echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-            set +x
-          } &>> _logs/model-list.txt
-
-      - name: Get model list via gh CLI (official)
+      - name: Try gh models list (may fail)
+        id: gh_list
+        continue-on-error: true
         run: |
           {
             echo ""
-            echo "=== MODEL LIST VIA gh CLI (OFFICIAL) ==="
-            echo "Command: gh models list"
-            echo "--- START OUTPUT ---"
+            echo "=== gh models list ==="
             set -x
-            gh models list
+            gh models list 2>&1
             set +x
-            echo "--- END OUTPUT ---"
-          } &>> _logs/model-list.txt
+          } >> _logs/model-list.txt
 
-      - name: Get model list via raw API (backup)
+      - name: Try API call (backup)
+        id: api_call
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           {
             echo ""
-            echo "=== MODEL LIST VIA RAW API ==="
-            echo "URL: https://models.github.ai/catalog/models"
-            echo "--- START OUTPUT ---"
+            echo "=== API call to catalog ==="
             set -x
             curl -s -L \
-              -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "X-GitHub-Api-Version: 2026-03-10" \
-              https://models.github.ai/catalog/models
-            echo ""
+              https://models.github.ai/catalog/models 2>&1
             set +x
-            echo "--- END OUTPUT ---"
-          } &>> _logs/model-list.txt
+          } >> _logs/model-list.txt
 
-      - name: Get Gemini models from external source (community)
+      - name: Save final status
         run: |
           {
             echo ""
-            echo "=== GEMINI MODELS FROM EXTERNAL SOURCE ==="
-            echo "URL: https://raw.githubusercontent.com/spullara/models/master/models.json"
-            echo "Filter: .gemini[]"
-            echo "--- START OUTPUT ---"
-            set -x
-            curl -s "https://raw.githubusercontent.com/spullara/models/master/models.json" | jq -r '.gemini[]' 2>&1
-            set +x
-            echo "--- END OUTPUT ---"
-          } &>> _logs/model-list.txt
+            echo "=== Job Finished ==="
+            echo "Time: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            echo "gh models list exit code: ${{ steps.gh_list.outcome }}"
+            echo "API call exit code: ${{ steps.api_call.outcome }}"
+          } >> _logs/model-list.txt
 
-      - name: Save job status and completion time
-        run: |
-          {
-            echo ""
-            echo "=== JOB SUMMARY ==="
-            echo "Job completed at: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-            echo "Exit code: $?"
-            echo "Status: ${{ job.status }}"
-          } &>> _logs/model-list.txt
-
-      - name: Upload logs as workflow artifact (safe backup)
-        uses: actions/upload-artifact@v4
-        with:
-          name: full-model-logs
-          path: _logs/
-          retention-days: 7
-
-      - name: Commit and push log file to repository
+      - name: 🔥 Force commit logs even if previous steps failed
+        if: always()  # 🔥 مهم: حتی با خطا هم اجرا می‌شه
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add _logs/model-list.txt
-          git commit -m "Add full model list logs [skip ci]" || echo "No changes to commit"
+          git commit -m "Add workflow logs (with errors)" || echo "No changes"
           git push
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-logs
+          path: _logs/
+          retention-days: 7
