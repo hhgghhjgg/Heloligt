@@ -1,172 +1,64 @@
-name: Download TexVerse Model
+name: List GitHub Models
 
-# ============================================
-# تریگرها - کی اجرا بشه؟
-# ============================================
 on:
-# وقتی دکمه رو دستی می‌زنی
-  workflow_dispatch:
-    inputs:
-      model_id:
-        description: 'شناسه مدل TexVerse'
-        required: true
-        type: string
-        default: 'e615bd5866e8483d86abd9d6fd48194b'
-      quality:
-        description: 'کیفیت مدل'
-        required: true
-        type: choice
-        options:
-          - '1k'
-          - '2k'
-          - '4k'
-          - '8k'
-        default: '1k'
+  workflow_dispatch:  # برای اجرای دستی
 
-# ============================================
-# دسترسی‌ها
-# ============================================
 permissions:
   contents: write
 
-# ============================================
-# Job اصلی
-# ============================================
 jobs:
-  download-and-save:
+  list-models:
     runs-on: ubuntu-latest
-    
     steps:
-      # مرحله ۱: چک‌اوت کردن مخزن
-      - name: Checkout Repository
+      - name: Checkout code
         uses: actions/checkout@v4
-      
-      # مرحله ۲: تنظیم پایتون
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
-      # مرحله ۳: نصب پیش‌نیازها
-      - name: Install Dependencies
+
+      - name: Install GitHub CLI (gh)
         run: |
-          pip install requests tqdm
-      
-      # مرحله ۴: ساخت پوشه main اگر وجود نداره
-      - name: Create Main Directory
+          type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update
+          sudo apt install gh -y
+
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      # --- 1. فهرست کامل از طریق GitHub CLI ---
+      - name: Get model list via GitHub Models CLI
         run: |
-          mkdir -p main
-          mkdir -p main/${{ github.event.inputs.model_id }}
-      
-      # مرحله ۵: دانلود مدل با شناسه داده شده
-      - name: Download Model
+          echo "# 📋 Full Model List (via 'gh models list')" > model-list-full.txt
+          echo '```' >> model-list-full.txt
+          gh models list >> model-list-full.txt 2>&1
+          echo '```' >> model-list-full.txt
+          echo "" >> model-list-full.txt
+
+      # --- 2. فهرست کامل از طریق direct API call (backup) ---
+      - name: Get model list via API
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python << 'PYEOF'
-          import os
-          import sys
-          import requests
-          import json
-          from pathlib import Path
-          from tqdm import tqdm
-          
-          # گرفتن ورودی‌ها
-          MODEL_ID = "${{ github.event.inputs.model_id }}"
-          QUALITY = "${{ github.event.inputs.quality }}"
-          OUTPUT_DIR = "main"
-          
-          # تعیین URL بر اساس کیفیت
-          if QUALITY == "1k":
-              REPO_ID = "YiboZhang2001/TexVerse-1K"
-          else:
-              REPO_ID = "YiboZhang2001/TexVerse"
-          
-          # URL پایه دانلود
-          BASE_URL = f"https://huggingface.co/datasets/{REPO_ID}/resolve/main"
-          
-          print(f"شناسه مدل: {MODEL_ID}")
-          print(f"کیفیت: {QUALITY}")
-          print(f"مخزن: {REPO_ID}")
-          print("="*60)
-          
-          # پوشه ذخیره
-          model_dir = Path(OUTPUT_DIR) / MODEL_ID
-          model_dir.mkdir(parents=True, exist_ok=True)
-          
-          def download_file(url, output_path):
-              """دانلود یه فایل با نوار پیشرفت"""
-              try:
-                  response = requests.get(url, stream=True, timeout=30)
-                  if response.status_code == 200:
-                      total_size = int(response.headers.get('content-length', 0))
-                      with open(output_path, 'wb') as f:
-                          with tqdm(total=total_size, unit='B', unit_scale=True, desc=output_path.name) as pbar:
-                              for chunk in response.iter_content(chunk_size=8192):
-                                  f.write(chunk)
-                                  pbar.update(len(chunk))
-                      print(f"دانلود شد: {output_path.name}")
-                      return True
-                  else:
-                      print(f"خطای HTTP {response.status_code} برای: {url}")
-                      return False
-              except Exception as e:
-                  print(f"خطا: {e}")
-                  return False
-          
-          # لیست فرمت‌های ممکن
-          possible_files = ["glb", "gltf", "obj", "fbx", "usdz", "ply"]
-          
-          downloaded_any = False
-          
-          for ext in possible_files:
-              filename = f"{MODEL_ID}.{ext}"
-              url = f"{BASE_URL}/{filename}"
-              output_path = model_dir / filename
-              
-              print(f"تلاش برای دانلود: {filename}...")
-              if download_file(url, output_path):
-                  downloaded_any = True
-                  break
-          
-          if not downloaded_any:
-              print("="*60)
-              print("هیچ فایلی پیدا نشد! ممکنه که:")
-              print("- شناسه مدل اشتباه باشه")
-              print("- کیفیت انتخاب شده این مدل رو نداشته باشه")
-              print("- فرمت فایل متفاوت باشه")
-              
-              # تلاش برای نمایش محتویات پوشه (در صورت وجود API)
-              list_url = f"{BASE_URL}/"
-              try:
-                  # نوشتن خطا توی فایل
-                  error_file = model_dir / "DOWNLOAD_ERROR.txt"
-                  with open(error_file, 'w') as f:
-                      f.write(f"Model ID: {MODEL_ID}\n")
-                      f.write(f"Quality: {QUALITY}\n")
-                      f.write(f"Base URL: {BASE_URL}\n")
-                      f.write("Could not find model file.\n")
-                  print(f"فایل خطا توی {error_file} نوشته شد.")
-              except:
-                  pass
-              
-              sys.exit(1)
-          
-          print("="*60)
-          print("عملیات با موفقیت تموم شد!")
-          print(f"فایل‌ها توی: {model_dir}")
-          PYEOF
-      
-      # مرحله ۶: ذخیره مدل توی مخزن
-      - name: Commit and Push Model
+          echo "## 🔍 Alternative Model List (via API)" >> model-list-full.txt
+          echo '```json' >> model-list-full.txt
+          curl -L -H "Accept: application/vnd.github+json" \
+               -H "Authorization: Bearer $GITHUB_TOKEN" \
+               -H "X-GitHub-Api-Version: 2026-03-10" \
+               https://models.github.ai/catalog/models >> model-list-full.txt 2>&1
+          echo '```' >> model-list-full.txt
+
+      # --- 3. فهرست اختصاصی Gemini از یک منبع ثانویه ---
+      - name: Get Gemini models from community repo
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git add main/
-          
-          if git diff --staged --quiet; then
-            echo "چیز جدیدی برای commit نیست."
-          else
-            git commit -m "دانلود مدل ${{ github.event.inputs.model_id }} با کیفیت ${{ github.event.inputs.quality }}"
-            git push
-            echo "مدل با موفقیت توی مخزن ذخیره شد!"
-          fi
+          echo "## 🧠 Gemini Models from External Source" >> model-list-full.txt
+          echo '```' >> model-list-full.txt
+          curl -s "https://raw.githubusercontent.com/spullara/models/master/models.json" | jq -r '.gemini[]' 2>/dev/null >> model-list-full.txt || echo "Could not fetch secondary list." >> model-list-full.txt
+          echo '```' >> model-list-full.txt
+
+      - name: Commit and push the list
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add model-list-full.txt
+          git commit -m "Add full list of available models" || echo "No changes to commit"
+          git push
