@@ -44,7 +44,7 @@ jobs:
           channel = os.environ["CHANNEL"]
           target_count = int(os.environ["COUNT"])
 
-          # ساخت User-Agent تصادفی با fake-useragent
+          # User-Agent تصادفی
           ua = UserAgent()
 
           def get_headers():
@@ -54,10 +54,14 @@ jobs:
                   "Accept-Language": "en-US,en;q=0.5",
               }
 
-          # جمع‌آوری پست‌ها از t.me/s
+          # ------------------------------------------------------------
+          # ۱. جمع‌آوری پست‌ها از t.me/s
+          # ------------------------------------------------------------
           all_messages = []
           before_id = None
           channel_title = f'@{channel}'
+          channel_avatar = ''
+          channel_bio = ''
 
           while len(all_messages) < target_count:
               url = f"https://t.me/s/{channel}"
@@ -68,13 +72,27 @@ jobs:
               if resp.status_code != 200:
                   break
               soup = BeautifulSoup(resp.text, 'html.parser')
+
+              # استخراج عنوان، آواتار و بیو از تگ‌های meta (فقط اولین بار)
               if not before_id:
-                  title_tag = soup.find('meta', property='og:title')
-                  if title_tag:
-                      channel_title = title_tag['content']
+                  # عنوان
+                  og_title = soup.find('meta', property='og:title')
+                  if og_title:
+                      channel_title = og_title['content']
                       channel_title = re.sub(r'\s*\[ALL CHAPTERS\]', '', channel_title)
                       channel_title = re.sub(r'^Telegram:\s*(Contact\s*)?', '', channel_title)
                       channel_title = channel_title.replace('@', '').strip()
+
+                  # آواتار
+                  og_image = soup.find('meta', property='og:image')
+                  if og_image and og_image.get('content'):
+                      channel_avatar = og_image['content']
+
+                  # بیو
+                  og_desc = soup.find('meta', property='og:description')
+                  if og_desc and og_desc.get('content'):
+                      channel_bio = og_desc['content'].strip()
+
               messages = soup.find_all('div', class_='tgme_widget_message_wrap')
               if not messages:
                   break
@@ -92,7 +110,9 @@ jobs:
           latest = all_messages[:target_count]
           print(f"\n📊 Processing {len(latest)} messages")
 
-          # ساخت پوشه‌ها
+          # ------------------------------------------------------------
+          # ۲. ساخت پوشه‌ها
+          # ------------------------------------------------------------
           timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
           output_dir = f"sites/telegram/{channel}/{timestamp}"
           media_dir = f"{output_dir}/media"
@@ -100,9 +120,9 @@ jobs:
           Path(media_dir).mkdir(parents=True, exist_ok=True)
           Path(files_dir).mkdir(parents=True, exist_ok=True)
 
-          owner, repo, branch = "hhgghhjgg", "Heloligt", "main"
-          MEDIA_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/media/"
-          FILES_BASE_RAW = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{output_dir}/files/"
+          # مسیرهای نسبی برای ذخیره در JSON (بدون raw.githubusercontent.com)
+          MEDIA_BASE_REL = f"{output_dir}/media/"
+          FILES_BASE_REL = f"{output_dir}/files/"
 
           downloaded_hashes = set()
 
@@ -163,7 +183,7 @@ jobs:
               try:
                   from urllib.parse import urljoin
                   
-                  # تبدیل به embed mode برای گرفتن محتوای خام
+                  # تبدیل به embed mode
                   if '/s/' in doc_page_url:
                       embed_url = doc_page_url.replace('t.me/s/', 't.me/')
                   else:
@@ -177,19 +197,19 @@ jobs:
                   resp = requests.get(embed_url, headers=get_headers(), timeout=15)
                   soup = BeautifulSoup(resp.text, 'html.parser')
                   
-                  # متد ۱: لینک استاندارد
+                  # متد ۱
                   link = soup.find('a', class_='tgme_widget_message_document_link')
                   if link and link.get('href'):
                       print(f"    🎯 متد ۱: {link['href']}")
                       return link['href']
                   
-                  # متد ۲: تگ ویدیو
+                  # متد ۲
                   video = soup.find('video')
                   if video and video.get('src'):
                       print(f"    🎯 متد ۲: {video['src']}")
                       return video['src']
                   
-                  # متد ۳: همه لینک‌های فایل
+                  # متد ۳
                   for a in soup.find_all('a', href=True):
                       href = a['href']
                       full_url = urljoin(embed_url, href)
@@ -215,6 +235,9 @@ jobs:
                       buttons.append(href)
               return buttons
 
+          # ------------------------------------------------------------
+          # ۳. پردازش پست‌ها
+          # ------------------------------------------------------------
           posts_data = []
 
           for idx, msg in enumerate(latest):
@@ -255,7 +278,7 @@ jobs:
 
               files_downloaded = []
 
-              # متد A: داکیومنت رسمی
+              # متد A
               doc_wrap = msg.find('a', class_='tgme_widget_message_document_wrap')
               if doc_wrap:
                   doc_url = doc_wrap.get('href')
@@ -268,7 +291,7 @@ jobs:
                           fname = safe_download(direct, files_dir, timeout=120)
                           if fname: files_downloaded.append(fname)
 
-              # متد B: لینک‌های عددی
+              # متد B
               for link in links:
                   if re.search(r't\.me/[^/]+/\d+$', link):
                       static_link = make_static_url(link)
@@ -278,7 +301,7 @@ jobs:
                           if fname and fname not in files_downloaded:
                               files_downloaded.append(fname)
 
-              # متد C: لینک‌های مستقیم به فایل
+              # متد C
               for link in links:
                   clean_link = link.split('?')[0].split('/')[-1].lower()
                   if any(clean_link.endswith(ext) for ext in ['.npvt','.pdf','.zip','.rar','.7z','.apk','.epub','.mobi','.doc','.docx','.xls','.xlsx','.mp3','.wav','.torrent','.flac','.m4a','.ogg']):
@@ -286,7 +309,7 @@ jobs:
                           fname = safe_download(link, files_dir, timeout=120)
                           if fname: files_downloaded.append(fname)
 
-              # متد D: دکمه‌های inline
+              # متد D
               btns = extract_buttons(msg)
               for btn_url in btns:
                   clean_btn = btn_url.split('?')[0].split('/')[-1].lower()
@@ -310,26 +333,42 @@ jobs:
               })
               print(f"  Post {idx+1}/{len(latest)}: {len(photos)}📸 {len(videos)}🎬 {len(files_downloaded)}📄")
 
-          # ذخیره JSON
+          # ------------------------------------------------------------
+          # ۴. ذخیره JSON اصلی
+          # ------------------------------------------------------------
           with open(f"{output_dir}/posts.json", "w", encoding="utf-8") as f:
               json.dump({
-                  "channel": channel, "title": channel_title,
-                  "posts_count": len(posts_data), "posts": posts_data,
-                  "_media_base": MEDIA_BASE_RAW, "_files_base": FILES_BASE_RAW,
+                  "channel": channel,
+                  "title": channel_title,
+                  "posts_count": len(posts_data),
+                  "posts": posts_data,
+                  "_media_base": MEDIA_BASE_REL,   # فقط مسیر نسبی
+                  "_files_base": FILES_BASE_REL,   # فقط مسیر نسبی
               }, f, ensure_ascii=False, indent=2)
 
+          # ------------------------------------------------------------
+          # ۵. ذخیره کش
+          # ------------------------------------------------------------
           cache_dir = "sites/telegram"
           Path(cache_dir).mkdir(parents=True, exist_ok=True)
           with open(f"{cache_dir}/{channel}.json", "w", encoding="utf-8") as f:
               json.dump({
-                  "channel": channel, "title": channel_title,
-                  "posts_count": len(posts_data), "posts": posts_data,
+                  "channel": channel,
+                  "title": channel_title,
+                  "posts_count": len(posts_data),
+                  "posts": posts_data,
                   "cached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                  "_media_base": MEDIA_BASE_RAW, "_files_base": FILES_BASE_RAW,
+                  "_media_base": MEDIA_BASE_REL,
+                  "_files_base": FILES_BASE_REL,
+                  "channel_avatar": channel_avatar,
+                  "channel_bio": channel_bio,
               }, f, ensure_ascii=False, indent=2)
 
           tf = sum(len(p['files']) for p in posts_data)
           print(f"\n✅ Done! {len(posts_data)} posts | {sum(len(p['photos']) for p in posts_data)}📸 {sum(len(p['videos']) for p in posts_data)}🎬 {tf}📄")
+          print(f"🖼️ Avatar: {channel_avatar}")
+          print(f"📝 Bio: {channel_bio}")
+          print(f"📁 Media base: {MEDIA_BASE_REL}")
           PYEOF
 
       - name: Commit and push
