@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'URL of the video / playlist / channel'
+        description: 'URL of the video'
         required: true
         type: string
       output_folder:
@@ -22,16 +22,6 @@ on:
         required: false
         type: string
         default: 'video'
-      playlist_items:
-        description: 'Playlist / channel items to download (e.g. "1-5" or "3,6,8"). Leave empty to download only the single URL.'
-        required: false
-        type: string
-        default: ''
-      exclude_podcasts:
-        description: 'Exclude podcast episodes'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -66,26 +56,6 @@ jobs:
           mkdir -p "$FOLDER"
           touch marker
 
-          # --- Build extra yt-dlp arguments ---
-          EXTRA_ARGS=()
-
-          # playlist / channel items range
-          if [ -n "${{ github.event.inputs.playlist_items }}" ]; then
-            EXTRA_ARGS+=(--playlist-items "${{ github.event.inputs.playlist_items }}")
-          else
-            # if no range given, force single video (do not download whole playlist)
-            EXTRA_ARGS+=(--playlist-end 1)
-          fi
-
-          # exclude podcasts if requested
-          if [ "${{ github.event.inputs.exclude_podcasts }}" = "true" ]; then
-            EXTRA_ARGS+=(--match-filter "category != 'podcast'")
-          fi
-
-          # Always allow adult / age‑restricted content
-          EXTRA_ARGS+=(--no-check-certificate --geo-bypass --age-limit 99)
-
-          # --- Retry loop ---
           MAX_RETRIES=5
           RETRY_COUNT=0
           SUCCESS=false
@@ -99,10 +69,11 @@ jobs:
               --merge-output-format mp4 \
               --retries 3 \
               --fragment-retries 10 \
+              --no-check-certificate \
+              --geo-bypass \
               --no-color \
               --ignore-errors \
               --newline \
-              "${EXTRA_ARGS[@]}" \
               "${{ github.event.inputs.url }}" && {
 
                 NEW_FILE=$(find "$FOLDER" -type f -newer marker -print -quit)
