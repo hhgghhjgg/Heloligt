@@ -1,25 +1,25 @@
-name: Build Latest React (UMD) + Save Failure Logs
+name: Build Latest React UMD + Save Logs
 
 on:
   workflow_dispatch:          # اجرای دستی
   schedule:
-    - cron: '0 6 * * 1'      # هر دوشنبه ساعت ۶ صبح UTC
+    - cron: '0 6 * * 1'      # هر دوشنبه ساعت ۶ صبح
 
 jobs:
   build-and-commit:
     runs-on: ubuntu-latest
     permissions:
       contents: write        # برای push کردن
-      actions: read          # برای دریافت لاگ‌ها از API
+      actions: read          # برای خوندن لاگ‌ها
 
     steps:
-      # 1. Checkout ریپازیتوری خودت
+      # ۱. checkout کردن ریپوی خودمون
       - name: Checkout my repo
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. آخرین tag پایدار ری‌اکت را از API دریافت کن
+      # ۲. گرفتن آخرین تگ پایدار React
       - name: Get latest React release tag
         id: react_tag
         run: |
@@ -27,88 +27,134 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Latest React tag: $TAG"
 
-      # 3. Checkout مخزن اصلی ری‌اکت در همان tag
-      - name: Checkout facebook/react at latest tag
+      # ۳. checkout کردن مخزن اصلی React
+      - name: Checkout facebook/react
         uses: actions/checkout@v4
         with:
           repository: facebook/react
           ref: ${{ steps.react_tag.outputs.tag }}
           path: react-src
 
-      # 4. نصب Node مطابق با نیاز ری‌اکت
+      # ۴. نصب Node
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version-file: 'react-src/.nvmrc'
+          node-version: 20
           cache: 'yarn'
           cache-dependency-path: react-src/yarn.lock
 
-      # 5. نصب وابستگی‌ها و build باندل‌های UMD
-      - name: Install dependencies and build UMD bundles
-        id: build
+      # ۵. نصب dependencies
+      - name: Install dependencies
         run: |
           cd react-src
           yarn install --frozen-lockfile
-          yarn build -- --type=UMD_DEV,UMD_PROD react/index react-dom/index
-        env:
-          CI: true
 
-      # 6. در صورت موفقیت، فایل‌های ساخته شده را به mine/ منتقل کن
-      - name: Copy built files to mine/ (only on success)
+      # ۶. بیلد UMD (مرحله اصلی)
+      - name: Build React UMD
+        id: build_step
+        run: |
+          cd react-src
+          yarn build react/index,react-dom/index --type=UMD
+          echo "Build completed successfully"
+          # چک کردن فایل‌های خروجی
+          echo "=== Checking build output ==="
+          ls -la build/node_modules/react/umd/ || echo "React UMD dir not found"
+          ls -la build/node_modules/react-dom/umd/ || echo "React-DOM UMD dir not found"
+        continue-on-error: false
+
+      # ۷. کپی فایل‌های بیلد شده
+      - name: Copy UMD files to mine/
         if: success()
         run: |
           mkdir -p mine
-          cp react-src/build/node_modules/react/umd/*.js mine/
-          cp react-src/build/node_modules/react-dom/umd/*.js mine/
-          echo "Built files:"
-          ls -l mine/
+          echo "=== Copying React UMD files ==="
+          if [ -d "react-src/build/node_modules/react/umd/" ]; then
+            cp -v react-src/build/node_modules/react/umd/*.js mine/
+          else
+            echo "ERROR: React UMD folder not found!"
+            echo "Searching for UMD files anywhere in build..."
+            find react-src/build -name "*.umd.*" -o -name "*.development.js" -o -name "*.production.min.js" 2>/dev/null || echo "No UMD files found anywhere"
+            exit 1
+          fi
+          
+          echo "=== Copying React-DOM UMD files ==="
+          if [ -d "react-src/build/node_modules/react-dom/umd/" ]; then
+            cp -v react-src/build/node_modules/react-dom/umd/*.js mine/
+          else
+            echo "WARNING: React-DOM UMD folder not found, searching..."
+            find react-src/build -path "*/react-dom*" -name "*.js" 2>/dev/null || echo "No React-DOM files found"
+          fi
+          
+          echo "=== Final mine/ contents ==="
+          ls -la mine/
 
-      # 7. در صورت شکست (هر مرحله‌ای)، لاگ‌های Job را دریافت و در mine/logs/ ذخیره کن
+      # ۸. ذخیره لاگ در صورت شکست
       - name: Save failure logs
         if: failure()
         run: |
-          echo "Job failed. Fetching logs for run ${{ github.run_id }}..."
-          # دریافت ID مربوط به این Job (چون فقط یک Job داریم، اولین مورد کافیست)
-          JOBS_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs")
-          JOB_ID=$(echo "$JOBS_RESPONSE" | jq -r '.jobs[0].id')
-          if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
-            echo "ERROR: Could not determine job ID. API response:"
-            echo "$JOBS_RESPONSE"
-            exit 1
-          fi
-          echo "Job ID: $JOB_ID"
-
-          # دانلود لاگ‌ها (یک فایل zip)
+          echo "=== Job failed! Capturing logs ==="
           mkdir -p mine/logs
-          curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/jobs/$JOB_ID/logs" \
-            -o mine/logs/job-logs.zip
+          
+          # گرفتن لاگ‌ها از API
+          JOBS_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs"
+          echo "Fetching jobs from: $JOBS_URL"
+          
+          JOBS_RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$JOBS_URL")
+          JOB_ID=$(echo "$JOBS_RESPONSE" | jq -r '.jobs[0].id')
+          
+          if [ -z "$JOB_ID" ] || [ "$JOB_ID" = "null" ]; then
+            echo "ERROR: Could not determine job ID"
+            echo "$JOBS_RESPONSE" | jq .
+            # روش جایگزین: ذخیره response کامل
+            echo "$JOBS_RESPONSE" > mine/logs/jobs-response.json
+          else
+            echo "Job ID: $JOB_ID"
+            
+            # دانلود لاگ‌ها
+            LOGS_URL="https://api.github.com/repos/${{ github.repository }}/actions/jobs/$JOB_ID/logs"
+            echo "Downloading logs from: $LOGS_URL"
+            
+            curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$LOGS_URL" -o mine/logs/job-logs.zip
+            
+            if [ -f mine/logs/job-logs.zip ]; then
+              echo "Extracting logs..."
+              unzip -o mine/logs/job-logs.zip -d mine/logs/
+              rm mine/logs/job-logs.zip
+              echo "=== Logs extracted ==="
+              ls -la mine/logs/
+            else
+              echo "WARNING: Could not download logs zip file"
+            fi
+          fi
+          
+          # اضافه کردن اطلاعات خطا
+          echo "=== Failure Info ===" > mine/logs/failure-info.txt
+          echo "Run ID: ${{ github.run_id }}" >> mine/logs/failure-info.txt
+          echo "Run Number: ${{ github.run_number }}" >> mine/logs/failure-info.txt
+          echo "Timestamp: $(date -u)" >> mine/logs/failure-info.txt
+          echo "React Tag: ${{ steps.react_tag.outputs.tag }}" >> mine/logs/failure-info.txt
+          
+          # گرفتن خروجی stepهای قبلی
+          echo "=== Build Step Output ===" >> mine/logs/failure-info.txt
+          echo "${{ steps.build_step.outcome }}" >> mine/logs/failure-info.txt
 
-          # استخراج محتویات zip (فایل‌های متنی لاگ هر مرحله)
-          unzip -o mine/logs/job-logs.zip -d mine/logs/
-          rm mine/logs/job-logs.zip
-
-          echo "Logs saved to mine/logs/:"
-          ls -l mine/logs/
-
-      # 8. در هر حالتی (موفق یا شکست) تغییرات mine/ را commit و push کن
-      - name: Commit and push any changes (built files or failure logs)
+      # ۹. commit و push
+      - name: Commit and push changes
         if: ${{ !cancelled() }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add mine/
-
+          
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            # انتخاب پیام commit مناسب
-            if [ -d mine/logs ]; then
-              COMMIT_MSG="Add failure logs for run ${{ github.run_id }}"
+            if [ -d mine/logs ] && [ "$(ls -A mine/logs 2>/dev/null)" ]; then
+              COMMIT_MSG="📝 Add failure logs for run #${{ github.run_number }}"
             else
-              COMMIT_MSG="Update React UMD bundles to ${{ steps.react_tag.outputs.tag }}"
+              COMMIT_MSG="⬆️ Update React UMD to ${{ steps.react_tag.outputs.tag }}"
             fi
             git commit -m "$COMMIT_MSG"
             git push
+            echo "Changes committed and pushed."
           fi
