@@ -1,11 +1,12 @@
-name: Fetch URL (browser-fetch)
+name: 🌐 Fetch & Save HTML
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'آدرس کامل سایت'
+        description: 'آدرس کامل سایت (با https://)'
         required: true
+        type: string
 
 permissions:
   contents: write
@@ -22,13 +23,13 @@ jobs:
           - 8191:8191
 
     steps:
-      - name: Checkout repository
+      - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: 🐍 Install dependencies
         run: pip install -q requests beautifulsoup4
 
-      - name: Wait for FlareSolverr
+      - name: ⏳ Wait for FlareSolverr
         run: |
           for i in $(seq 1 30); do
             status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8191/v1 2>/dev/null || echo "000")
@@ -36,7 +37,7 @@ jobs:
             sleep 2
           done
 
-      - name: Fetch page via FlareSolverr
+      - name: 🕷️ Fetch page via FlareSolverr
         env:
           TARGET_URL: ${{ github.event.inputs.url }}
         run: |
@@ -45,34 +46,81 @@ jobs:
           from bs4 import BeautifulSoup
           from datetime import datetime
           from urllib.parse import urljoin, urlparse
+          from pathlib import Path
 
           target_url = os.environ["TARGET_URL"]
           if not target_url.startswith('http'):
               target_url = 'https://' + target_url
 
           domain = urlparse(target_url).netloc
-          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+          timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
           output_dir = f"sites/{domain}/{timestamp}"
           os.makedirs(output_dir, exist_ok=True)
 
-          print(f"Fetching {target_url}")
+          print(f"📡 Fetching: {target_url}")
+          print(f"📁 Output: {output_dir}")
 
-          # Fetch with FlareSolverr
-          fs_url = "http://localhost:8191/v1"
-          payload = {"cmd": "request.get", "url": target_url, "maxTimeout": 120000}
-          resp = requests.post(fs_url, json=payload, timeout=150)
-          data = resp.json()
-          html = data.get("solution", {}).get("response", "")
+          # ============================================================
+          # روش ۱: FlareSolverr (برای سایت‌های با Cloudflare)
+          # ============================================================
+          html = ""
+          try:
+              print("🛡️ Trying FlareSolverr...")
+              fs_url = "http://localhost:8191/v1"
+              payload = {"cmd": "request.get", "url": target_url, "maxTimeout": 120000}
+              resp = requests.post(fs_url, json=payload, timeout=150)
+              data = resp.json()
+              html = data.get("solution", {}).get("response", "")
+              if html:
+                  print(f"  ✅ FlareSolverr success: {len(html)} chars")
+          except Exception as e:
+              print(f"  ⚠️ FlareSolverr failed: {str(e)[:80]}")
 
+          # ============================================================
+          # روش ۲: مستقیم (Fallback)
+          # ============================================================
           if not html:
-              print("ERROR: No HTML received")
+              print("🌐 Trying direct fetch...")
+              try:
+                  headers = {
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                      "Accept-Language": "en-US,en;q=0.5"
+                  }
+                  resp = requests.get(target_url, headers=headers, timeout=30, verify=False)
+                  resp.encoding = resp.apparent_encoding or 'utf-8'
+                  html = resp.text
+                  print(f"  ✅ Direct success: {len(html)} chars")
+              except Exception as e:
+                  print(f"  ❌ Direct failed: {str(e)[:80]}")
+
+          # ============================================================
+          # اگر هیچی دریافت نشد
+          # ============================================================
+          if not html:
+              print("❌ No HTML received at all")
+              error_html = f"""<!DOCTYPE html>
+          <html lang="en">
+          <head><meta charset="UTF-8"><title>Error</title>
+          <style>body{{background:#1a1a1a;color:#fff;text-align:center;padding:50px;font-family:sans-serif;}}</style>
+          </head>
+          <body>
+          <h1>❌ Site Not Loaded</h1>
+          <p>URL: {target_url}</p>
+          <p>Reason: No HTML content received from either FlareSolverr or direct fetch</p>
+          </body>
+          </html>"""
               with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
-                  f.write("<h1 style='color:red;text-align:center;padding:50px;'>❌ سایت بارگذاری نشد</h1><p style='text-align:center'>FlareSolverr نتونست صفحه رو دریافت کنه. احتمالاً سایت تحریم هست یا کلادفلر خیلی قوی داره.</p>")
+                  f.write(error_html)
               exit(0)
 
+          # ============================================================
+          # پردازش HTML
+          # ============================================================
           soup = BeautifulSoup(html, 'html.parser')
 
-          # Inline all CSS
+          # ---------- Inline CSS ----------
+          css_count = 0
           for tag in soup.find_all('link', rel='stylesheet'):
               href = tag.get('href')
               if href and not href.startswith('data:'):
@@ -83,11 +131,12 @@ jobs:
                           style = soup.new_tag('style')
                           style.string = css_resp.text
                           tag.replace_with(style)
-                          print(f"  Inlined CSS: {href}")
-                  except Exception as e:
-                      print(f"  CSS error: {e}")
+                          css_count += 1
+                  except:
+                      pass
 
-          # Inline all JS
+          # ---------- Inline JS ----------
+          js_count = 0
           for tag in soup.find_all('script', src=True):
               src = tag.get('src')
               if src and not src.startswith('data:'):
@@ -98,33 +147,38 @@ jobs:
                           script = soup.new_tag('script')
                           script.string = js_resp.text
                           tag.replace_with(script)
-                          print(f"  Inlined JS: {src}")
-                  except Exception as e:
-                      print(f"  JS error: {e}")
+                          js_count += 1
+                  except:
+                      pass
 
-          # Download all images
+          # ---------- Download Images ----------
+          img_count = 0
+          img_urls = set()
           for tag in soup.find_all('img'):
-              src = tag.get('src') or tag.get('data-src') or tag.get('data-lazy-src')
-              if src and not src.startswith('data:'):
+              src = tag.get('src') or tag.get('data-src') or tag.get('data-lazy-src') or tag.get('data-original')
+              if src and not src.startswith('data:') and src not in img_urls:
+                  img_urls.add(src)
                   full = urljoin(target_url, src)
                   try:
                       img_resp = requests.get(full, timeout=15, headers={"User-Agent": "MagicBrowser/1.0"})
                       if img_resp.status_code == 200:
-                          content_type = img_resp.headers.get('content-type', '')
+                          ct = img_resp.headers.get('content-type', '')
                           ext = 'jpg'
-                          if 'png' in content_type: ext = 'png'
-                          elif 'gif' in content_type: ext = 'gif'
-                          elif 'svg' in content_type: ext = 'svg'
-                          elif 'webp' in content_type: ext = 'webp'
-                          fname = f"{hashlib.md5(full.encode()).hexdigest()[:10]}.{ext}"
+                          if 'png' in ct: ext = 'png'
+                          elif 'gif' in ct: ext = 'gif'
+                          elif 'svg' in ct: ext = 'svg'
+                          elif 'webp' in ct: ext = 'webp'
+                          elif 'icon' in ct: ext = 'ico'
+                          fname = f"img_{hashlib.md5(full.encode()).hexdigest()[:12]}.{ext}"
                           with open(f"{output_dir}/{fname}", "wb") as f:
                               f.write(img_resp.content)
                           tag['src'] = fname
-                          print(f"  Downloaded: {fname}")
-                  except Exception as e:
-                      print(f"  Image error: {e}")
+                          img_count += 1
+                  except:
+                      pass
 
-          # Download background images from style attributes
+          # ---------- Download Background Images ----------
+          bg_count = 0
           for tag in soup.find_all(style=True):
               style_text = tag['style']
               urls = re.findall(r'url\(["\']?([^)"\']+)["\']?\)', style_text)
@@ -133,35 +187,84 @@ jobs:
                   try:
                       bg_resp = requests.get(full, timeout=15, headers={"User-Agent": "MagicBrowser/1.0"})
                       if bg_resp.status_code == 200:
-                          content_type = bg_resp.headers.get('content-type', '')
+                          ct = bg_resp.headers.get('content-type', '')
                           ext = 'jpg'
-                          if 'png' in content_type: ext = 'png'
-                          elif 'gif' in content_type: ext = 'gif'
-                          elif 'svg' in content_type: ext = 'svg'
-                          elif 'webp' in content_type: ext = 'webp'
-                          fname = f"bg_{hashlib.md5(full.encode()).hexdigest()[:10]}.{ext}"
+                          if 'png' in ct: ext = 'png'
+                          elif 'gif' in ct: ext = 'gif'
+                          elif 'svg' in ct: ext = 'svg'
+                          elif 'webp' in ct: ext = 'webp'
+                          fname = f"bg_{hashlib.md5(full.encode()).hexdigest()[:12]}.{ext}"
                           with open(f"{output_dir}/{fname}", "wb") as f:
                               f.write(bg_resp.content)
                           tag['style'] = style_text.replace(bg_url, fname)
-                          print(f"  Downloaded BG: {fname}")
-                  except Exception as e:
-                      print(f"  BG error: {e}")
+                          bg_count += 1
+                  except:
+                      pass
 
-          # Save final HTML
-          html_content = str(soup)
-          with open(f"{output_dir}/index.html", "w", encoding="utf-8") as f:
-              f.write(html_content)
+          # ---------- Fix Base Tag ----------
+          if not soup.find('base'):
+              base = soup.new_tag('base')
+              base['href'] = target_url
+              if soup.head:
+                  soup.head.insert(0, base)
 
-          # List files
-          for fn in os.listdir(output_dir):
-              size = os.path.getsize(f"{output_dir}/{fn}")
-              print(f"  File: {fn} ({size} bytes)")
+          # ============================================================
+          # ذخیره HTML نهایی
+          # ============================================================
+          html_output = str(soup)
+          html_path = f"{output_dir}/index.html"
+          with open(html_path, "w", encoding="utf-8") as f:
+              f.write(html_output)
+
+          # ============================================================
+          # ذخیره metadata
+          # ============================================================
+          metadata = {
+              "url": target_url,
+              "domain": domain,
+              "timestamp": timestamp,
+              "html_size": len(html_output),
+              "css_inlined": css_count,
+              "js_inlined": js_count,
+              "images_downloaded": img_count,
+              "bg_downloaded": bg_count,
+              "total_files": len(os.listdir(output_dir)),
+              "fetched_at": datetime.now().isoformat()
+          }
+          with open(f"{output_dir}/metadata.json", "w", encoding="utf-8") as f:
+              json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+          # ============================================================
+          # بروزرسانی latest.txt
+          # ============================================================
+          Path(f"sites/{domain}").mkdir(parents=True, exist_ok=True)
+          with open(f"sites/{domain}/latest.txt", "w") as f:
+              f.write(timestamp)
+
+          # ============================================================
+          # گزارش نهایی
+          # ============================================================
+          print(f"\n{'='*50}")
+          print(f"📊 SUMMARY")
+          print(f"{'='*50}")
+          print(f"  📁 Folder: {output_dir}")
+          print(f"  📄 HTML: {len(html_output)} chars → {html_path}")
+          print(f"  🎨 CSS Inlined: {css_count}")
+          print(f"  📜 JS Inlined: {js_count}")
+          print(f"  🖼️ Images: {img_count}")
+          print(f"  🎯 Backgrounds: {bg_count}")
+          print(f"  📁 Total Files: {len(os.listdir(output_dir))}")
           PYEOF
 
-      - name: Commit and push
+      - name: 📝 Commit & Push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add sites/
-          git commit -m "🌐 ${{ github.event.inputs.url }}" || echo "Nothing to commit"
-          git pull --rebase && git push || true
+          
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "🌐 Archive: ${{ github.event.inputs.url }} | $(date '+%Y-%m-%d %H:%M')"
+            git pull --rebase && git push || echo "Push failed"
+          fi
